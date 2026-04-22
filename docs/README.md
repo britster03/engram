@@ -13,6 +13,7 @@ authoritative [`Engram_SDD.pdf`](../Engram_SDD.pdf).
 | [PRODUCTION.md](PRODUCTION.md) | Pre-flight checklist, incident playbook, capacity, upgrades | When going live |
 | [SCALING.md](SCALING.md) | Multi-tenancy, leader election, Kubernetes, Helm, client SDKs | When scaling beyond single-node |
 | [FEATURES.md](FEATURES.md) | Authoritative "what's actually implemented" table | When verifying what's real vs aspirational |
+| [VALIDATION.md](VALIDATION.md) | Record of live runs against real infra (OpenAI, Neo4j, gate classifier training) | When you need proof something actually works |
 | [DEV_GUIDE.md](DEV_GUIDE.md) | Code layout, adding prompts / Cypher templates / consolidation tasks, test strategy | When extending Engram |
 | [TRAINING.md](TRAINING.md) | Bootstrap mode, synthetic data, Gate classifier, Core model SFT + DPO | When training local models |
 

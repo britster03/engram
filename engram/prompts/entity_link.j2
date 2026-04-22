@@ -22,6 +22,10 @@ Candidates:
 {% endfor %}
 
 Output schema:
-{ "matched_id": "mem://user/entities/alice/" | null,
+{ "matched_id": "<full source_uri copied verbatim from the candidates list, OR null>",
   "confidence": 0.0-1.0,
   "reason": "one sentence" }
+
+IMPORTANT: matched_id must be the exact `source_uri` string from one of the
+candidates above (including the trailing `.md` filename), or `null` if no
+candidate matches. Do not invent or truncate URIs.

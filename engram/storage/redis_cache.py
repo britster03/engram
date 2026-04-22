@@ -1,4 +1,8 @@
-"""Session cache backend — Redis in production, in-memory for single-process dev (§9.2)."""
+"""Session cache backend — Redis in production, in-memory for single-process dev (§9.2).
+
+Keys are **tenant-namespaced** so two tenants cannot collide on a shared
+session_id. Schema: `session:{tenant_id}:{session_id}`.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +13,11 @@ from typing import Any
 import redis
 
 from engram.config import SessionCacheConfig
+from engram.tenancy import current_tenant_id
 
 
 class SessionCache:
-    """Key/value store keyed by session:{session_id} → serialized session state."""
+    """Key/value store keyed by session:{tenant_id}:{session_id} → serialized state."""
 
     def __init__(self, cfg: SessionCacheConfig, *, default_ttl_seconds: int) -> None:
         self.cfg = cfg
@@ -34,37 +39,50 @@ class SessionCache:
                 return False
         return True
 
-    def _key(self, session_id: str) -> str:
-        return f"session:{session_id}"
+    def _key(self, session_id: str, *, tenant_id: str | None = None) -> str:
+        tid = tenant_id or current_tenant_id()
+        return f"session:{tid}:{session_id}"
 
-    def get(self, session_id: str) -> dict[str, Any] | None:
+    def get(
+        self, session_id: str, *, tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        key = self._key(session_id, tenant_id=tenant_id)
         if self._client is not None:
-            raw = self._client.get(self._key(session_id))
+            raw = self._client.get(key)
             return json.loads(raw) if raw else None
         assert self._memory is not None
-        entry = self._memory.get(session_id)
+        entry = self._memory.get(key)
         if entry is None:
             return None
         expires, raw = entry
         if expires < time.time():
-            self._memory.pop(session_id, None)
+            self._memory.pop(key, None)
             return None
         return json.loads(raw)
 
     def set(
-        self, session_id: str, value: dict[str, Any], *, ttl_seconds: int | None = None
+        self,
+        session_id: str,
+        value: dict[str, Any],
+        *,
+        ttl_seconds: int | None = None,
+        tenant_id: str | None = None,
     ) -> None:
+        key = self._key(session_id, tenant_id=tenant_id)
         raw = json.dumps(value)
         ttl = ttl_seconds or self.default_ttl
         if self._client is not None:
-            self._client.setex(self._key(session_id), ttl, raw)
+            self._client.setex(key, ttl, raw)
         else:
             assert self._memory is not None
-            self._memory[session_id] = (time.time() + ttl, raw)
+            self._memory[key] = (time.time() + ttl, raw)
 
-    def delete(self, session_id: str) -> None:
+    def delete(
+        self, session_id: str, *, tenant_id: str | None = None,
+    ) -> None:
+        key = self._key(session_id, tenant_id=tenant_id)
         if self._client is not None:
-            self._client.delete(self._key(session_id))
+            self._client.delete(key)
         else:
             assert self._memory is not None
-            self._memory.pop(session_id, None)
+            self._memory.pop(key, None)

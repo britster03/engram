@@ -3,6 +3,9 @@
 This is the authoritative "what's actually in the code" reference.
 Every row has been verified by grepping the repo at the time of writing.
 
+For live-run evidence against real infra (OpenAI + Neo4j + Redis, CPU
+training loss curve), see [VALIDATION.md](VALIDATION.md).
+
 Legend:
 
 - **✓**  Implemented, runnable, has tests.

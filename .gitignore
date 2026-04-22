@@ -18,7 +18,8 @@ htmlcov/
 *.log
 .DS_Store
 
-# Engram runtime state
-data/
-models/
-logs/
+# Engram runtime state (anchored to repo root so it does not swallow
+# engram/models/*, which is the models source tree).
+/data/
+/models/
+/logs/

@@ -46,8 +46,18 @@ class GatingConfig(BaseModel):
     memory_hit_threshold: float = 0.75
 
 
+_OPENAI_COMPAT_PROVIDERS = (
+    "openai", "openai_compat", "ollama", "groq", "gemini",
+    "openrouter", "together", "deepseek",
+)
+
+
 class CoreModelConfig(BaseModel):
-    provider: Literal["local", "anthropic", "openai", "ollama"] = "anthropic"
+    # anthropic | local | any OpenAI-compatible provider (§engram.models.providers)
+    provider: Literal[
+        "local", "anthropic", "openai", "openai_compat", "ollama",
+        "groq", "gemini", "openrouter", "together", "deepseek",
+    ] = "anthropic"
     model_path: str = "claude-sonnet-4-6"
     api_base: str | None = None
     api_key: str | None = None
@@ -57,8 +67,12 @@ class CoreModelConfig(BaseModel):
 
 
 class FrontierLlmConfig(BaseModel):
-    provider: Literal["anthropic", "openai"] = "anthropic"
+    provider: Literal[
+        "anthropic", "openai", "openai_compat", "ollama",
+        "groq", "gemini", "openrouter", "together", "deepseek",
+    ] = "anthropic"
     model_path: str = "claude-sonnet-4-6"
+    api_base: str | None = None
     api_key: str | None = None
     temperature: float = 0.3
     max_tokens: int = 4096

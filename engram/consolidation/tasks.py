@@ -67,11 +67,18 @@ def handle_consolidate_overview(
     neo4j: Neo4jStore,
     core: CoreModelProvider,
     cfg: ConsolidationConfig,
+    overview_cache: Any | None = None,
 ) -> None:
-    """Regenerate overview.md for a directory via the Core Model (§7.3)."""
+    """Regenerate overview.md for a directory via the Core Model (§7.3).
+
+    After writing the new overview, invalidate any distributed cache entry
+    so L3 reads pick up the fresh copy on the next query. The cache is
+    optional — when None, behaviour is unchanged.
+    """
+    from engram.tenancy import current_tenant_id
+
     dir_uri = node_id
     if not fs.path_for(dir_uri).is_dir():
-        # directory may not yet exist; no-op
         return
     children_uris = fs.list_children(dir_uri)
     children_abstracts: list[dict] = []
@@ -92,7 +99,6 @@ def handle_consolidate_overview(
         system_prompt=prompt,
         user_prompt="Return the overview as Markdown.",
     )
-    # The overview prompt may return JSON {overview: "..."} or raw markdown.
     text: str
     if isinstance(result.output, dict) and "overview" in result.output:
         text = str(result.output["overview"])
@@ -100,8 +106,17 @@ def handle_consolidate_overview(
         text = result.output
     else:
         text = result.raw_text
-    fs.write_atomic(f"{dir_uri.rstrip('/')}/overview.md", text if text.endswith("\n") else text + "\n")
-    # Update overview_generated_at on the KG directory node if it exists
+    fs.write_atomic(
+        f"{dir_uri.rstrip('/')}/overview.md",
+        text if text.endswith("\n") else text + "\n",
+    )
+    # Invalidate any cached view of this overview so L3 reads the fresh version.
+    if overview_cache is not None:
+        try:
+            overview_cache.invalidate(current_tenant_id(), dir_uri)
+        except Exception:
+            log.debug("overview cache invalidation failed", exc_info=True)
+    # Update overview_generated_at on the KG directory node.
     now = datetime.now(timezone.utc).isoformat()
     neo4j.merge_node(
         source_uri=dir_uri,

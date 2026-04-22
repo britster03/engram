@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from engram import frontmatter, prompts, tokens as tok_mod
+from engram import frontmatter, prompts, tokens as tok_mod, tracing
 from engram.config import EngramConfig
 from engram.frontmatter import FrontmatterError
 from engram.models.core import CoreModelError, CoreModelProvider
@@ -103,22 +103,25 @@ def run_query(
     md.levels_visited.append("L0")
     md.cascade_depth_reached = "L0"
     t = time.perf_counter()
-    try:
-        gate = run_l0_gate(
-            query,
-            classifier=ctx.l0_classifier,
-            embed=ctx.embed,
-            neo4j=ctx.neo4j,
-            threshold=ctx.cfg.gating.classification_threshold,
-            memory_hit_threshold=ctx.cfg.gating.memory_hit_threshold,
-            skip=ctx.cfg.retrieval.l0_skip,
-        )
-    except Exception as err:
-        # L0 is best-effort — on failure, default to CONTINUE so queries
-        # still get the retrieval cascade.
-        log.warning("L0 gate error; defaulting to CONTINUE: %s", err)
-        from engram.retrieval.l0_gate import GateDecision
-        gate = GateDecision(decision="CONTINUE", reason=f"l0-error:{type(err).__name__}")
+    with tracing.span("query.l0_gate"):
+        try:
+            gate = run_l0_gate(
+                query,
+                classifier=ctx.l0_classifier,
+                embed=ctx.embed,
+                neo4j=ctx.neo4j,
+                threshold=ctx.cfg.gating.classification_threshold,
+                memory_hit_threshold=ctx.cfg.gating.memory_hit_threshold,
+                skip=ctx.cfg.retrieval.l0_skip,
+            )
+        except Exception as err:
+            # L0 is best-effort — on failure, default to CONTINUE so queries
+            # still get the retrieval cascade.
+            log.warning("L0 gate error; defaulting to CONTINUE: %s", err)
+            from engram.retrieval.l0_gate import GateDecision
+            gate = GateDecision(
+                decision="CONTINUE", reason=f"l0-error:{type(err).__name__}",
+            )
     md.latency_ms["l0_gate"] = (time.perf_counter() - t) * 1000
     md.l0_decision = gate.decision
     md.l0_reason = gate.reason
@@ -130,7 +133,11 @@ def run_query(
 
     # --- L1 ------------------------------------------------------------------
     t = time.perf_counter()
-    plan = _l1_plan(ctx, query=query, session_context=session_context, memory_hit=gate.memory_hit)
+    with tracing.span("query.l1_plan"):
+        plan = _l1_plan(
+            ctx, query=query, session_context=session_context,
+            memory_hit=gate.memory_hit,
+        )
     md.latency_ms["l1_plan"] = (time.perf_counter() - t) * 1000
     md.levels_visited.append("L1")
     md.cascade_depth_reached = "L1"
@@ -146,7 +153,8 @@ def run_query(
                             accumulated_hits=[])
 
     t = time.perf_counter()
-    accumulated = _execute_l1(ctx, plan, query)
+    with tracing.span("query.l1_execute"):
+        accumulated = _execute_l1(ctx, plan, query)
     md.latency_ms["l1_execute"] = (time.perf_counter() - t) * 1000
     md.nodes_retrieved = len(accumulated)
     current_results = accumulated
@@ -162,22 +170,26 @@ def run_query(
         if _depth_rank(level_name) > target_depth:
             break
         t = time.perf_counter()
-        ln_plan = _ln_plan(
-            ctx,
-            level=level_name,
-            query=query,
-            session_context=session_context,
-            previous_level=prev_level,
-            previous_results=current_results,
-        )
+        with tracing.span(f"query.{level_name.lower()}_plan"):
+            ln_plan = _ln_plan(
+                ctx,
+                level=level_name,
+                query=query,
+                session_context=session_context,
+                previous_level=prev_level,
+                previous_results=current_results,
+            )
         md.latency_ms[f"{level_name.lower()}_plan"] = (time.perf_counter() - t) * 1000
         md.levels_visited.append(level_name)
         md.cascade_depth_reached = level_name
         if ln_plan.get("terminate_cascade"):
             break
         t = time.perf_counter()
-        current_results = _execute_commands(ctx, ln_plan.get("commands", []),
-                                            level=level_name, existing=current_results)
+        with tracing.span(f"query.{level_name.lower()}_execute"):
+            current_results = _execute_commands(
+                ctx, ln_plan.get("commands", []),
+                level=level_name, existing=current_results,
+            )
         md.latency_ms[f"{level_name.lower()}_execute"] = (time.perf_counter() - t) * 1000
         md.nodes_retrieved = len(current_results)
         prev_level = level_name

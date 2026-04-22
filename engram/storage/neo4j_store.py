@@ -25,13 +25,13 @@ INDEX_STATEMENTS = [
     """
     CREATE VECTOR INDEX l0_idx IF NOT EXISTS
     FOR (n:Node) ON (n.l0_embedding)
-    OPTIONAL {
+    OPTIONS {
       indexConfig: {
         `vector.dimensions`: 384,
         `vector.similarity_function`: 'cosine'
       }
     }
-    """.replace("OPTIONAL", "OPTIONS"),
+    """,
     # BM25 fulltext index over l0_abstract (§6.6)
     """
     CREATE FULLTEXT INDEX l0_text_idx IF NOT EXISTS

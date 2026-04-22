@@ -25,7 +25,7 @@ from typing import Any
 
 from slugify import slugify
 
-from engram import frontmatter, metrics as metrics_mod, prompts, uri as uri_mod
+from engram import frontmatter, metrics as metrics_mod, prompts, tracing, uri as uri_mod
 from engram.config import EngramConfig
 from engram.ingest.conflict import apply_decision, classify
 from engram.ingest.entity_linker import resolve as entity_resolve
@@ -74,7 +74,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     turn_pair = _turn_pair(payload)
 
     # --- Step 2: Write-path gate -----------------------------------------
-    with _timed("gate"):
+    with _timed("gate"), tracing.span("ingest.gate", event_id=event_id):
         try:
             gate = _call_gate(ctx, turn_pair, session_summary=payload.get("session_summary"))
         except CoreModelError as err:
@@ -88,7 +88,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     ctx.sqlite.set_event_status(event_id, "GATED_STORE")
 
     # --- Step 3: S-R-O extraction + L0 abstract --------------------------
-    with _timed("extract"):
+    with _timed("extract"), tracing.span("ingest.extract", event_id=event_id):
         existing = ctx.sqlite.get_extraction(event_id)
         if existing is None:
             extraction = _call_extract(
@@ -107,11 +107,11 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
             extraction = existing
 
     # --- Step 4: Entity linking with disambiguation ----------------------
-    with _timed("entity_link"):
+    with _timed("entity_link"), tracing.span("ingest.entity_link", event_id=event_id):
         entities = _resolve_entities(ctx, extraction)
 
     # --- Step 5: Filesystem write (authoritative) ------------------------
-    with _timed("fs_write"):
+    with _timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
         episode_uri, _ = _write_episode(
             ctx, event_id, event["session_id"], extraction
         )
@@ -129,7 +129,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
         _record_linked_entities(ctx, event_id, extraction["triplets"], entity_records)
 
     # --- Step 6: Validate metadata, then dedup/conflict + KG index ------
-    with _timed("kg_index"):
+    with _timed("kg_index"), tracing.span("ingest.kg_index", event_id=event_id):
         try:
             _validate_written_frontmatter(ctx, episode_uri, entity_records)
             _index_neo4j(ctx, event_id, episode_uri, extraction, entity_records)
@@ -141,7 +141,9 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     ctx.sqlite.set_event_status(event_id, "INDEXED")
 
     # --- Step 7: Consolidation enqueue -----------------------------------
-    with _timed("consolidation_enqueue"):
+    with _timed("consolidation_enqueue"), tracing.span(
+        "ingest.consolidation_enqueue", event_id=event_id,
+    ):
         _enqueue_consolidation(ctx, episode_uri, [uri for _, _, uri in entity_records])
     ctx.sqlite.set_event_status(event_id, "COMPLETE")
     return "COMPLETE"

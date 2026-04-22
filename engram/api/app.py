@@ -93,6 +93,7 @@ async def _lifespan(app: FastAPI):
         cons_ctx = ConsolidationContext(
             cfg=state.cfg, sqlite=state.sqlite, fs=state.fs, neo4j=state.neo4j,
             core=state.core, embed=state.embed,
+            overview_cache=state.overview_cache,
         )
         _cons_handle = start_consolidation(cons_ctx, redis_url=redis_url)
         log.info("consolidation worker started (leased=%s)", bool(redis_url))

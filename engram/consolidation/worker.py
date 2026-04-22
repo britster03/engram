@@ -32,6 +32,7 @@ class ConsolidationContext:
     neo4j: Neo4jStore
     core: CoreModelProvider
     embed: EmbeddingService
+    overview_cache: object | None = None
 
 
 def _next_task(sqlite: SqliteStore) -> dict | None:
@@ -89,6 +90,7 @@ def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
             neo4j=ctx.neo4j,
             core=ctx.core,
             cfg=ctx.cfg.consolidation,
+            overview_cache=ctx.overview_cache,
         )
     elif t == "PROPAGATE_OVERVIEW":
         handlers.handle_propagate_overview(

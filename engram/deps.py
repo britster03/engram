@@ -10,15 +10,14 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
+from engram.audit import AuditLog
+from engram.cache import EmbeddingCache, OverviewCache, build_cache
 from engram.config import EngramConfig, get_config
 from engram.ingest.worker import IngestContext
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.models.frontier import FrontierLLMProvider
-from engram.models.providers.anthropic_provider import (
-    build_core_provider,
-    build_frontier_provider,
-)
+from engram.models.providers import build_providers
 from engram.retrieval.orchestrator import OrchestratorContext
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
@@ -39,6 +38,9 @@ class AppState:
     frontier: FrontierLLMProvider
     embed: EmbeddingService
     tenant_registry: TenantRegistry
+    audit: AuditLog
+    embedding_cache: EmbeddingCache
+    overview_cache: OverviewCache
 
 
 _lock = threading.Lock()
@@ -56,12 +58,17 @@ def build_state(cfg: EngramConfig | None = None) -> AppState:
     session_cache = SessionCache(
         cfg.session_cache, default_ttl_seconds=cfg.session.timeout_minutes * 60
     )
-    core = build_core_provider(cfg.core_model)
-    frontier = build_frontier_provider(cfg.frontier_llm)
-    embed = EmbeddingService.get(cfg.gating)
+    core, frontier = build_providers(cfg.core_model, cfg.frontier_llm)
+
+    # Distributed caches — Redis when available, per-process fallback otherwise.
+    redis_url = cfg.session_cache.redis_url if cfg.session_cache.backend == "redis" else None
+    embed_cache = EmbeddingCache(build_cache(redis_url, namespace="embeddings"))
+    overview_cache = OverviewCache(build_cache(redis_url, namespace="overviews"))
+    embed = EmbeddingService.get(cfg.gating, cache=embed_cache)
+
     tenant_registry = TenantRegistry(cfg.event_ledger.path)
-    # Ensure default tenant exists for backward-compat single-tenant deploys.
     tenant_registry.ensure_default(legacy_api_key=cfg.api.api_key)
+    audit = AuditLog(cfg.event_ledger.path)
     return AppState(
         cfg=cfg,
         sqlite=sqlite,
@@ -72,6 +79,9 @@ def build_state(cfg: EngramConfig | None = None) -> AppState:
         frontier=frontier,
         embed=embed,
         tenant_registry=tenant_registry,
+        audit=audit,
+        embedding_cache=embed_cache,
+        overview_cache=overview_cache,
     )
 
 

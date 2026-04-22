@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "pyyaml>=6.0.2",
     "anthropic>=0.39.0",
+    "openai>=1.40.0",
     "sentence-transformers>=3.3.0",
     "neo4j>=5.25.0",
     "redis>=5.2.0",

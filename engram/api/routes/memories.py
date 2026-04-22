@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from engram.api.auth import AuthDep
@@ -103,20 +103,30 @@ def get_memory(source_uri: str) -> MemoryResponse:
 
 
 @router.post("/{source_uri:path}/unmerge", status_code=202)
-def unmerge_memory(source_uri: str) -> dict[str, Any]:
+def unmerge_memory(source_uri: str, request: Request) -> dict[str, Any]:
     """Enqueue an async unmerge (§8.6).
 
     The LLM-driven split runs on the consolidation worker, not on the
     request thread, so a slow Core Model call never blocks the API.
     Clients poll GET /api/v1/memories/{id} + /history to observe progress.
     """
+    from engram.logging_setup import get_request_id
+    from engram.tenancy import current_tenant_id
+
     if not source_uri.startswith("mem://"):
         source_uri = f"mem://{source_uri.lstrip('/')}"
     state = get_state()
     if not state.fs.exists(source_uri):
         raise HTTPException(status_code=404, detail="memory not found")
+    tid = current_tenant_id()
     task_id = state.sqlite.enqueue_task(
-        node_id=source_uri, task_type="UNMERGE", priority=4
+        node_id=source_uri, task_type="UNMERGE", priority=4, tenant_id=tid,
+    )
+    state.audit.record(
+        tenant_id=tid, actor=_bearer_actor(request), action="memory.unmerge.request",
+        target=source_uri, details={"task_id": task_id},
+        request_id=get_request_id(),
+        remote_addr=(request.client.host if request.client else None),
     )
     return {
         "source_uri": source_uri,
@@ -126,7 +136,10 @@ def unmerge_memory(source_uri: str) -> dict[str, Any]:
 
 
 @router.post("/{source_uri:path}/retire")
-def retire_memory(source_uri: str) -> dict[str, str]:
+def retire_memory(source_uri: str, request: Request) -> dict[str, str]:
+    from engram.logging_setup import get_request_id
+    from engram.tenancy import current_tenant_id
+
     if not source_uri.startswith("mem://"):
         source_uri = f"mem://{source_uri.lstrip('/')}"
     state = get_state()
@@ -138,12 +151,28 @@ def retire_memory(source_uri: str) -> dict[str, str]:
     state.fs.write_atomic(source_uri, mf.serialize())
     try:
         state.neo4j.run_template(
-            "MATCH (n:Node {source_uri: $uri}) SET n.status = 'HISTORICAL'",
+            "MATCH (n:Node {tenant_id: $tenant_id, source_uri: $uri}) "
+            "SET n.status = 'HISTORICAL'",
             {"uri": source_uri},
         )
     except Exception:
         log.exception("failed to retire node in Neo4j: %s", source_uri)
+    tid = current_tenant_id()
+    state.audit.record(
+        tenant_id=tid, actor=_bearer_actor(request), action="memory.retire",
+        target=source_uri,
+        request_id=get_request_id(),
+        remote_addr=(request.client.host if request.client else None),
+    )
     return {"source_uri": source_uri, "status": "HISTORICAL"}
+
+
+def _bearer_actor(request) -> str:
+    import hashlib
+    authz = (request.headers.get("authorization") or "").split(" ", 1)[-1]
+    if not authz:
+        return "anonymous"
+    return f"key:{hashlib.sha256(authz.encode()).hexdigest()[:12]}"
 
 
 @router.get("/{source_uri:path}/history")

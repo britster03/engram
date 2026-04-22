@@ -91,8 +91,19 @@ def resolve(
         matched = out.get("matched_id")
         conf = float(out.get("confidence", 0.0))
         reason = str(out.get("reason", ""))
+        # Defensive validation: the model must return a string that matches
+        # one of the candidate source_uris. Small models sometimes copy the
+        # prompt's example shape ("mem://.../alice/") instead of a real
+        # source_uri; reject anything that isn't in the candidate list so we
+        # never try to read a directory as a file downstream.
         if matched and isinstance(matched, str):
-            return LinkResult(matched, conf, reason)
+            candidate_uris = {c["source_uri"] for c in filtered}
+            if matched in candidate_uris:
+                return LinkResult(matched, conf, reason)
+            log.info(
+                "entity_link rejected: matched_id %r is not in candidate list %s",
+                matched, list(candidate_uris),
+            )
         return LinkResult(None, conf, reason or "core-model-said-no")
     except Exception:  # noqa: BLE001
         log.warning("entity_link core call failed; defaulting to new entity", exc_info=True)

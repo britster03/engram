@@ -1,29 +1,25 @@
 """Admin API — tenant CRUD and key rotation.
 
-Protected by the admin key (`ENGRAM_ADMIN_KEY` env / `api.admin_key` config).
+Protected by the admin key (`ENGRAM_ADMIN_KEY` env / `api.admin_key`).
 If no admin key is configured the entire surface returns 404 so the
-endpoints don't leak even the fact that they exist.
+endpoints don't leak the fact that they exist.
 
-Endpoints:
-  POST   /api/v1/admin/tenants                      — create a tenant
-  GET    /api/v1/admin/tenants                      — list tenants
-  GET    /api/v1/admin/tenants/{id}                 — get a tenant
-  POST   /api/v1/admin/tenants/{id}/keys            — mint a new API key
-  DELETE /api/v1/admin/tenants/{id}/keys/{hash}     — revoke a key
-  PATCH  /api/v1/admin/tenants/{id}/quotas          — update quotas
-  POST   /api/v1/admin/tenants/{id}/suspend         — SUSPENDED
-  POST   /api/v1/admin/tenants/{id}/resume          — ACTIVE
+Every mutation records a row in the append-only audit log with the admin
+key hash as the actor. Reads (list / get) are not audited to keep the
+log signal-heavy.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from engram.api.auth import AdminDep
 from engram.deps import get_state
+from engram.logging_setup import get_request_id
 from engram.tenancy import TenantQuotas, validate_tenant_id
 
 router = APIRouter(
@@ -49,12 +45,12 @@ class TenantPayload(BaseModel):
 
 
 class CreateTenantResponse(TenantPayload):
-    api_key: str   # returned exactly once — caller must persist it
+    api_key: str
 
 
 class MintKeyResponse(BaseModel):
     tenant_id: str
-    api_key: str   # returned exactly once
+    api_key: str
 
 
 def _payload(t) -> TenantPayload:
@@ -64,18 +60,30 @@ def _payload(t) -> TenantPayload:
         status=t.status,
         created_at=t.created_at,
         quotas={
-            "requests_per_minute": t.quotas.requests_per_minute,
-            "ingest_per_minute": t.quotas.ingest_per_minute,
-            "max_memories": t.quotas.max_memories,
-            "max_monthly_tokens": t.quotas.max_monthly_tokens,
+            "requests_per_minute":       t.quotas.requests_per_minute,
+            "ingest_per_minute":         t.quotas.ingest_per_minute,
+            "max_memories":              t.quotas.max_memories,
+            "max_monthly_tokens":        t.quotas.max_monthly_tokens,
             "max_consolidation_backlog": t.quotas.max_consolidation_backlog,
         },
         api_key_count=len(t.api_key_hashes),
     )
 
 
+def _actor(request: Request) -> str:
+    """Hash of the admin bearer token — never logs the raw key."""
+    authz = (request.headers.get("authorization") or "").split(" ", 1)[-1]
+    if not authz:
+        return "admin:unknown"
+    return f"admin:{hashlib.sha256(authz.encode()).hexdigest()[:12]}"
+
+
+def _remote(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
 @router.post("/tenants", response_model=CreateTenantResponse, status_code=201)
-def create_tenant(req: CreateTenantRequest) -> CreateTenantResponse:
+def create_tenant(req: CreateTenantRequest, request: Request) -> CreateTenantResponse:
     validate_tenant_id(req.tenant_id)
     state = get_state()
     quotas = TenantQuotas(**(req.quotas or {}))
@@ -85,6 +93,13 @@ def create_tenant(req: CreateTenantRequest) -> CreateTenantResponse:
         )
     except ValueError as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    state.audit.record(
+        tenant_id=req.tenant_id, actor=_actor(request), action="tenant.create",
+        target=req.tenant_id,
+        details={"display_name": req.display_name,
+                 "quotas": _payload(tenant).quotas},
+        request_id=get_request_id(), remote_addr=_remote(request),
+    )
     base = _payload(tenant)
     return CreateTenantResponse(**base.model_dump(), api_key=api_key)
 
@@ -105,17 +120,22 @@ def get_tenant(tenant_id: str) -> TenantPayload:
 
 
 @router.post("/tenants/{tenant_id}/keys", response_model=MintKeyResponse)
-def mint_key(tenant_id: str) -> MintKeyResponse:
+def mint_key(tenant_id: str, request: Request) -> MintKeyResponse:
     state = get_state()
     try:
         api_key = state.tenant_registry.issue_key(tenant_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="tenant not found")
+    state.audit.record(
+        tenant_id=tenant_id, actor=_actor(request), action="tenant.key.mint",
+        target=tenant_id,
+        request_id=get_request_id(), remote_addr=_remote(request),
+    )
     return MintKeyResponse(tenant_id=tenant_id, api_key=api_key)
 
 
 @router.delete("/tenants/{tenant_id}/keys/{key_hash}")
-def revoke_key(tenant_id: str, key_hash: str) -> dict[str, Any]:
+def revoke_key(tenant_id: str, key_hash: str, request: Request) -> dict[str, Any]:
     state = get_state()
     try:
         revoked = state.tenant_registry.revoke_key(tenant_id, key_hash)
@@ -123,11 +143,18 @@ def revoke_key(tenant_id: str, key_hash: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="tenant not found")
     if not revoked:
         raise HTTPException(status_code=404, detail="key_hash not found for tenant")
+    state.audit.record(
+        tenant_id=tenant_id, actor=_actor(request), action="tenant.key.revoke",
+        target=tenant_id, details={"key_hash": key_hash},
+        request_id=get_request_id(), remote_addr=_remote(request),
+    )
     return {"tenant_id": tenant_id, "revoked": key_hash}
 
 
 @router.patch("/tenants/{tenant_id}/quotas", response_model=TenantPayload)
-def update_quotas(tenant_id: str, quotas: dict[str, int]) -> TenantPayload:
+def update_quotas(
+    tenant_id: str, quotas: dict[str, int], request: Request,
+) -> TenantPayload:
     state = get_state()
     try:
         current = state.tenant_registry.get(tenant_id)
@@ -138,24 +165,48 @@ def update_quotas(tenant_id: str, quotas: dict[str, int]) -> TenantPayload:
     except KeyError:
         raise HTTPException(status_code=404, detail="tenant not found")
     t = state.tenant_registry.get(tenant_id)
+    state.audit.record(
+        tenant_id=tenant_id, actor=_actor(request), action="tenant.quotas.update",
+        target=tenant_id, details={"new_quotas": quotas},
+        request_id=get_request_id(), remote_addr=_remote(request),
+    )
     return _payload(t)
 
 
 @router.post("/tenants/{tenant_id}/suspend", response_model=TenantPayload)
-def suspend(tenant_id: str) -> TenantPayload:
+def suspend(tenant_id: str, request: Request) -> TenantPayload:
     state = get_state()
     try:
         state.tenant_registry.update_status(tenant_id, "SUSPENDED")
     except KeyError:
         raise HTTPException(status_code=404, detail="tenant not found")
+    state.audit.record(
+        tenant_id=tenant_id, actor=_actor(request), action="tenant.suspend",
+        target=tenant_id,
+        request_id=get_request_id(), remote_addr=_remote(request),
+    )
     return _payload(state.tenant_registry.get(tenant_id))
 
 
 @router.post("/tenants/{tenant_id}/resume", response_model=TenantPayload)
-def resume(tenant_id: str) -> TenantPayload:
+def resume(tenant_id: str, request: Request) -> TenantPayload:
     state = get_state()
     try:
         state.tenant_registry.update_status(tenant_id, "ACTIVE")
     except KeyError:
         raise HTTPException(status_code=404, detail="tenant not found")
+    state.audit.record(
+        tenant_id=tenant_id, actor=_actor(request), action="tenant.resume",
+        target=tenant_id,
+        request_id=get_request_id(), remote_addr=_remote(request),
+    )
     return _payload(state.tenant_registry.get(tenant_id))
+
+
+@router.get("/tenants/{tenant_id}/audit")
+def audit_tail(tenant_id: str, limit: int = 100) -> dict[str, Any]:
+    state = get_state()
+    if state.tenant_registry.get(tenant_id) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    events = state.audit.tail(tenant_id, limit=min(limit, 500))
+    return {"tenant_id": tenant_id, "events": events}
