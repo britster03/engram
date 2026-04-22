@@ -152,10 +152,12 @@ These are intentional omissions — not "coming soon" fantasy features:
   replication — deployment-specific, out of scope here.
 - **Hard-delete of memories**: Only soft-delete via `/retire` is exposed.
   GDPR DSAR-style hard deletion needs a product-level workflow.
-- **Live-API integration tests**: All tests use the in-memory KG and the
-  deterministic providers. Running against real Anthropic + Neo4j is
-  `engram smoke` (requires operator secrets) — there's no CI shape for
-  live-API tests because nobody should run them in CI.
+- **Live-API integration tests in CI**: All 148 pytest cases use the
+  in-memory KG + deterministic providers because CI should not hit
+  billable endpoints. A repeatable live smoke test exists outside of
+  pytest at [`scripts/validation/openai_live_test.py`](../scripts/validation/openai_live_test.py),
+  which has been run against real OpenAI + real Neo4j + real Redis; see
+  [VALIDATION.md](VALIDATION.md) for the measured results.
 - **Validated training artefacts**: The training scripts compile and
   their data loaders are tested, but I have not trained a Qwen3.5 adapter
   and verified answer quality. That's a multi-GPU-day experiment, not a

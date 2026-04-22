@@ -71,8 +71,11 @@ curl -fsS https://engram.example.com/readyz | jq
 
 Full production runbook at [docs/PRODUCTION.md](docs/PRODUCTION.md) — covers
 pre-flight checklist, incident playbook, capacity planning, and the scope
-limits of this deployment (single-tenant, single-region — see the doc for
-what is and isn't in scope).
+limits of the deployment (single-region; multi-tenant supported with admin
+API, per-tenant quotas, audit log; not yet active/active across regions).
+Multi-tenant scale docs at [docs/SCALING.md](docs/SCALING.md); authoritative
+feature audit at [docs/FEATURES.md](docs/FEATURES.md); live-run evidence
+at [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ## Documentation
 

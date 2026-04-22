@@ -8,23 +8,47 @@ This document is the operator's runbook. Pair it with
 
 What this codebase is ready for, today:
 
-- Single-tenant deployments: one API key, one operator, one organisation.
+- **Single-tenant** deployments (one API key, one operator, one organisation).
+- **Multi-tenant** deployments: tenant isolation enforced at the filesystem
+  (per-tenant sub-directory), SQLite (`tenant_id` column on every row),
+  Neo4j (`tenant_id` property on every node, filtered in every Cypher
+  template), session cache (`session:{tenant_id}:{session_id}` keys).
+  Per-tenant rate limits + quotas via the admin API. Admin CRUD +
+  key rotation audited in an append-only log. See [SCALING.md](SCALING.md).
+- **Air-gapped / offline** deployments via the Ollama backend — point
+  `core_model.provider=ollama` at a local Ollama server and no outbound
+  HTTPS is required. Same interface works with OpenAI, Groq, Gemini,
+  Anthropic, OpenRouter, Together, DeepSeek.
 - Single primary region. Backups replicated off-host.
-- 1–2 gunicorn workers behind nginx TLS.
-- Throughput up to ~20 queries/s and ~200 ingests/s on a 4-vCPU / 16 GB host
-  with Neo4j co-located (SQLite and filesystem are the bottlenecks long
-  before the LLM).
+- 1–2 gunicorn workers behind nginx TLS, or a Kubernetes deployment (3+
+  replicas with HPA). Leader-election via Redis lease keeps the
+  consolidation + reconciliation workers as singletons across replicas.
+- Throughput up to ~20 queries/s and ~200 ingests/s on a 4-vCPU / 16 GB
+  host with Neo4j co-located. Empirically verified against real OpenAI
+  + real Neo4j in [VALIDATION.md](VALIDATION.md).
 
 What it is **not** ready for:
 
-- Public multi-tenant SaaS (no tenant isolation, no per-tenant quotas, no
-  privacy review).
-- Multi-region HA.
-- Hosts without reliable outbound HTTPS (the frontier / Core Model are
-  online services).
-- Adversarial content at scale — the Cypher template whitelist and input
-  size caps are defence-in-depth, but LLM prompt injection mitigations are
-  rudimentary.
+- **Public SaaS launch** — the multi-tenancy plumbing is there, but a SaaS
+  needs additional product surface that this repo does not ship: billing
+  / usage metering (tokens consumed per tenant → invoicing), a self-serve
+  signup flow, tenant-scoped admin dashboards, SLA enforcement,
+  abuse/spam content moderation, a privacy review, and a DSAR pipeline
+  for hard-delete per user (only soft-delete via `/retire` is exposed today).
+  Everything below the product surface — isolation, quotas, audit — is in
+  place.
+- **Multi-region active/active**. Requires cross-region filesystem +
+  Neo4j replication (S3 cross-region replication, Neo4j AuraDB
+  multi-region, etc.). Not boxed up here — needs cloud-specific
+  integration.
+- **Adversarial content at scale** — the Cypher template whitelist,
+  per-tenant DB scoping, input-size caps, and defensive validators
+  (e.g. entity-linker rejects non-candidate URIs) are defence-in-depth,
+  but LLM prompt-injection mitigations in the extract / L1 / LN prompts
+  haven't been red-teamed. A motivated attacker feeding crafted turn
+  pairs could probably warp their own tenant's KG (but not others', per
+  the tenant boundary). Add content moderation + an adversarial test
+  corpus before opening the `/ingest` surface to untrusted submitters.
 
 ## Pre-flight checklist
 
