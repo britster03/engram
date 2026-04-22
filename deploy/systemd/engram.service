@@ -1,0 +1,55 @@
+[Unit]
+Description=Engram AI memory management service
+Documentation=file:///opt/engram/docs/README.md
+After=network-online.target neo4j.service redis-server.service
+Wants=network-online.target
+Requires=neo4j.service redis-server.service
+
+[Service]
+Type=simple
+User=engram
+Group=engram
+WorkingDirectory=/var/lib/engram
+EnvironmentFile=/etc/engram/engram.env
+Environment="ENGRAM_CONFIG_PATH=/etc/engram/config.yaml"
+Environment="ENGRAM_DATA_DIR=/var/lib/engram/mem"
+Environment="ENGRAM_LOG_FORMAT=json"
+Environment="ENGRAM_LOG_LEVEL=INFO"
+
+ExecStartPre=/opt/engram/bin/engram migrate
+ExecStartPre=/opt/engram/bin/engram init
+ExecStart=/opt/engram/bin/gunicorn engram.api.app:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 1 \
+    --bind 127.0.0.1:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --access-logformat '%(h)s %(t)s "%(r)s" %(s)s %(b)s %(L)s "%({x-request-id}i)s"'
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/engram /var/log/engram
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false   # torch JIT needs RWX; loosen if using local model
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# Resources
+LimitNOFILE=65536
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

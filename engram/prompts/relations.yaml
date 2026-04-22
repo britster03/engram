@@ -1,0 +1,92 @@
+# Controlled vocabulary for RELATES_TO edge labels (§6.4.2).
+# The NORMALIZE task maps extracted relation strings to the nearest
+# canonical form by cosine similarity against these labels; extracted
+# labels that fail to match above 0.85 are preserved verbatim and flagged
+# for manual review via /api/v1/consolidation/status.
+
+version: 1
+relations:
+  # Employment / organisational
+  - works_at
+  - worked_at
+  - employed_by
+  - reports_to
+  - manages
+  - founded
+  - invested_in
+  - partners_with
+
+  # Location / containment
+  - lives_in
+  - located_in
+  - resides_in
+  - visited
+  - born_in
+  - moved_to
+
+  # Personal / family
+  - related_to
+  - married_to
+  - partner_of
+  - parent_of
+  - child_of
+  - sibling_of
+  - friend_of
+
+  # Project / work artifacts
+  - contributes_to
+  - owns
+  - maintains
+  - uses
+  - built_with
+  - depends_on
+  - supersedes
+  - references
+  - mentions
+
+  # Events / temporal
+  - started_on
+  - ended_on
+  - scheduled_for
+  - happened_at
+  - achieved
+  - took_place_in
+
+  # Preferences
+  - prefers
+  - likes
+  - dislikes
+  - avoids
+  - interested_in
+
+  # Ownership / attributes
+  - has
+  - owns_pet_named
+  - drives
+  - reads
+  - watches
+
+aliases:
+  # Alias → canonical. NORMALIZE walks this map before falling back to
+  # embedding similarity.
+  worksAt: works_at
+  "works at": works_at
+  workedAt: worked_at
+  employedBy: employed_by
+  reportsTo: reports_to
+  livesIn: lives_in
+  "lives in": lives_in
+  locatedIn: located_in
+  marriedTo: married_to
+  partnerOf: partner_of
+  parentOf: parent_of
+  childOf: child_of
+  siblingOf: sibling_of
+  friendOf: friend_of
+  contributesTo: contributes_to
+  dependsOn: depends_on
+  startedOn: started_on
+  endedOn: ended_on
+  scheduledFor: scheduled_for
+  happenedAt: happened_at
+  tookPlaceIn: took_place_in

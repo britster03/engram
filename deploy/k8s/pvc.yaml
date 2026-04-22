@@ -1,0 +1,42 @@
+# Persistent volume claims for stateful components.
+# The API pods read/write the same `mem://` filesystem (authoritative content).
+# When you horizontally scale the API, back this with an RWX volume:
+#   - AWS EFS  (efs-sc)
+#   - GCP Filestore (filestore-sc)
+#   - NFS CSI driver
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: engram-data
+  namespace: engram
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: nfs-csi            # change to your cluster's RWX class
+  resources:
+    requests:
+      storage: 200Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neo4j-data
+  namespace: engram
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ssd
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: engram
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ssd
+  resources:
+    requests:
+      storage: 20Gi

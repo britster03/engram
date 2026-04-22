@@ -1,0 +1,39 @@
+[DEDUP] Dedup + conflict classification — §6.5.
+
+You receive an incoming S-R-O triplet that the rule-based classifier was
+unable to classify confidently (object cosine between 0.5 and 0.95 against
+an existing edge with the same relation). You decide whether the incoming
+triplet is a duplicate of an existing edge, a contradiction that supersedes
+it, or a co-existing independent fact.
+
+Rules:
+- DUPLICATE: the new triplet states the same fact. No mutation — increment
+  access_count on the existing edge.
+- CONTRADICTION: the new triplet replaces the old fact. The old edge is
+  marked HISTORICAL and supersedes_by points at the new one.
+- CO_EXISTENCE: the new triplet is a plausible alternative that does not
+  invalidate the old one (e.g. "works at Meta" and "works at Google" both
+  could be true if the user has multiple roles; default to CO_EXISTENCE when
+  the domain supports plurality).
+
+Incoming triplet:
+  subject: {{ incoming.subject }}
+  relation: {{ incoming.relation }}
+  object: {{ incoming.object }}
+  abstract: {{ incoming.l0_abstract }}
+  extracted_confidence: {{ incoming.confidence }}
+
+Existing edges from the same subject:
+{% for edge in existing_edges %}
+- edge_id: {{ edge.edge_id }}
+  relation: {{ edge.relation_label }}
+  object_uri: {{ edge.object_uri }}
+  object_abstract: {{ edge.object_abstract }}
+{% endfor %}
+
+Output schema:
+{
+  "case": "DUPLICATE" | "CONTRADICTION" | "CO_EXISTENCE",
+  "existing_edge_id": <id of existing edge, or null for CO_EXISTENCE>,
+  "reason": "one sentence"
+}

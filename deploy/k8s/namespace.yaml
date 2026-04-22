@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: engram
+  labels:
+    name: engram
+    app.kubernetes.io/name: engram

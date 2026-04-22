@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Engram memory decay daily at 03:00 local
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=engram-decay.service
+
+[Install]
+WantedBy=timers.target

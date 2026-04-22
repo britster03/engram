@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engram
+  namespace: engram
+  labels:
+    app.kubernetes.io/name: engram
+    app.kubernetes.io/component: api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: engram
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: engram
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: engram
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: engram
+          image: ghcr.io/your-org/engram:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: ENGRAM_CONFIG_PATH
+              value: /etc/engram/config.yaml
+            - name: ENGRAM_LOG_FORMAT
+              value: json
+            - name: ENGRAM_LOG_LEVEL
+              value: INFO
+            - name: ENGRAM_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_SERVICE_NAME
+              value: engram
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: deployment.environment=production
+            # Secrets pulled from engram-secrets
+            - name: ENGRAM_API_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } }
+            - name: ENGRAM_ADMIN_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_ADMIN_KEY } }
+            - name: CORE_MODEL_API_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: CORE_MODEL_API_KEY } }
+            - name: FRONTIER_LLM_API_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: FRONTIER_LLM_API_KEY } }
+            - name: NEO4J_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/engram
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/engram
+          startupProbe:
+            httpGet: { path: /livez, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /livez, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
+      volumes:
+        - name: config
+          configMap:
+            name: engram-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: engram-data
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: engram
+              app.kubernetes.io/component: api

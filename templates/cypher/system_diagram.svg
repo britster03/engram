@@ -1,0 +1,374 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="3705.44921875" height="985.8529663085938" id="mermaid-1776712682616" xmlns="http://www.w3.org/2000/svg" class="flowchart" style="max-width: 3705.44921875px;" viewBox="0 0 3705.44921875 985.8529663085938" role="graphics-document document" aria-roledescription="flowchart-v2"><style>
+
+        /* Glassmorphism - Modern glass effect */
+        
+        /* Flowchart nodes - Glass effect with backdrop blur */
+        .node rect, .node circle, .node polygon {
+          fill: rgba(255, 255, 255, 0.25) !important;
+          stroke: rgba(255, 255, 255, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          ry: 12px !important;
+          filter: drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15)) 
+                  drop-shadow(0 8px 32px rgba(0, 0, 0, 0.1));
+          /* Note: backdrop-filter doesn't work in SVG, but we simulate the effect */
+        }
+        
+        .node .label {
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+          fill: #1F2937 !important;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));
+        }
+        
+        /* Connection lines - Gradient glass effect */
+        .edgePath .path {
+          stroke: rgba(139, 92, 246, 0.6) !important;
+          stroke-width: 2.5px !important;
+          stroke-linecap: round;
+          filter: drop-shadow(0 2px 8px rgba(139, 92, 246, 0.3));
+        }
+        
+        .arrowheadPath {
+          fill: rgba(139, 92, 246, 0.6) !important;
+          stroke: rgba(139, 92, 246, 0.6) !important;
+        }
+        
+        .edgeLabel {
+          color: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-size: 13px;
+          font-weight: 500;
+        }
+        
+        .edgeLabel rect {
+          fill: rgba(255, 255, 255, 0.85) !important;
+          stroke: rgba(139, 92, 246, 0.2) !important;
+          stroke-width: 1px !important;
+          rx: 6px !important;
+          filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.08));
+        }
+        
+        .edgeLabel .label {
+          fill: #1F2937 !important;
+          font-weight: 500;
+        }
+        
+        /* Sequence Diagram - Glass panels */
+        .actor {
+          fill: rgba(255, 255, 255, 0.25) !important;
+          stroke: rgba(255, 255, 255, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          ry: 12px !important;
+          filter: drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15)) 
+                  drop-shadow(0 8px 32px rgba(0, 0, 0, 0.1));
+        }
+        
+        .actor text {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));
+        }
+        
+        .actor-line {
+          stroke: rgba(139, 92, 246, 0.4) !important;
+          stroke-width: 2px !important;
+          stroke-dasharray: 8 4 !important;
+          stroke-linecap: round;
+        }
+        
+        .activation0, .activation1, .activation2 {
+          fill: rgba(139, 92, 246, 0.15) !important;
+          stroke: rgba(139, 92, 246, 0.5) !important;
+          stroke-width: 2px !important;
+          filter: drop-shadow(0 4px 12px rgba(139, 92, 246, 0.2));
+        }
+        
+        .messageLine0, .messageLine1 {
+          stroke: rgba(139, 92, 246, 0.6) !important;
+          stroke-width: 2.5px !important;
+          stroke-linecap: round;
+          filter: drop-shadow(0 2px 8px rgba(139, 92, 246, 0.3));
+        }
+        
+        .messageText {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 500;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));
+        }
+        
+        #arrowhead path, .arrowheadPath {
+          fill: rgba(139, 92, 246, 0.6) !important;
+          stroke: rgba(139, 92, 246, 0.6) !important;
+        }
+        
+        /* Note boxes - Pink glass accent */
+        .note {
+          fill: rgba(236, 72, 153, 0.2) !important;
+          stroke: rgba(236, 72, 153, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          ry: 12px !important;
+          filter: drop-shadow(0 4px 16px rgba(236, 72, 153, 0.15)) 
+                  drop-shadow(0 4px 24px rgba(0, 0, 0, 0.08));
+        }
+        
+        .noteText {
+          fill: #831843 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 500;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));
+        }
+        
+        /* Loop/Alt/Opt boxes - Blue glass accent */
+        .labelBox {
+          fill: rgba(59, 130, 246, 0.2) !important;
+          stroke: rgba(59, 130, 246, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          ry: 12px !important;
+          filter: drop-shadow(0 4px 12px rgba(59, 130, 246, 0.15));
+        }
+        
+        .labelText, .loopText {
+          fill: #1E40AF !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));
+        }
+        
+        .loopLine {
+          stroke: rgba(59, 130, 246, 0.5) !important;
+          stroke-width: 1.5px !important;
+          stroke-dasharray: 8 4 !important;
+        }
+        
+        /* Cluster/Subgraph styling */
+        .cluster rect {
+          fill: rgba(255, 255, 255, 0.15) !important;
+          stroke: rgba(255, 255, 255, 0.3) !important;
+          stroke-width: 1.5px !important;
+          stroke-dasharray: 8 4 !important;
+          rx: 16px !important;
+          ry: 16px !important;
+          filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.08));
+        }
+        
+        .cluster text {
+          fill: #374151 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 700;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));
+        }
+        
+        /* State diagram */
+        .statediagram-state rect,
+        .statediagram-state .state-inner {
+          fill: rgba(255, 255, 255, 0.25) !important;
+          stroke: rgba(255, 255, 255, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          filter: drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15)) 
+                  drop-shadow(0 8px 32px rgba(0, 0, 0, 0.1));
+        }
+        
+        .stateLabel text {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));
+        }
+        
+        .transition {
+          stroke: rgba(139, 92, 246, 0.6) !important;
+          stroke-width: 2.5px !important;
+        }
+        
+        /* XYChart styles - Gradient glass palette */
+        .line-plot-0 path {
+          stroke: rgba(139, 92, 246, 0.8) !important;
+          stroke-width: 3px !important;
+          stroke-linecap: round;
+          filter: drop-shadow(0 2px 8px rgba(139, 92, 246, 0.4));
+        }
+        .line-plot-1 path {
+          stroke: rgba(236, 72, 153, 0.8) !important;
+          stroke-width: 3px !important;
+          stroke-linecap: round;
+          filter: drop-shadow(0 2px 8px rgba(236, 72, 153, 0.4));
+        }
+        .line-plot-2 path {
+          stroke: rgba(59, 130, 246, 0.8) !important;
+          stroke-width: 3px !important;
+          stroke-linecap: round;
+          filter: drop-shadow(0 2px 8px rgba(59, 130, 246, 0.4));
+        }
+        .bar-plot-0 rect {
+          fill: rgba(139, 92, 246, 0.25) !important;
+          stroke: rgba(139, 92, 246, 0.5) !important;
+          stroke-width: 1.5px !important;
+          rx: 8px !important;
+          filter: drop-shadow(0 4px 12px rgba(139, 92, 246, 0.2));
+        }
+        .bar-plot-1 rect {
+          fill: rgba(236, 72, 153, 0.25) !important;
+          stroke: rgba(236, 72, 153, 0.5) !important;
+          stroke-width: 1.5px !important;
+          rx: 8px !important;
+          filter: drop-shadow(0 4px 12px rgba(236, 72, 153, 0.2));
+        }
+        .bar-plot-2 rect {
+          fill: rgba(59, 130, 246, 0.25) !important;
+          stroke: rgba(59, 130, 246, 0.5) !important;
+          stroke-width: 1.5px !important;
+          rx: 8px !important;
+          filter: drop-shadow(0 4px 12px rgba(59, 130, 246, 0.2));
+        }
+        .ticks path {
+          stroke: rgba(255, 255, 255, 0.3) !important;
+        }
+        .chart-title text {
+          fill: #1F2937 !important;
+          font-weight: 700 !important;
+          font-size: 18px !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          filter: drop-shadow(0 2px 4px rgba(255, 255, 255, 0.8));
+        }
+        .left-axis .label text, .bottom-axis .label text {
+          fill: #374151 !important;
+          font-size: 13px !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));
+        }
+        .left-axis .title text, .bottom-axis .title text {
+          fill: #1F2937 !important;
+          font-size: 15px !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));
+        }
+        .legend text {
+          fill: #1F2937 !important;
+          font-size: 13px !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));
+        }
+        
+        /* Class Diagram */
+        .classGroup rect {
+          fill: rgba(255, 255, 255, 0.25) !important;
+          stroke: rgba(255, 255, 255, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          filter: drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15));
+        }
+        
+        .classLabel .label {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+        }
+        
+        .relationshipLine {
+          stroke: rgba(139, 92, 246, 0.6) !important;
+          stroke-width: 2px !important;
+        }
+        
+        .relationshipLabelBox {
+          fill: rgba(255, 255, 255, 0.85) !important;
+          stroke: rgba(139, 92, 246, 0.3) !important;
+          stroke-width: 1px !important;
+          rx: 6px !important;
+        }
+        
+        /* ER Diagram */
+        .er.entityBox {
+          fill: rgba(255, 255, 255, 0.25) !important;
+          stroke: rgba(255, 255, 255, 0.4) !important;
+          stroke-width: 1.5px !important;
+          rx: 12px !important;
+          filter: drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15));
+        }
+        
+        .er.relationshipLabelBox {
+          fill: rgba(255, 255, 255, 0.85) !important;
+          stroke: rgba(139, 92, 246, 0.3) !important;
+          stroke-width: 1px !important;
+          rx: 6px !important;
+        }
+        
+        .er.entityLabel,
+        .er.relationshipLabel {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+        }
+        
+        .er .relationshipLine {
+          stroke: rgba(139, 92, 246, 0.6) !important;
+          stroke-width: 2px !important;
+        }
+        
+        /* Gantt Chart */
+        .titleText {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 700;
+          filter: drop-shadow(0 2px 4px rgba(255, 255, 255, 0.8));
+        }
+        
+        .sectionTitle {
+          fill: #6B21A8 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 600;
+        }
+        
+        .taskText, .taskTextOutsideRight, .taskTextOutsideLeft {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 500;
+        }
+        
+        .task, .task0, .task1, .task2, .task3 {
+          fill: rgba(139, 92, 246, 0.3) !important;
+          stroke: rgba(139, 92, 246, 0.5) !important;
+          stroke-width: 1.5px !important;
+          rx: 8px !important;
+          filter: drop-shadow(0 2px 8px rgba(139, 92, 246, 0.2));
+        }
+        
+        .taskDone0, .taskDone1, .taskDone2, .taskDone3 {
+          fill: rgba(236, 72, 153, 0.3) !important;
+          stroke: rgba(236, 72, 153, 0.5) !important;
+        }
+        
+        /* Pie Chart */
+        .pieCircle {
+          stroke: rgba(255, 255, 255, 0.4) !important;
+          stroke-width: 2px !important;
+        }
+        
+        .pieTitleText {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 700;
+          filter: drop-shadow(0 2px 4px rgba(255, 255, 255, 0.8));
+        }
+        
+        .slice {
+          stroke: rgba(255, 255, 255, 0.6) !important;
+          stroke-width: 2px !important;
+          filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.1));
+        }
+        
+        .legendText {
+          fill: #1F2937 !important;
+          font-family: "SF Pro Display", "Inter", "Noto Sans SC", sans-serif;
+          font-weight: 500;
+        }
+      
+</style><style>#mermaid-1776712682616{font-family:"SF Pro Display","Inter","Noto Sans SC",-apple-system,sans-serif;font-size:15px;fill:#1F2937;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#mermaid-1776712682616 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#mermaid-1776712682616 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#mermaid-1776712682616 .error-icon{fill:rgba(59, 130, 246, 0.2);}#mermaid-1776712682616 .error-text{fill:rgba(196, 125, 9, 0.2);stroke:rgba(196, 125, 9, 0.2);}#mermaid-1776712682616 .edge-thickness-normal{stroke-width:1px;}#mermaid-1776712682616 .edge-thickness-thick{stroke-width:3.5px;}#mermaid-1776712682616 .edge-pattern-solid{stroke-dasharray:0;}#mermaid-1776712682616 .edge-thickness-invisible{stroke-width:0;fill:none;}#mermaid-1776712682616 .edge-pattern-dashed{stroke-dasharray:3;}#mermaid-1776712682616 .edge-pattern-dotted{stroke-dasharray:2;}#mermaid-1776712682616 .marker{fill:rgba(139, 92, 246, 0.6);stroke:rgba(139, 92, 246, 0.6);}#mermaid-1776712682616 .marker.cross{stroke:rgba(139, 92, 246, 0.6);}#mermaid-1776712682616 svg{font-family:"SF Pro Display","Inter","Noto Sans SC",-apple-system,sans-serif;font-size:15px;}#mermaid-1776712682616 p{margin:0;}#mermaid-1776712682616 .label{font-family:"SF Pro Display","Inter","Noto Sans SC",-apple-system,sans-serif;color:#1F2937;}#mermaid-1776712682616 .cluster-label text{fill:rgba(196, 125, 9, 0.2);}#mermaid-1776712682616 .cluster-label span{color:rgba(196, 125, 9, 0.2);}#mermaid-1776712682616 .cluster-label span p{background-color:transparent;}#mermaid-1776712682616 .label text,#mermaid-1776712682616 span{fill:#1F2937;color:#1F2937;}#mermaid-1776712682616 .node rect,#mermaid-1776712682616 .node circle,#mermaid-1776712682616 .node ellipse,#mermaid-1776712682616 .node polygon,#mermaid-1776712682616 .node path{fill:rgba(255, 255, 255, 0.25);stroke:rgba(255, 255, 255, 0.4);stroke-width:1px;}#mermaid-1776712682616 .rough-node .label text,#mermaid-1776712682616 .node .label text,#mermaid-1776712682616 .image-shape .label,#mermaid-1776712682616 .icon-shape .label{text-anchor:middle;}#mermaid-1776712682616 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#mermaid-1776712682616 .rough-node .label,#mermaid-1776712682616 .node .label,#mermaid-1776712682616 .image-shape .label,#mermaid-1776712682616 .icon-shape .label{text-align:center;}#mermaid-1776712682616 .node.clickable{cursor:pointer;}#mermaid-1776712682616 .root .anchor path{fill:rgba(139, 92, 246, 0.6)!important;stroke-width:0;stroke:rgba(139, 92, 246, 0.6);}#mermaid-1776712682616 .arrowheadPath{fill:rgba(0, 0, 0, 0.1);}#mermaid-1776712682616 .edgePath .path{stroke:rgba(139, 92, 246, 0.6);stroke-width:2.0px;}#mermaid-1776712682616 .flowchart-link{stroke:rgba(139, 92, 246, 0.6);fill:none;}#mermaid-1776712682616 .edgeLabel{background-color:rgba(236, 72, 153, 0.2);text-align:center;}#mermaid-1776712682616 .edgeLabel p{background-color:rgba(236, 72, 153, 0.2);}#mermaid-1776712682616 .edgeLabel rect{opacity:0.5;background-color:rgba(236, 72, 153, 0.2);fill:rgba(236, 72, 153, 0.2);}#mermaid-1776712682616 .labelBkg{background-color:rgba(236, 72, 153, 0.5);}#mermaid-1776712682616 .cluster rect{fill:rgba(59, 130, 246, 0.2);stroke:hsla(217.2192513369, 51.2195121951%, 49.8039215686%, 0.2);stroke-width:1px;}#mermaid-1776712682616 .cluster text{fill:rgba(196, 125, 9, 0.2);}#mermaid-1776712682616 .cluster span{color:rgba(196, 125, 9, 0.2);}#mermaid-1776712682616 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"SF Pro Display","Inter","Noto Sans SC",-apple-system,sans-serif;font-size:12px;background:rgba(59, 130, 246, 0.2);border:1px solid hsla(217.2192513369, 51.2195121951%, 49.8039215686%, 0.2);border-radius:2px;pointer-events:none;z-index:100;}#mermaid-1776712682616 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#1F2937;}#mermaid-1776712682616 rect.text{fill:none;stroke-width:0;}#mermaid-1776712682616 .icon-shape,#mermaid-1776712682616 .image-shape{background-color:rgba(236, 72, 153, 0.2);text-align:center;}#mermaid-1776712682616 .icon-shape p,#mermaid-1776712682616 .image-shape p{background-color:rgba(236, 72, 153, 0.2);padding:2px;}#mermaid-1776712682616 .icon-shape rect,#mermaid-1776712682616 .image-shape rect{opacity:0.5;background-color:rgba(236, 72, 153, 0.2);fill:rgba(236, 72, 153, 0.2);}#mermaid-1776712682616 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#mermaid-1776712682616 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#mermaid-1776712682616 .node rect,#mermaid-1776712682616 .node circle,#mermaid-1776712682616 .node polygon{fill:rgba(255, 255, 255, 0.25)!important;stroke:rgba(255, 255, 255, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;ry:12px!important;filter:drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15)) drop-shadow(0 8px 32px rgba(0, 0, 0, 0.1));}#mermaid-1776712682616 .node .label{font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;fill:#1F2937!important;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .edgePath .path{stroke:rgba(139, 92, 246, 0.6)!important;stroke-width:2.5px!important;stroke-linecap:round;filter:drop-shadow(0 2px 8px rgba(139, 92, 246, 0.3));}#mermaid-1776712682616 .arrowheadPath{fill:rgba(139, 92, 246, 0.6)!important;stroke:rgba(139, 92, 246, 0.6)!important;}#mermaid-1776712682616 .edgeLabel{color:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-size:13px;font-weight:500;}#mermaid-1776712682616 .edgeLabel rect{fill:rgba(255, 255, 255, 0.85)!important;stroke:rgba(139, 92, 246, 0.2)!important;stroke-width:1px!important;rx:6px!important;filter:drop-shadow(0 2px 6px rgba(0, 0, 0, 0.08));}#mermaid-1776712682616 .edgeLabel .label{fill:#1F2937!important;font-weight:500;}#mermaid-1776712682616 .actor{fill:rgba(255, 255, 255, 0.25)!important;stroke:rgba(255, 255, 255, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;ry:12px!important;filter:drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15)) drop-shadow(0 8px 32px rgba(0, 0, 0, 0.1));}#mermaid-1776712682616 .actor text{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .actor-line{stroke:rgba(139, 92, 246, 0.4)!important;stroke-width:2px!important;stroke-dasharray:8 4!important;stroke-linecap:round;}#mermaid-1776712682616 .activation0,#mermaid-1776712682616 .activation1,#mermaid-1776712682616 .activation2{fill:rgba(139, 92, 246, 0.15)!important;stroke:rgba(139, 92, 246, 0.5)!important;stroke-width:2px!important;filter:drop-shadow(0 4px 12px rgba(139, 92, 246, 0.2));}#mermaid-1776712682616 .messageLine0,#mermaid-1776712682616 .messageLine1{stroke:rgba(139, 92, 246, 0.6)!important;stroke-width:2.5px!important;stroke-linecap:round;filter:drop-shadow(0 2px 8px rgba(139, 92, 246, 0.3));}#mermaid-1776712682616 .messageText{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:500;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 #arrowhead path,#mermaid-1776712682616 .arrowheadPath{fill:rgba(139, 92, 246, 0.6)!important;stroke:rgba(139, 92, 246, 0.6)!important;}#mermaid-1776712682616 .note{fill:rgba(236, 72, 153, 0.2)!important;stroke:rgba(236, 72, 153, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;ry:12px!important;filter:drop-shadow(0 4px 16px rgba(236, 72, 153, 0.15)) drop-shadow(0 4px 24px rgba(0, 0, 0, 0.08));}#mermaid-1776712682616 .noteText{fill:#831843!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:500;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));}#mermaid-1776712682616 .labelBox{fill:rgba(59, 130, 246, 0.2)!important;stroke:rgba(59, 130, 246, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;ry:12px!important;filter:drop-shadow(0 4px 12px rgba(59, 130, 246, 0.15));}#mermaid-1776712682616 .labelText,#mermaid-1776712682616 .loopText{fill:#1E40AF!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));}#mermaid-1776712682616 .loopLine{stroke:rgba(59, 130, 246, 0.5)!important;stroke-width:1.5px!important;stroke-dasharray:8 4!important;}#mermaid-1776712682616 .cluster rect{fill:rgba(255, 255, 255, 0.15)!important;stroke:rgba(255, 255, 255, 0.3)!important;stroke-width:1.5px!important;stroke-dasharray:8 4!important;rx:16px!important;ry:16px!important;filter:drop-shadow(0 4px 24px rgba(0, 0, 0, 0.08));}#mermaid-1776712682616 .cluster text{fill:#374151!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:700;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .statediagram-state rect,#mermaid-1776712682616 .statediagram-state .state-inner{fill:rgba(255, 255, 255, 0.25)!important;stroke:rgba(255, 255, 255, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;filter:drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15)) drop-shadow(0 8px 32px rgba(0, 0, 0, 0.1));}#mermaid-1776712682616 .stateLabel text{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .transition{stroke:rgba(139, 92, 246, 0.6)!important;stroke-width:2.5px!important;}#mermaid-1776712682616 .line-plot-0 path{stroke:rgba(139, 92, 246, 0.8)!important;stroke-width:3px!important;stroke-linecap:round;filter:drop-shadow(0 2px 8px rgba(139, 92, 246, 0.4));}#mermaid-1776712682616 .line-plot-1 path{stroke:rgba(236, 72, 153, 0.8)!important;stroke-width:3px!important;stroke-linecap:round;filter:drop-shadow(0 2px 8px rgba(236, 72, 153, 0.4));}#mermaid-1776712682616 .line-plot-2 path{stroke:rgba(59, 130, 246, 0.8)!important;stroke-width:3px!important;stroke-linecap:round;filter:drop-shadow(0 2px 8px rgba(59, 130, 246, 0.4));}#mermaid-1776712682616 .bar-plot-0 rect{fill:rgba(139, 92, 246, 0.25)!important;stroke:rgba(139, 92, 246, 0.5)!important;stroke-width:1.5px!important;rx:8px!important;filter:drop-shadow(0 4px 12px rgba(139, 92, 246, 0.2));}#mermaid-1776712682616 .bar-plot-1 rect{fill:rgba(236, 72, 153, 0.25)!important;stroke:rgba(236, 72, 153, 0.5)!important;stroke-width:1.5px!important;rx:8px!important;filter:drop-shadow(0 4px 12px rgba(236, 72, 153, 0.2));}#mermaid-1776712682616 .bar-plot-2 rect{fill:rgba(59, 130, 246, 0.25)!important;stroke:rgba(59, 130, 246, 0.5)!important;stroke-width:1.5px!important;rx:8px!important;filter:drop-shadow(0 4px 12px rgba(59, 130, 246, 0.2));}#mermaid-1776712682616 .ticks path{stroke:rgba(255, 255, 255, 0.3)!important;}#mermaid-1776712682616 .chart-title text{fill:#1F2937!important;font-weight:700!important;font-size:18px!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;filter:drop-shadow(0 2px 4px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .left-axis .label text,#mermaid-1776712682616 .bottom-axis .label text{fill:#374151!important;font-size:13px!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));}#mermaid-1776712682616 .left-axis .title text,#mermaid-1776712682616 .bottom-axis .title text{fill:#1F2937!important;font-size:15px!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .legend text{fill:#1F2937!important;font-size:13px!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;filter:drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));}#mermaid-1776712682616 .classGroup rect{fill:rgba(255, 255, 255, 0.25)!important;stroke:rgba(255, 255, 255, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;filter:drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15));}#mermaid-1776712682616 .classLabel .label{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;}#mermaid-1776712682616 .relationshipLine{stroke:rgba(139, 92, 246, 0.6)!important;stroke-width:2px!important;}#mermaid-1776712682616 .relationshipLabelBox{fill:rgba(255, 255, 255, 0.85)!important;stroke:rgba(139, 92, 246, 0.3)!important;stroke-width:1px!important;rx:6px!important;}#mermaid-1776712682616 .er.entityBox{fill:rgba(255, 255, 255, 0.25)!important;stroke:rgba(255, 255, 255, 0.4)!important;stroke-width:1.5px!important;rx:12px!important;filter:drop-shadow(0 4px 16px rgba(139, 92, 246, 0.15));}#mermaid-1776712682616 .er.relationshipLabelBox{fill:rgba(255, 255, 255, 0.85)!important;stroke:rgba(139, 92, 246, 0.3)!important;stroke-width:1px!important;rx:6px!important;}#mermaid-1776712682616 .er.entityLabel,#mermaid-1776712682616 .er.relationshipLabel{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;}#mermaid-1776712682616 .er .relationshipLine{stroke:rgba(139, 92, 246, 0.6)!important;stroke-width:2px!important;}#mermaid-1776712682616 .titleText{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:700;filter:drop-shadow(0 2px 4px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .sectionTitle{fill:#6B21A8!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:600;}#mermaid-1776712682616 .taskText,#mermaid-1776712682616 .taskTextOutsideRight,#mermaid-1776712682616 .taskTextOutsideLeft{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:500;}#mermaid-1776712682616 .task,#mermaid-1776712682616 .task0,#mermaid-1776712682616 .task1,#mermaid-1776712682616 .task2,#mermaid-1776712682616 .task3{fill:rgba(139, 92, 246, 0.3)!important;stroke:rgba(139, 92, 246, 0.5)!important;stroke-width:1.5px!important;rx:8px!important;filter:drop-shadow(0 2px 8px rgba(139, 92, 246, 0.2));}#mermaid-1776712682616 .taskDone0,#mermaid-1776712682616 .taskDone1,#mermaid-1776712682616 .taskDone2,#mermaid-1776712682616 .taskDone3{fill:rgba(236, 72, 153, 0.3)!important;stroke:rgba(236, 72, 153, 0.5)!important;}#mermaid-1776712682616 .pieCircle{stroke:rgba(255, 255, 255, 0.4)!important;stroke-width:2px!important;}#mermaid-1776712682616 .pieTitleText{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:700;filter:drop-shadow(0 2px 4px rgba(255, 255, 255, 0.8));}#mermaid-1776712682616 .slice{stroke:rgba(255, 255, 255, 0.6)!important;stroke-width:2px!important;filter:drop-shadow(0 2px 8px rgba(0, 0, 0, 0.1));}#mermaid-1776712682616 .legendText{fill:#1F2937!important;font-family:"SF Pro Display","Inter","Noto Sans SC",sans-serif;font-weight:500;}#mermaid-1776712682616 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}#mermaid-1776712682616 .layer&gt;*{fill:transparent!important;stroke:#333!important;stroke-width:2px!important;stroke-dasharray:5 5!important;}#mermaid-1776712682616 .layer span{fill:transparent!important;stroke:#333!important;stroke-width:2px!important;stroke-dasharray:5 5!important;}#mermaid-1776712682616 .api&gt;*{fill:#e2e8f0!important;stroke:#0f172a!important;stroke-width:1px!important;}#mermaid-1776712682616 .api span{fill:#e2e8f0!important;stroke:#0f172a!important;stroke-width:1px!important;}#mermaid-1776712682616 .worker&gt;*{fill:#f1f5f9!important;stroke:#475569!important;stroke-width:1px!important;}#mermaid-1776712682616 .worker span{fill:#f1f5f9!important;stroke:#475569!important;stroke-width:1px!important;}#mermaid-1776712682616 .ai&gt;*{fill:#f0fdf4!important;stroke:#166534!important;stroke-width:1px!important;}#mermaid-1776712682616 .ai span{fill:#f0fdf4!important;stroke:#166534!important;stroke-width:1px!important;}#mermaid-1776712682616 .db&gt;*{fill:#fdf4ff!important;stroke:#701a75!important;stroke-width:1px!important;}#mermaid-1776712682616 .db span{fill:#fdf4ff!important;stroke:#701a75!important;stroke-width:1px!important;}</style><g><marker id="mermaid-1776712682616_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="mermaid-1776712682616_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="mermaid-1776712682616_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="mermaid-1776712682616_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="mermaid-1776712682616_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="mermaid-1776712682616_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster layer" id="Storage" data-look="classic"><rect style="fill:transparent !important;stroke:#333 !important;stroke-width:2px !important;stroke-dasharray:5 5 !important" x="2119.2265625" y="429.5" width="1578.22265625" height="548.3529510498047"/><g class="cluster-label" transform="translate(2858.923828125, 429.5)"><foreignObject width="98.828125" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Storage Layer</p></span></div></foreignObject></g></g><g class="cluster layer" id="Intelligence" data-look="classic"><rect style="fill:transparent !important;stroke:#333 !important;stroke-width:2px !important;stroke-dasharray:5 5 !important" x="8" y="820.4264755249023" width="994.7578125" height="157.42647552490234"/><g class="cluster-label" transform="translate(442.94921875, 820.4264755249023)"><foreignObject width="124.859375" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Intelligence Layer</p></span></div></foreignObject></g></g><g class="cluster layer" id="Orchestration" data-look="classic"><rect style="fill:transparent !important;stroke:#333 !important;stroke-width:2px !important;stroke-dasharray:5 5 !important" x="128.6015625" y="282.5" width="1970.625" height="448.92647552490234"/><g class="cluster-label" transform="translate(1044.0234375, 282.5)"><foreignObject width="139.78125" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Orchestration Layer</p></span></div></foreignObject></g></g><g class="cluster layer" id="Interface" data-look="classic"><rect style="fill:transparent !important;stroke:#333 !important;stroke-width:2px !important;stroke-dasharray:5 5 !important" x="808.9296875" y="8" width="1668.21875" height="205"/><g class="cluster-label" transform="translate(1589.65625, 8)"><foreignObject width="106.765625" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Interface Layer</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M1110.516,85.5L1110.516,85.5L1110.516,110.5L1110.516,110.5L1110.516,131.5L1110.516,131.5" id="L_SDK_API_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SDK_API_0" data-points="W3sieCI6MTExMC41MTU2MjUsInkiOjg1LjV9LHsieCI6MTExMC41MTU2MjUsInkiOjExMC41fSx7IngiOjExMTAuNTE1NjI1LCJ5IjoxMzUuNX1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1091.168,188L1081.955,188L1081.955,213L1072.742,213L1072.742,247.75L1072.742,247.75L1072.742,282.5L1072.742,282.5L1072.742,333.75L1072.742,333.75L1072.742,394.75L1072.742,394.75L1072.742,429.5L1072.742,429.5L1072.742,508.213L1072.742,508.213L1072.742,596.676L1072.742,596.676L1072.742,627.426L1072.742,627.426" id="L_API_RO_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_API_RO_0" data-points="W3sieCI6MTA5MS4xNjgyNTQ1NzMxNzA4LCJ5IjoxODh9LHsieCI6MTA3Mi43NDIxODc1LCJ5IjoyMTN9LHsieCI6MTA3Mi43NDIxODc1LCJ5IjoyNDcuNzV9LHsieCI6MTA3Mi43NDIxODc1LCJ5IjoyODIuNX0seyJ4IjoxMDcyLjc0MjE4NzUsInkiOjMzMy43NX0seyJ4IjoxMDcyLjc0MjE4NzUsInkiOjM5NC43NX0seyJ4IjoxMDcyLjc0MjE4NzUsInkiOjQyOS41fSx7IngiOjEwNzIuNzQyMTg3NSwieSI6NTA4LjIxMzIzNzc2MjQ1MTJ9LHsieCI6MTA3Mi43NDIxODc1LCJ5Ijo1OTYuNjc2NDc1NTI0OTAyM30seyJ4IjoxMDcyLjc0MjE4NzUsInkiOjYzMS40MjY0NzU1MjQ5MDIzfV0=" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1216.758,165.793L1836.953,165.793L1836.953,213L2457.148,213L2457.148,247.75L2457.148,247.75L2457.148,282.5L2457.148,282.5L2457.148,333.75L2457.148,333.75L2457.148,394.75L2457.148,394.75L2457.148,429.5L2457.148,429.5L2457.148,450.5L2457.148,450.5" id="L_API_SQLite_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_API_SQLite_0" data-points="W3sieCI6MTIxNi43NTc4MTI1LCJ5IjoxNjUuNzkzMzUzMjEzMTY0Nzh9LHsieCI6MjQ1Ny4xNDg0Mzc1LCJ5IjoyMTN9LHsieCI6MjQ1Ny4xNDg0Mzc1LCJ5IjoyNDcuNzV9LHsieCI6MjQ1Ny4xNDg0Mzc1LCJ5IjoyODIuNX0seyJ4IjoyNDU3LjE0ODQzNzUsInkiOjMzMy43NX0seyJ4IjoyNDU3LjE0ODQzNzUsInkiOjM5NC43NX0seyJ4IjoyNDU3LjE0ODQzNzUsInkiOjQyOS41fSx7IngiOjI0NTcuMTQ4NDM3NSwieSI6NDU0LjV9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1004.273,182.565L926.602,182.565L926.602,213L848.93,213L848.93,247.75L848.93,247.75L848.93,282.5L848.93,282.5L848.93,303.5L848.93,303.5" id="L_API_SM_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_API_SM_0" data-points="W3sieCI6MTAwNC4yNzM0Mzc1LCJ5IjoxODIuNTY1MDAzMTM1OTE5N30seyJ4Ijo4NDguOTI5Njg3NSwieSI6MjEzfSx7IngiOjg0OC45Mjk2ODc1LCJ5IjoyNDcuNzV9LHsieCI6ODQ4LjkyOTY4NzUsInkiOjI4Mi41fSx7IngiOjg0OC45Mjk2ODc1LCJ5IjozMDcuNX1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M942.742,677.913L555.672,677.913L555.672,731.426L168.602,731.426L168.602,775.926L168.602,775.926L168.602,820.426L168.602,820.426L168.602,868.89L168.602,868.89" id="L_RO_L0_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RO_L0_0" data-points="W3sieCI6OTQyLjc0MjE4NzUsInkiOjY3Ny45MTI5MDk0NjU5NzIxfSx7IngiOjE2OC42MDE1NjI1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4IjoxNjguNjAxNTYyNSwieSI6Nzc1LjkyNjQ3NTUyNDkwMjN9LHsieCI6MTY4LjYwMTU2MjUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjE2OC42MDE1NjI1LCJ5Ijo4NzIuODg5NzEzMjg3MzUzNX1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M942.742,693.713L843.84,693.713L843.84,731.426L744.938,731.426L744.938,775.926L744.938,775.926L744.938,820.426L654.001,820.426L654.001,873.901L563.064,873.901" id="L_RO_Core_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RO_Core_0" data-points="W3sieCI6OTQyLjc0MjE4NzUsInkiOjY5My43MTI1NzYyNDIyNjkzfSx7IngiOjc0NC45Mzc1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4Ijo3NDQuOTM3NSwieSI6Nzc1LjkyNjQ3NTUyNDkwMjN9LHsieCI6NzQ0LjkzNzUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjU1OS4yMjY1NjI1LCJ5Ijo4NzUuMDI5ODA3NDQzNDAyfV0=" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M957.242,706.426L918.742,706.426L918.742,731.426L880.242,731.426L880.242,775.926L880.242,775.926L880.242,820.426L880.242,820.426L880.242,868.89L880.242,868.89" id="L_RO_Frontier_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RO_Frontier_0" data-points="W3sieCI6OTU3LjI0MjE4NzUsInkiOjcwNi40MjY0NzU1MjQ5MDIzfSx7IngiOjg4MC4yNDIxODc1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4Ijo4ODAuMjQyMTg3NSwieSI6Nzc1LjkyNjQ3NTUyNDkwMjN9LHsieCI6ODgwLjI0MjE4NzUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjg4MC4yNDIxODc1LCJ5Ijo4NzIuODg5NzEzMjg3MzUzNX1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1562.742,674.455L1069.387,674.455L1069.387,731.426L576.031,731.426L576.031,775.926L576.031,775.926L576.031,820.426L544.668,820.426L544.668,870.397L513.305,870.397" id="L_IW_Core_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_IW_Core_0" data-points="W3sieCI6MTU2Mi43NDIxODc1LCJ5Ijo2NzQuNDU0NTU0ODI5NzIyMn0seyJ4Ijo1NzYuMDMxMjUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjU3Ni4wMzEyNSwieSI6Nzc1LjkyNjQ3NTUyNDkwMjN9LHsieCI6NTc2LjAzMTI1LCJ5Ijo4MjAuNDI2NDc1NTI0OTAyM30seyJ4Ijo1MTAuMTc2ODQwMjUwMDA1NywieSI6ODcyLjg4OTcxMzI4NzM1MzV9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1252.742,677.017L815.582,677.017L815.582,731.426L378.422,731.426L378.422,775.926L378.422,775.926L378.422,820.426L409.785,820.426L409.785,870.397L441.148,870.397" id="L_CW_Core_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_CW_Core_0" data-points="W3sieCI6MTI1Mi43NDIxODc1LCJ5Ijo2NzcuMDE2NTIzOTg3NDA0Mn0seyJ4IjozNzguNDIxODc1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4IjozNzguNDIxODc1LCJ5Ijo3NzUuOTI2NDc1NTI0OTAyM30seyJ4IjozNzguNDIxODc1LCJ5Ijo4MjAuNDI2NDc1NTI0OTAyM30seyJ4Ijo0NDQuMjc2Mjg0NzQ5OTk0MywieSI6ODcyLjg4OTcxMzI4NzM1MzV9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M742.297,345.199L511.555,345.199L511.555,394.75L280.813,394.75L280.813,429.5L280.813,429.5L280.813,508.213L280.813,508.213L280.813,596.676L280.813,596.676L280.813,668.926L280.813,668.926L280.813,731.426L280.813,731.426L280.813,775.926L280.813,775.926L280.813,820.426L344.412,820.426L344.412,871.402L408.012,871.402" id="L_SM_Core_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SM_Core_0" data-points="W3sieCI6NzQyLjI5Njg3NSwieSI6MzQ1LjE5OTQwMTExOTM3NzM0fSx7IngiOjI4MC44MTI1LCJ5IjozOTQuNzV9LHsieCI6MjgwLjgxMjUsInkiOjQyOS41fSx7IngiOjI4MC44MTI1LCJ5Ijo1MDguMjEzMjM3NzYyNDUxMn0seyJ4IjoyODAuODEyNSwieSI6NTk2LjY3NjQ3NTUyNDkwMjN9LHsieCI6MjgwLjgxMjUsInkiOjY2OC45MjY0NzU1MjQ5MDIzfSx7IngiOjI4MC44MTI1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4IjoyODAuODEyNSwieSI6Nzc1LjkyNjQ3NTUyNDkwMjN9LHsieCI6MjgwLjgxMjUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjQxMS43MjQ2MzA1ODYyNzQwMywieSI6ODcyLjg4OTcxMzI4NzM1MzV9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1066.123,706.426L1063.917,706.426L1063.917,731.426L1678.529,731.426L1678.529,775.926L2295.348,775.926L2295.348,820.426L2287.319,820.426L2287.319,853.767L2279.29,853.767" id="L_RO_Redis_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RO_Redis_0" data-points="W3sieCI6MTA2Ni4xMjM0Mzc1LCJ5Ijo3MDYuNDI2NDc1NTI0OTAyM30seyJ4IjoxMDYxLjcxMDkzNzUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjIyOTUuMzQ3NjU2MjUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjIyOTUuMzQ3NjU2MjUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjIyNzcuNTU0NjY0NDg5NDM0MywieSI6ODU3LjM3MDYxNDM5OTE2Mjh9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1202.742,679.687L1515.283,679.687L1515.283,731.426L2354.332,731.426L2354.332,775.926L2880.84,775.926L2880.84,820.426L2826.65,820.426L2826.65,874.603L2772.461,874.603" id="L_RO_Neo4j_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RO_Neo4j_0" data-points="W3sieCI6MTIwMi43NDIxODc1LCJ5Ijo2NzkuNjg2ODk1ODAyMDg2Nn0seyJ4IjoxODI3LjgyNDIxODc1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4IjoyODgwLjgzOTg0Mzc1LCJ5Ijo3NzUuOTI2NDc1NTI0OTAyM30seyJ4IjoyODgwLjgzOTg0Mzc1LCJ5Ijo4MjAuNDI2NDc1NTI0OTAyM30seyJ4IjoyNzY4Ljg4MjgxMjUsInkiOjg3Ni4zOTEyMjU1Njg3ODcxfV0=" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1202.742,677.453L1614.219,677.453L1614.219,731.426L2808.596,731.426L2808.596,775.926L3591.496,775.926L3591.496,820.426L3503.133,820.426L3503.133,885.932L3414.77,885.932" id="L_RO_FS_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RO_FS_0" data-points="W3sieCI6MTIwMi43NDIxODc1LCJ5Ijo2NzcuNDUyNjAzMTg3MjY3Nn0seyJ4IjoyMDI1LjY5NTMxMjUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjM1OTEuNDk2MDkzNzUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjM1OTEuNDk2MDkzNzUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjM0MTEuMDE5NTMxMjUsInkiOjg4Ny4zMjE4NTA5MzUxNjd9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M871.011,360L885.627,360L885.627,394.75L900.242,394.75L900.242,429.5L900.242,429.5L900.242,508.213L900.242,508.213L900.242,596.676L900.242,596.676L900.242,668.926L900.242,668.926L900.242,731.426L1549.207,731.426L1549.207,775.926L2198.172,775.926L2198.172,820.426L2210.706,820.426L2210.706,854.583L2223.239,854.583" id="L_SM_Redis_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SM_Redis_0" data-points="W3sieCI6ODcxLjAxMDg4NjI3MDQ5MTgsInkiOjM2MH0seyJ4Ijo5MDAuMjQyMTg3NSwieSI6Mzk0Ljc1fSx7IngiOjkwMC4yNDIxODc1LCJ5Ijo0MjkuNX0seyJ4Ijo5MDAuMjQyMTg3NSwieSI6NTA4LjIxMzIzNzc2MjQ1MTJ9LHsieCI6OTAwLjI0MjE4NzUsInkiOjU5Ni42NzY0NzU1MjQ5MDIzfSx7IngiOjkwMC4yNDIxODc1LCJ5Ijo2NjguOTI2NDc1NTI0OTAyM30seyJ4Ijo5MDAuMjQyMTg3NSwieSI6NzMxLjQyNjQ3NTUyNDkwMjN9LHsieCI6MjE5OC4xNzE4NzUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjIxOTguMTcxODc1LCJ5Ijo4MjAuNDI2NDc1NTI0OTAyM30seyJ4IjoyMjI1LjYwNTg0MzA4Njk0NTcsInkiOjg1Ny44MDgwNTIyMzY0NDIyfV0=" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M955.563,342.31L1282.186,342.31L1282.186,394.75L1608.809,394.75L1608.809,429.5L1977.237,429.5L1977.237,497.869L2345.666,497.869" id="L_SM_SQLite_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SM_SQLite_0" data-points="W3sieCI6OTU1LjU2MjUsInkiOjM0Mi4zMTAwNTAxNzI0Njc4N30seyJ4IjoxNjA4LjgwODU5Mzc1LCJ5IjozOTQuNzV9LHsieCI6MTYwOC44MDg1OTM3NSwieSI6NDI5LjV9LHsieCI6MjM0OS42NDg0Mzc1LCJ5Ijo0OTguMjM4ODQ3MDQ4ODY2OTR9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M2564.648,525.936L2779.195,525.936L2779.195,596.676L2375.981,596.676L2375.981,663.53L1758.221,663.53" id="L_SQLite_IW_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SQLite_IW_0" data-points="W3sieCI6MjU2NC42NDg0Mzc1LCJ5Ijo1MjUuOTM1NzY2MzIyMzk3Mn0seyJ4IjoyOTkzLjc0MjE4NzUsInkiOjU5Ni42NzY0NzU1MjQ5MDIzfSx7IngiOjE3NTQuMjI2NTYyNSwieSI6NjYzLjc0NTkyMzEzODYwMDZ9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M2349.648,533.028L2286.35,533.028L2286.35,596.676L1869.889,596.676L1869.889,657.406L1516.727,657.406" id="L_SQLite_CW_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SQLite_CW_0" data-points="W3sieCI6MjM0OS42NDg0Mzc1LCJ5Ijo1MzMuMDI3NjIzNDE3NjE4OH0seyJ4IjoyMjIzLjA1MDc4MTI1LCJ5Ijo1OTYuNjc2NDc1NTI0OTAyM30seyJ4IjoxNTEyLjc0MjE4NzUsInkiOjY1Ny43NDkwMzQyMDE3Mjc3fV0=" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M2564.648,522.089L2853.586,522.089L2853.586,596.676L2605.371,596.676L2605.371,660.914L2068.219,660.914" id="L_SQLite_RW_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SQLite_RW_0" data-points="W3sieCI6MjU2NC42NDg0Mzc1LCJ5Ijo1MjIuMDg4NTU4NjU4OTg3NH0seyJ4IjozMTQyLjUyMzQzNzUsInkiOjU5Ni42NzY0NzU1MjQ5MDIzfSx7IngiOjIwNjQuMjI2NTYyNSwieSI6NjYxLjE1MzEzNzUzNjI1NjJ9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1754.227,686.161L1879.961,686.161L1879.961,731.426L2707.186,731.426L2707.186,775.926L3408.676,775.926L3408.676,820.426L3388.532,820.426L3388.532,857.349L3368.388,857.349" id="L_IW_FS_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_IW_FS_0" data-points="W3sieCI6MTc1NC4yMjY1NjI1LCJ5Ijo2ODYuMTYwNjI5Mzg0OTAyOH0seyJ4IjoyMDA1LjY5NTMxMjUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjM0MDguNjc1NzgxMjUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjM0MDguNjc1NzgxMjUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjMzNjUuNDM5Mjg3NDI4NzY0LCJ5Ijo4NjAuMDUxMDc5MTE3MjA4OX1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1674.349,695.176L1685.304,695.176L1685.304,731.426L2209.311,731.426L2209.311,775.926L2722.363,775.926L2722.363,820.426L2713.867,820.426L2713.867,843.441L2705.371,843.441" id="L_IW_Neo4j_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_IW_Neo4j_0" data-points="W3sieCI6MTY3NC4zNDkyMTg3NSwieSI6Njk1LjE3NjQ3NTUyNDkwMjN9LHsieCI6MTY5Ni4yNTc4MTI1LCJ5Ijo3MzEuNDI2NDc1NTI0OTAyM30seyJ4IjoyNzIyLjM2MzI4MTI1LCJ5Ijo3NzUuOTI2NDc1NTI0OTAyM30seyJ4IjoyNzIyLjM2MzI4MTI1LCJ5Ijo4MjAuNDI2NDc1NTI0OTAyM30seyJ4IjoyNzAyLjk5NTM2MDkwOTE5NSwieSI6ODQ2LjY1ODkyMzg1MzY3MjN9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1754.227,659.447L2071.223,659.447L2071.223,596.676L2400.555,596.676L2400.555,563.876L2412.891,563.876" id="L_IW_SQLite_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_IW_SQLite_0" data-points="W3sieCI6MTc1NC4yMjY1NjI1LCJ5Ijo2NTkuNDQ3MTcyODAzNDQ5OH0seyJ4IjoyMzg4LjIxODc1LCJ5Ijo1OTYuNjc2NDc1NTI0OTAyM30seyJ4IjoyNDE1LjI5NTYwOTI4MzE0MiwieSI6NTYwLjY3OTE0MjIyMjMzNn1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1512.742,682.402L1749.219,682.402L1749.219,731.426L2606.514,731.426L2606.514,775.926L3227.332,775.926L3227.332,820.426L3247.476,820.426L3247.476,857.349L3267.62,857.349" id="L_CW_FS_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_CW_FS_0" data-points="W3sieCI6MTUxMi43NDIxODc1LCJ5Ijo2ODIuNDAxODE4MjM5MTQ3NH0seyJ4IjoxOTg1LjY5NTMxMjUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjMyMjcuMzMyMDMxMjUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjMyMjcuMzMyMDMxMjUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjMyNzAuNTY4NTI1MDcxMjM2LCJ5Ijo4NjAuMDUxMDc5MTE3MjA4OX1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1405.406,706.426L1412.961,706.426L1412.961,731.426L2004.686,731.426L2004.686,775.926L2588.855,775.926L2588.855,820.426L2599.069,820.426L2599.069,844.169L2609.282,844.169" id="L_CW_Neo4j_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_CW_Neo4j_0" data-points="W3sieCI6MTQwNS40MDYyNSwieSI6NzA2LjQyNjQ3NTUyNDkwMjN9LHsieCI6MTQyMC41MTU2MjUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjI1ODguODU1NDY4NzUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjI1ODguODU1NDY4NzUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjI2MTEuODkwNzc1NzEwOTcxNCwieSI6ODQ3LjIwMTU0OTk2MDI2MjF9XQ==" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1953.108,706.426L1959.402,706.426L1959.402,731.426L2510.439,731.426L2510.439,775.926L3055.184,775.926L3055.184,820.426L3138.221,820.426L3138.221,884.789L3221.259,884.789" id="L_RW_FS_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RW_FS_0" data-points="W3sieCI6MTk1My4xMDc4MTI1LCJ5Ijo3MDYuNDI2NDc1NTI0OTAyM30seyJ4IjoxOTY1LjY5NTMxMjUsInkiOjczMS40MjY0NzU1MjQ5MDIzfSx7IngiOjMwNTUuMTgzNTkzNzUsInkiOjc3NS45MjY0NzU1MjQ5MDIzfSx7IngiOjMwNTUuMTgzNTkzNzUsInkiOjgyMC40MjY0NzU1MjQ5MDIzfSx7IngiOjMyMjQuOTg4MjgxMjUsInkiOjg4Ni4yMzQ4MjMzNTU3NjE5fV0=" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/><path d="M1804.227,681.077L1534.871,681.077L1534.871,731.426L1852.498,731.426L1852.498,775.926L2439.48,775.926L2439.48,820.426L2494.888,820.426L2494.888,875.048L2550.295,875.048" id="L_RW_Neo4j_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RW_Neo4j_0" data-points="W3sieCI6MTgwNC4yMjY1NjI1LCJ5Ijo2ODEuMDc2NzE3OTQ1NjA0NX0seyJ4IjoxMjY1LjUxNTYyNSwieSI6NzMxLjQyNjQ3NTUyNDkwMjN9LHsieCI6MjQzOS40ODA0Njg3NSwieSI6Nzc1LjkyNjQ3NTUyNDkwMjN9LHsieCI6MjQzOS40ODA0Njg3NSwieSI6ODIwLjQyNjQ3NTUyNDkwMjN9LHsieCI6MjU1My44ODI4MTI1LCJ5Ijo4NzYuODE2MTE4MjIwMDY2Nn1d" marker-end="url(#mermaid-1776712682616_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_SDK_API_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(1072.7421875, 394.75)"><g class="label" data-id="L_API_RO_0" transform="translate(-45.6484375, -9.75)"><foreignObject width="91.296875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>POST /query</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2457.1484375, 333.75)"><g class="label" data-id="L_API_SQLite_0" transform="translate(-47.3671875, -9.75)"><foreignObject width="94.734375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>POST /ingest</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(848.9296875, 247.75)"><g class="label" data-id="L_API_SM_0" transform="translate(-72.3515625, -9.75)"><foreignObject width="144.703125" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Session Commands</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(168.6015625, 775.9264755249023)"><g class="label" data-id="L_RO_L0_0" transform="translate(-44.4296875, -9.75)"><foreignObject width="88.859375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Binary Gate</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(744.9375, 775.9264755249023)"><g class="label" data-id="L_RO_Core_0" transform="translate(-48.90625, -9.75)"><foreignObject width="97.8125" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Plan &amp; Judge</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(880.2421875, 775.9264755249023)"><g class="label" data-id="L_RO_Frontier_0" transform="translate(-66.3984375, -9.75)"><foreignObject width="132.796875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Generate Answer</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(576.03125, 775.9264755249023)"><g class="label" data-id="L_IW_Core_0" transform="translate(-100, -19.5)"><foreignObject width="200" height="39"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="edgeLabel"><p>Write-Path Gate, S-R-O, Link</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(378.421875, 775.9264755249023)"><g class="label" data-id="L_CW_Core_0" transform="translate(-77.609375, -9.75)"><foreignObject width="155.21875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Atomize &amp; Normalize</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(280.8125, 596.6764755249023)"><g class="label" data-id="L_SM_Core_0" transform="translate(-68.0859375, -9.75)"><foreignObject width="136.171875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Compact Context</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2295.34765625, 775.9264755249023)"><g class="label" data-id="L_RO_Redis_0" transform="translate(-56.4609375, -9.75)"><foreignObject width="112.921875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Fetch context</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2880.83984375, 775.9264755249023)"><g class="label" data-id="L_RO_Neo4j_0" transform="translate(-86.671875, -9.75)"><foreignObject width="173.34375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Cypher/Vector Search</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(3591.49609375, 775.9264755249023)"><g class="label" data-id="L_RO_FS_0" transform="translate(-85.953125, -9.75)"><foreignObject width="171.90625" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Read files &amp; overviews</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(900.2421875, 596.6764755249023)"><g class="label" data-id="L_SM_Redis_0" transform="translate(-80.984375, -9.75)"><foreignObject width="161.96875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Manage active turns</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(1608.80859375, 394.75)"><g class="label" data-id="L_SM_SQLite_0" transform="translate(-92.71875, -9.75)"><foreignObject width="185.4375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Flush uningested turns</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2993.7421875, 596.6764755249023)"><g class="label" data-id="L_SQLite_IW_0" transform="translate(-50.03125, -9.75)"><foreignObject width="100.0625" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Polls events</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2223.05078125, 596.6764755249023)"><g class="label" data-id="L_SQLite_CW_0" transform="translate(-45.1484375, -9.75)"><foreignObject width="90.296875" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Polls tasks</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(3142.5234375, 596.6764755249023)"><g class="label" data-id="L_SQLite_RW_0" transform="translate(-78.75, -9.75)"><foreignObject width="157.5" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Scans stuck outbox</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(3408.67578125, 775.9264755249023)"><g class="label" data-id="L_IW_FS_0" transform="translate(-76.8671875, -9.75)"><foreignObject width="153.734375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Authoritative Write</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2722.36328125, 775.9264755249023)"><g class="label" data-id="L_IW_Neo4j_0" transform="translate(-51.8046875, -9.75)"><foreignObject width="103.609375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Dedup &amp; Index</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2388.21875, 596.6764755249023)"><g class="label" data-id="L_IW_SQLite_0" transform="translate(-89.890625, -9.75)"><foreignObject width="179.78125" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Enqueue Consolidation</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(3227.33203125, 775.9264755249023)"><g class="label" data-id="L_CW_FS_0" transform="translate(-84.4765625, -9.75)"><foreignObject width="168.953125" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Regenerate Manifests</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2588.85546875, 775.9264755249023)"><g class="label" data-id="L_CW_Neo4j_0" transform="translate(-61.703125, -9.75)"><foreignObject width="123.40625" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Integrate Edges</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(3055.18359375, 775.9264755249023)"><g class="label" data-id="L_RW_FS_0" transform="translate(-67.671875, -9.75)"><foreignObject width="135.34375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Idempotent Retry</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(2439.48046875, 775.9264755249023)"><g class="label" data-id="L_RW_Neo4j_0" transform="translate(-67.671875, -9.75)"><foreignObject width="135.34375" height="19.5"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>Idempotent Retry</p></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default api" id="flowchart-SDK-0" transform="translate(1110.515625, 59.25)"><rect class="basic label-container" style="fill:#e2e8f0 !important;stroke:#0f172a !important;stroke-width:1px !important" x="-82.2421875" y="-26.25" width="164.484375" height="52.5"/><g class="label" style="" transform="translate(-52.2421875, -11.25)"><rect/><foreignObject width="104.484375" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Python SDK</p></span></div></foreignObject></g></g><g class="node default api" id="flowchart-API-1" transform="translate(1110.515625, 161.75)"><rect class="basic label-container" style="fill:#e2e8f0 !important;stroke:#0f172a !important;stroke-width:1px !important" x="-106.2421875" y="-26.25" width="212.484375" height="52.5"/><g class="label" style="" transform="translate(-76.2421875, -11.25)"><rect/><foreignObject width="152.484375" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>REST API (FastAPI)</p></span></div></foreignObject></g></g><g class="node default worker" id="flowchart-RO-4" transform="translate(1072.7421875, 668.9264755249023)"><rect class="basic label-container" style="fill:#f1f5f9 !important;stroke:#475569 !important;stroke-width:1px !important" x="-130" y="-37.5" width="260" height="75"/><g class="label" style="" transform="translate(-100, -22.5)"><rect/><foreignObject width="200" height="45"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Retrieval Orchestrator</p></span></div></foreignObject></g></g><g class="node default worker" id="flowchart-SM-5" transform="translate(848.9296875, 333.75)"><rect class="basic label-container" style="fill:#f1f5f9 !important;stroke:#475569 !important;stroke-width:1px !important" x="-106.6328125" y="-26.25" width="213.265625" height="52.5"/><g class="label" style="" transform="translate(-76.6328125, -11.25)"><rect/><foreignObject width="153.265625" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Session Manager</p></span></div></foreignObject></g></g><g class="node default worker" id="flowchart-IW-6" transform="translate(1658.484375, 668.9264755249023)"><rect class="basic label-container" style="fill:#f1f5f9 !important;stroke:#475569 !important;stroke-width:1px !important" x="-95.7421875" y="-26.25" width="191.484375" height="52.5"/><g class="label" style="" transform="translate(-65.7421875, -11.25)"><rect/><foreignObject width="131.484375" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Ingest Worker</p></span></div></foreignObject></g></g><g class="node default worker" id="flowchart-CW-7" transform="translate(1382.7421875, 668.9264755249023)"><rect class="basic label-container" style="fill:#f1f5f9 !important;stroke:#475569 !important;stroke-width:1px !important" x="-130" y="-37.5" width="260" height="75"/><g class="label" style="" transform="translate(-100, -22.5)"><rect/><foreignObject width="200" height="45"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Consolidation Worker</p></span></div></foreignObject></g></g><g class="node default worker" id="flowchart-RW-8" transform="translate(1934.2265625, 668.9264755249023)"><rect class="basic label-container" style="fill:#f1f5f9 !important;stroke:#475569 !important;stroke-width:1px !important" x="-130" y="-37.5" width="260" height="75"/><g class="label" style="" transform="translate(-100, -22.5)"><rect/><foreignObject width="200" height="45"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Reconciliation Worker</p></span></div></foreignObject></g></g><g class="node default ai" id="flowchart-L0-9" transform="translate(168.6015625, 899.1397132873535)"><rect class="basic label-container" style="fill:#f0fdf4 !important;stroke:#166534 !important;stroke-width:1px !important" x="-125.6015625" y="-26.25" width="251.203125" height="52.5"/><g class="label" style="" transform="translate(-95.6015625, -11.25)"><rect/><foreignObject width="191.203125" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Gating Classifier (L0)</p></span></div></foreignObject></g></g><g class="node default ai" id="flowchart-Core-10" transform="translate(477.2265625, 899.1397132873535)"><rect class="basic label-container" style="fill:#f0fdf4 !important;stroke:#166534 !important;stroke-width:1px !important" x="-82" y="-26.25" width="164" height="52.5"/><g class="label" style="" transform="translate(-52, -11.25)"><rect/><foreignObject width="104" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Core Model</p></span></div></foreignObject></g></g><g class="node default ai" id="flowchart-Frontier-11" transform="translate(880.2421875, 899.1397132873535)"><rect class="basic label-container" style="fill:#f0fdf4 !important;stroke:#166534 !important;stroke-width:1px !important" x="-87.515625" y="-26.25" width="175.03125" height="52.5"/><g class="label" style="" transform="translate(-57.515625, -11.25)"><rect/><foreignObject width="115.03125" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Frontier LLM</p></span></div></foreignObject></g></g><g class="node default db" id="flowchart-Redis-12" transform="translate(2257.1171875, 899.1397132873535)"><path d="M0,15.552668871043931 a102.890625,15.552668871043931 0,0,0 205.78125,0 a102.890625,15.552668871043931 0,0,0 -205.78125,0 l0,53.052668871043934 a102.890625,15.552668871043931 0,0,0 205.78125,0 l0,-53.052668871043934" class="basic label-container" style="fill:#fdf4ff !important;stroke:#701a75 !important;stroke-width:1px !important" transform="translate(-102.890625, -42.079003306565895)"/><g class="label" style="" transform="translate(-95.390625, -1.25)"><rect/><foreignObject width="190.78125" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Session Cache (Redis)</p></span></div></foreignObject></g></g><g class="node default db" id="flowchart-SQLite-13" transform="translate(2457.1484375, 508.2132377624512)"><path d="M0,15.808823529411764 a107.5,15.808823529411764 0,0,0 215,0 a107.5,15.808823529411764 0,0,0 -215,0 l0,75.80882352941177 a107.5,15.808823529411764 0,0,0 215,0 l0,-75.80882352941177" class="basic label-container" style="fill:#fdf4ff !important;stroke:#701a75 !important;stroke-width:1px !important" transform="translate(-107.5, -53.71323529411765)"/><g class="label" style="" transform="translate(-100, -12.5)"><rect/><foreignObject width="200" height="45"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Control Plane (SQLite)</p></span></div></foreignObject></g></g><g class="node default db" id="flowchart-Neo4j-14" transform="translate(2661.3828125, 899.1397132873535)"><path d="M0,15.808823529411764 a107.5,15.808823529411764 0,0,0 215,0 a107.5,15.808823529411764 0,0,0 -215,0 l0,75.80882352941177 a107.5,15.808823529411764 0,0,0 215,0 l0,-75.80882352941177" class="basic label-container" style="fill:#fdf4ff !important;stroke:#701a75 !important;stroke-width:1px !important" transform="translate(-107.5, -53.71323529411765)"/><g class="label" style="" transform="translate(-100, -12.5)"><rect/><foreignObject width="200" height="45"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Knowledge Graph (Neo4j)</p></span></div></foreignObject></g></g><g class="node default db" id="flowchart-FS-15" transform="translate(3318.00390625, 899.1397132873535)"><path d="M0,14.952778056867276 a93.015625,14.952778056867276 0,0,0 186.03125,0 a93.015625,14.952778056867276 0,0,0 -186.03125,0 l0,52.452778056867274 a93.015625,14.952778056867276 0,0,0 186.03125,0 l0,-52.452778056867274" class="basic label-container" style="fill:#fdf4ff !important;stroke:#701a75 !important;stroke-width:1px !important" transform="translate(-93.015625, -41.17916708530091)"/><g class="label" style="" transform="translate(-85.515625, -1.25)"><rect/><foreignObject width="171.03125" height="22.5"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Filesystem (mem://)</p></span></div></foreignObject></g></g></g></g></g></svg>

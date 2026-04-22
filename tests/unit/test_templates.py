@@ -1,0 +1,42 @@
+import pytest
+
+from engram.retrieval import templates
+
+
+def test_available_templates_cover_spec():
+    """§16.3 lists 8 Cypher template files. Ensure we have them."""
+    expected = {
+        "t_children_of",
+        "t_neighbours_by_relation",
+        "t_path_between",
+        "t_temporal_filter",
+        "t_history_chain",
+        "t_find_by_uri_prefix",
+        "t_cross_references",
+        "t_top_k_vector",
+    }
+    assert set(templates.available_templates()) == expected
+
+
+def test_unknown_template_raises():
+    with pytest.raises(templates.TemplateError):
+        templates.run_template(None, "t_evil", {})  # type: ignore[arg-type]
+
+
+def test_missing_required_params_raises():
+    with pytest.raises(templates.TemplateError) as excinfo:
+        templates.run_template(None, "t_children_of", {"limit": 5})  # type: ignore[arg-type]
+    assert "uri" in str(excinfo.value)
+
+
+def test_hops_clamp_applied():
+    class DummyNeo:
+        def run_template(self, cypher, params, timeout_s=None):  # noqa: ARG002
+            return [params]
+
+    out = templates.run_template(
+        DummyNeo(),  # type: ignore[arg-type]
+        "t_neighbours_by_relation",
+        {"node_uri": "mem://x", "hops": 99, "relation": "works_at"},
+    )
+    assert out[0]["hops"] == 4

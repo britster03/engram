@@ -1,0 +1,102 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "title": "Query throughput",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(engram_query_latency_seconds_count{phase=\"total\"}[1m]))",
+          "legendFormat": "qps"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "title": "Ingest throughput",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(engram_ingest_events_total[1m]))",
+          "legendFormat": "events/s"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "title": "Query p95 latency",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(engram_query_latency_seconds_bucket{phase=\"total\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(engram_query_latency_seconds_bucket{phase=\"total\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "title": "Consolidation queue depth",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "engram_consolidation_queue_depth"}
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 4}
+    },
+    {
+      "title": "L0 gate decisions",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (decision) (rate(engram_l0_gate_decisions[5m]))",
+          "legendFormat": "{{decision}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10}
+    },
+    {
+      "title": "Predicted vs reached depth",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (predicted, reached) (rate(engram_query_depth_predicted_vs_reached[5m]))",
+          "legendFormat": "{{predicted}}→{{reached}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10}
+    },
+    {
+      "title": "Frontier re-entries",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.9, sum(rate(engram_reentries_per_query_bucket[5m])) by (le))",
+          "legendFormat": "p90"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 18}
+    },
+    {
+      "title": "KG size",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "engram_kg_node_count", "legendFormat": "nodes"},
+        {"expr": "engram_kg_edge_count", "legendFormat": "edges"}
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 18}
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["engram"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Engram",
+  "uid": "engram-main",
+  "version": 1
+}

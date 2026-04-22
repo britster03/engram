@@ -1,0 +1,87 @@
+groups:
+  - name: engram-availability
+    interval: 30s
+    rules:
+      - alert: EngramInstanceDown
+        expr: up{job="engram"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Engram is not scrapable"
+          description: "Engram has been unreachable for 2+ minutes."
+
+      - alert: EngramNotReady
+        expr: sum by (instance) (rate(engram_ingest_events_total[1m])) == 0
+              and sum by (instance) (rate(engram_query_latency_seconds_count[1m])) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Engram has processed no traffic for 10m"
+          description: "Either all traffic has stopped or /ingest+/query paths are broken."
+
+  - name: engram-ingest
+    interval: 30s
+    rules:
+      - alert: EngramIngestFailureSpike
+        expr: |
+          (
+            sum(rate(engram_ingest_events_total{final_status="FAILED"}[5m]))
+            / clamp_min(sum(rate(engram_ingest_events_total[5m])), 0.01)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingest failure rate > 5% over 5m"
+          description: "Check engram logs for schema_violation / CoreModelError."
+
+      - alert: EngramConsolidationQueueBacklog
+        expr: engram_consolidation_queue_depth > 5000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consolidation queue backlog > 5000"
+          description: "Ingest will start returning 503 at max_backlog (10000)."
+
+      - alert: EngramIngestBackpressure
+        expr: rate(engram_ingest_events_total[1m]) == 0
+              and engram_consolidation_queue_depth > 8000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingest stopped while consolidation queue is saturated"
+
+  - name: engram-retrieval
+    interval: 30s
+    rules:
+      - alert: EngramShallowBiasMiss
+        expr: |
+          (
+            sum(rate(engram_query_depth_predicted_vs_reached{predicted="L1",reached=~"L3|L4"}[10m]))
+            / clamp_min(sum(rate(engram_query_depth_predicted_vs_reached[10m])), 0.01)
+          ) > 0.15
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Core Model under-predicting cascade depth > 15% (SDD §14.2.5 alarm)"
+
+      - alert: EngramFrontierReentryRate
+        expr: histogram_quantile(0.9, sum(rate(engram_reentries_per_query_bucket[10m])) by (le)) > 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p90 frontier re-entries per query > 1 (missing coverage)"
+
+      - alert: EngramQueryLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(engram_query_latency_seconds_bucket{phase="total"}[5m])) by (le)) > 8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Query p95 latency > 8s"

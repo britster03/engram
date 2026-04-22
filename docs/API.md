@@ -1,0 +1,285 @@
+# REST API
+
+Every endpoint except `/api/v1/health` and `/metrics` requires:
+
+```
+Authorization: Bearer ${ENGRAM_API_KEY}
+```
+
+All bodies are JSON. Errors follow the FastAPI convention:
+
+```json
+{ "detail": "..." }
+```
+
+429 responses include a `Retry-After` header (integer seconds).
+503 responses include a `Retry-After` header when the consolidation queue
+is saturated (§7.5 backpressure).
+
+## Health / Config
+
+### `GET /api/v1/health`
+
+No auth. Returns per-component readiness.
+
+```json
+{
+  "status": "healthy",
+  "components": {
+    "sqlite": true,
+    "neo4j": true,
+    "redis": true,
+    "filesystem": true
+  }
+}
+```
+
+### `GET /api/v1/config`
+
+Returns non-sensitive config subset so clients can introspect the
+cascade / model settings.
+
+```json
+{
+  "retrieval": { "max_depth": "L4", "max_reentries": 2, ... },
+  "core_model": { "provider": "anthropic", "model_path": "claude-sonnet-4-6" },
+  "frontier_llm": { "provider": "anthropic", "model_path": "claude-sonnet-4-6" }
+}
+```
+
+## Ingest
+
+### `POST /api/v1/ingest`
+
+```json
+{
+  "session_id": "sess-abc-123",                       // optional
+  "turn_pair": {
+    "user": { "content": "I just started a new job at Meta.",
+              "timestamp": "2026-04-12T10:28:00Z", "turn_idx": 14 },
+    "assistant": { "content": "Congratulations! What team are you on?",
+                   "timestamp": "2026-04-12T10:28:05Z", "turn_idx": 15 }
+  },
+  "source": "client",                                  // default "client"
+  "session_summary": "...",                            // optional, aids gating
+  "session_context": "..."                             // optional, aids extraction
+}
+```
+
+Response — 202 Accepted:
+
+```json
+{
+  "event_id": "evt-0194...",
+  "pair_id": "d3a1f...-sha256",
+  "status": "RECEIVED"
+}
+```
+
+Ingest is **idempotent** by `pair_id = sha256(session_id || user_idx || assistant_idx)`.
+Duplicate submissions return the existing event_id without re-processing.
+
+#### Turn groups (§5.2)
+
+For tool-using agents, submit a `turn_group` instead of a `turn_pair`:
+
+```json
+{
+  "session_id": "sess-abc-123",
+  "turn_group": {
+    "user": { "content": "...", "turn_idx": 14 },
+    "assistant": { "content": "(final response)", "turn_idx": 17 },
+    "intermediate": [
+      { "content": "(tool_call)", "tool_calls": [{...}] },
+      { "content": "(tool_result)", "tool_results": [{...}] }
+    ]
+  }
+}
+```
+
+The pair fed to the gate/extract pipeline is `user` + `assistant`.
+Intermediate turns are preserved in the event payload for provenance.
+
+### `POST /api/v1/ingest/batch`
+
+Accepts up to 100 IngestRequest objects in a single call. Each is processed
+independently; response is 202 with a list of per-item results.
+
+## Query
+
+### `POST /api/v1/query`
+
+```json
+{
+  "session_id": "sess-abc-123",    // optional
+  "query": "What project is Alice working on?",
+  "session_context": "...",        // optional explicit override
+  "max_depth": "L4",               // optional, default from config
+  "max_reentries": 2               // optional, default from config
+}
+```
+
+Response — 200 OK:
+
+```json
+{
+  "answer": "Alice is working on Project Atlas, a distributed ML pipeline.",
+  "session_id": "sess-abc-123",
+  "retrieval_metadata": {
+    "cascade_depth_reached": "L2",
+    "levels_visited": ["L0", "L1", "L2"],
+    "predicted_depth": "L2",
+    "nodes_retrieved": 3,
+    "total_context_tokens": 1842,
+    "reentries": 0,
+    "l0_decision": "CONTINUE",
+    "l0_reason": "regex:\\bmy\\s+(wife|husband|partner…",
+    "latency_ms": {
+      "l0_gate": 18,
+      "l1_plan": 1120,
+      "l1_execute": 43,
+      "l2_plan": 980,
+      "l2_execute": 65,
+      "msc_assembly": 15,
+      "frontier_answer_0": 2430,
+      "total": 4671
+    }
+  }
+}
+```
+
+## Sessions
+
+### `POST /api/v1/sessions` — create
+
+Response — 201: `{ "session_id": "sess-...", "status": "ACTIVE" }`
+
+### `GET /api/v1/sessions/{id}` — state
+
+```json
+{
+  "session_id": "sess-abc-123",
+  "status": "ACTIVE",
+  "turn_count": 12,
+  "created_at": "...",
+  "compacted_turns": 0,
+  "key_facts": ["user moved to NYC"]
+}
+```
+
+### `DELETE /api/v1/sessions/{id}` — end
+
+Triggers `COMMITTING → COMMITTED`. Drains remaining turns into the ingest
+pipeline, writes a SESSION_SUMMARY node, deletes the Redis key.
+
+### `POST /api/v1/sessions/{id}/message`
+
+Combined ingest + session update. Body: `{ "user": "...", "assistant": "..." }`.
+
+Response — 202: `{ "event_id": "...", "pair_id": "...", "needs_compaction": false }`.
+
+If `needs_compaction=true`, a background compaction task is already
+scheduled.
+
+### `POST /api/v1/sessions/{id}/compact` — force compaction
+
+Response: `{ "session_id": "...", "status": "WINDOWED", "compacted_turns": 8 }`.
+
+## Memories
+
+### `GET /api/v1/memories?prefix=mem://user/entities/&limit=50&cursor=...`
+
+Cursor-paginated list of ACTIVE nodes under a URI prefix.
+
+### `GET /api/v1/memories/{source_uri:path}`
+
+Returns the full memory file parsed:
+
+```json
+{
+  "source_uri": "mem://user/entities/alice/alice.md",
+  "frontmatter": { ... },
+  "body": "...",
+  "edges": [
+    { "relation": "works_at", "object_uri": "mem://user/entities/meta/meta.md" }
+  ]
+}
+```
+
+### `POST /api/v1/memories/{source_uri:path}/retire`
+
+Soft-delete: marks the node HISTORICAL on disk and in the KG. No hard-delete
+endpoint is exposed.
+
+### `POST /api/v1/memories/{source_uri:path}/unmerge`
+
+Splits a merged ENTITY node back into per-source contributing splits. Each
+split becomes a new ACTIVE ENTITY node; the original is HISTORICAL with
+`superseded_by` pointing at the list of splits.
+
+### `GET /api/v1/memories/{source_uri:path}/history`
+
+Follows SUPERSEDES chains — returns HISTORICAL nodes on purpose.
+
+## Events
+
+### `POST /api/v1/events/{event_id}/retry`
+
+Manually retry a FAILED ingest event. Resets status → RECEIVED; the
+reconciliation worker (or the triggered BackgroundTask) picks it up.
+
+## Consolidation
+
+### `GET /api/v1/consolidation/status`
+
+```json
+{
+  "queue_depth": 42,
+  "by_task_type": {
+    "CONSOLIDATE_OVERVIEW": 18,
+    "REGENERATE_MANIFEST": 12,
+    "PROPAGATE_OVERVIEW": 12
+  },
+  "by_status": {
+    "PENDING": 42,
+    "PROCESSING": 4,
+    "COMPLETE": 9021,
+    "FAILED": 3
+  }
+}
+```
+
+### `POST /api/v1/consolidation/trigger`
+
+```json
+{
+  "node_id": "mem://user/entities/alice/",
+  "task_type": "CONSOLIDATE_OVERVIEW",
+  "priority": 5,
+  "subtree": false
+}
+```
+
+Allowed task types: `CONSOLIDATE_OVERVIEW`, `REGENERATE_MANIFEST`,
+`PROPAGATE_OVERVIEW`, `ATOMIZE`, `NORMALIZE`, `TEMPORALIZE`, `INTEGRATE`.
+
+## Observability
+
+### `GET /metrics`
+
+Prometheus scrape target. No auth. Produces standard text-format exposition
+with these series (subset of §13.2):
+
+```
+engram_query_latency_seconds{phase="..."}
+engram_ingest_pipeline_stage_seconds{stage="..."}
+engram_query_depth_predicted_vs_reached{predicted,reached}
+engram_reentries_per_query
+engram_l0_gate_decisions{decision,reason}
+engram_ingest_events_total{final_status}
+engram_core_model_calls_total{task,provider}
+engram_frontier_tokens_total{direction}
+engram_consolidation_queue_depth
+engram_kg_node_count
+engram_kg_edge_count
+```

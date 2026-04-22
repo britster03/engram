@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "engram.fullname" . }}-config
+data:
+  config.yaml: |
+    api:
+      host: "0.0.0.0"
+      port: 8000
+      api_key: ${ENGRAM_API_KEY}
+      admin_key: ${ENGRAM_ADMIN_KEY}
+      rate_limit_query_per_minute: 120
+      rate_limit_ingest_per_minute: 600
+    gating:
+      configuration: "dual"
+      embedding_model_path: "BAAI/bge-small-en-v1.5"
+      classification_threshold: 0.3
+      device: "cpu"
+    core_model:
+      provider: "anthropic"
+      model_path: "claude-sonnet-4-6"
+      api_key: ${CORE_MODEL_API_KEY}
+    frontier_llm:
+      provider: "anthropic"
+      model_path: "claude-sonnet-4-6"
+      api_key: ${FRONTIER_LLM_API_KEY}
+    filesystem:
+      data_dir: "/var/lib/engram/mem"
+    knowledge_graph:
+      backend: "neo4j"
+      uri: {{ .Values.neo4j.uri | default (printf "bolt://%s-neo4j:7687" (include "engram.fullname" .)) | quote }}
+      writer_username: "neo4j"
+      writer_password: ${NEO4J_ADMIN_PASSWORD}
+      reader_username: "neo4j"
+      reader_password: ${NEO4J_ADMIN_PASSWORD}
+    event_ledger:
+      path: "/var/lib/engram/event_ledger.db"
+    consolidation:
+      db_path: "/var/lib/engram/consolidation.db"
+      max_concurrent_tasks: {{ .Values.config.consolidation.max_concurrent_tasks }}
+      max_backlog: {{ .Values.config.consolidation.max_backlog }}
+    session_cache:
+      backend: "redis"
+      redis_url: {{ .Values.redis.url | default (printf "redis://%s-redis:6379" (include "engram.fullname" .)) | quote }}
+    retrieval:
+      l0_skip: {{ .Values.config.retrieval.l0_skip }}
+      max_reentries: {{ .Values.config.retrieval.max_reentries }}
+      max_depth: {{ .Values.config.retrieval.max_depth }}
+    decay:
+      preset: "personal_conversation"
+      schedule: "0 3 * * *"
+    session:
+      timeout_minutes: {{ .Values.config.session.timeout_minutes }}

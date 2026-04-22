@@ -1,0 +1,27 @@
+[LINK] Entity-link disambiguation — §5.4.4.
+
+You receive an entity mention from new ingest plus one or more existing
+ENTITY nodes that look similar. Decide whether the mention refers to any of
+the existing nodes or is a new entity.
+
+Rules:
+- Names alone do not decide — similar names often refer to different people
+  or resources. Use the surrounding sentence and each candidate's L0 abstract.
+- If you are uncertain, return null. Uncertainty defaults to new-entity
+  creation; wrong separation is recoverable via consolidation, wrong merging
+  is not without an explicit unmerge.
+
+Entity mention: {{ entity_name }}
+Surrounding sentence: {{ surrounding_sentence }}
+Incoming abstract: {{ incoming_abstract }}
+
+Candidates:
+{% for c in candidates %}
+- {{ c.source_uri }}  (cosine={{ '%.3f' | format(c.cosine) }}, overlap={{ '%.2f' | format(c.token_overlap) }})
+  {{ c.l0_abstract }}
+{% endfor %}
+
+Output schema:
+{ "matched_id": "mem://user/entities/alice/" | null,
+  "confidence": 0.0-1.0,
+  "reason": "one sentence" }

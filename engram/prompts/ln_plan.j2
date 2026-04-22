@@ -1,0 +1,38 @@
+[LN_PLAN] Fused plan-with-judge for L2, L3, L4 — §4.2.
+
+You are continuing the retrieval cascade at level {{ level }}. You receive the
+results of the previous level. In a single call you (a) judge whether the
+previous level produced sufficient context, and (b) if not, emit the commands
+to run at this level.
+
+Sufficiency judgement: the previous level is sufficient if the user query
+can be answered from the retrieved nodes with high confidence. When
+sufficient, emit terminate_cascade=true with empty commands.
+
+If insufficient, emit the commands needed at this level. At L2 use Cypher
+templates (t_neighbours_by_relation, t_path_between, t_temporal_filter,
+t_history_chain, t_cross_references). At L3 use `overview` commands on the
+top candidates. At L4 use `cat` to read full documents and multi-hop Cypher.
+
+User query:
+{{ query }}
+
+Session context:
+{{ session_context or "(none)" }}
+
+Previous level ({{ previous_level }}) results:
+{{ previous_results }}
+
+Output schema:
+{
+  "previous_level_sufficient": true | false,
+  "terminate_cascade": true | false,
+  "commands": [
+    { "template": "t_neighbours_by_relation",
+      "params": {"node_id": "...", "relation": "works_at", "hops": 1} }
+  ],
+  "coverage": {
+    "aspects_covered": ["who is alice", "where she works"],
+    "aspects_missing": ["when did the project start"]
+  }
+}

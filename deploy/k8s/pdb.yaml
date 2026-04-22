@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: engram
+  namespace: engram
+spec:
+  minAvailable: 2          # keep at least 2 pods up during voluntary evictions
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: engram
+      app.kubernetes.io/component: api

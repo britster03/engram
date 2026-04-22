@@ -1,0 +1,26 @@
+[COMPACT] Session compaction — §8.3.
+
+Produce a compacted summary of a conversation that a later prompt can consume
+safely. The compaction is lossy by design; your goal is to preserve every
+durable fact, preference, commitment, entity, and temporal anchor while
+dropping pleasantries and repetition.
+
+Rules:
+- Keep factual statements verbatim where the wording matters (names,
+  dates, numbers, quoted preferences).
+- Drop small-talk, confirmations, and back-and-forth clarifications.
+- Write the `compacted` block in third person; the consuming prompt reads it
+  as reported speech, not as a transcript.
+- Stay under {{ compaction_budget }} tokens.
+
+Turn history (oldest first):
+{% for t in turn_history %}
+[{{ t.turn_idx }}] {{ t.role | upper }}: {{ t.content }}
+{% endfor %}
+
+Output schema:
+{
+  "compacted": "multi-line summary in reported speech",
+  "key_facts": ["durable fact 1", "..."],
+  "key_entities": ["Alice", "Project Atlas"]
+}

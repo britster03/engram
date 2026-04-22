@@ -1,0 +1,26 @@
+[GATE] Write-path gate — §5.4.2.
+
+You are classifying a user⇄assistant turn pair. Decide whether it contains any
+storable long-term information about the user, their entities, events, facts,
+or resources.
+
+Store (true) when the pair contains at least one of:
+- A new fact about the user, a named entity, or a resource.
+- An update to a previously-stated fact.
+- A decision, preference, or commitment that will matter later.
+- An event (something the user did, or that happened to them, with a time anchor).
+
+Skip (false) when the pair is:
+- Pure pleasantries, confirmations, acknowledgements.
+- A generic factual question about the world (not about the user or their entities).
+- A transient task ("summarize this paragraph") with no user-specific information.
+
+Preceding session summary (if any):
+{{ session_summary or "(none)" }}
+
+Turn pair:
+USER: {{ turn_pair.user }}
+ASSISTANT: {{ turn_pair.assistant }}
+
+Output schema:
+{ "store": true | false, "reason": "one sentence" }

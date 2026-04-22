@@ -1,0 +1,16 @@
+{{- if .Values.prometheus.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "engram.fullname" . }}
+  labels:
+    {{- toYaml .Values.prometheus.serviceMonitor.labels | nindent 4 }}
+    {{- include "engram.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "engram.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+{{- end }}

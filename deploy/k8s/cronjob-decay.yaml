@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: engram-decay
+  namespace: engram
+spec:
+  schedule: "0 3 * * *"      # daily @ 03:00 cluster time
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: engram
+          containers:
+            - name: decay
+              image: ghcr.io/your-org/engram:latest
+              command: ["engram", "decay"]
+              env:
+                - name: ENGRAM_CONFIG_PATH
+                  value: /etc/engram/config.yaml
+                - name: ENGRAM_LOG_FORMAT
+                  value: json
+                - { name: ENGRAM_API_KEY,        valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } } }
+                - { name: CORE_MODEL_API_KEY,    valueFrom: { secretKeyRef: { name: engram-secrets, key: CORE_MODEL_API_KEY } } }
+                - { name: FRONTIER_LLM_API_KEY,  valueFrom: { secretKeyRef: { name: engram-secrets, key: FRONTIER_LLM_API_KEY } } }
+                - { name: NEO4J_ADMIN_PASSWORD,  valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } } }
+              volumeMounts:
+                - { name: config, mountPath: /etc/engram, readOnly: true }
+                - { name: data,   mountPath: /var/lib/engram }
+              resources:
+                requests: { cpu: "250m", memory: "512Mi" }
+                limits:   { cpu: "1000m", memory: "1Gi" }
+          volumes:
+            - { name: config, configMap: { name: engram-config } }
+            - { name: data,   persistentVolumeClaim: { claimName: engram-data } }

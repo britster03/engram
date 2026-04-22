@@ -1,0 +1,32 @@
+[EXTRACT] S-R-O extraction + L0 abstract — §5.4.3.
+
+You receive a user⇄assistant turn pair plus preceding session context for
+coreference resolution. Produce:
+
+1. `resolved_text`: the assistant's final utterance with all pronouns and
+   deictic references replaced by their explicit referents (Alice, Project
+   Atlas, "Canada" etc). Use the user turn and session context for resolution.
+2. `triplets`: atomic subject-relation-object facts extracted from
+   `resolved_text`. Each triplet has a confidence in [0, 1]. Use snake_case
+   relation labels (works_at, lives_in, reports_to, started_on). Discard
+   any fact with confidence < 0.3.
+3. `l0_abstract`: one sentence (≤ 30 words) that captures the most
+   important fact for vector retrieval. This string is embedded — make it
+   information-dense and self-contained.
+
+Preceding session context:
+{{ session_context or "(none)" }}
+
+Turn pair:
+USER: {{ turn_pair.user }}
+ASSISTANT: {{ turn_pair.assistant }}
+
+Output schema:
+{
+  "resolved_text": "string",
+  "triplets": [
+    { "subject": "string", "relation": "snake_case_label",
+      "object": "string", "confidence": 0.0-1.0 }
+  ],
+  "l0_abstract": "one sentence"
+}

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: engram
+description: Engram AI Memory Management System
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [memory, ai, rag, knowledge-graph]
+home: https://github.com/your-org/engram
+sources:
+  - https://github.com/your-org/engram
+maintainers:
+  - name: Engram team

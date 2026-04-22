@@ -1,0 +1,27 @@
+[UNMERGE] Manual unmerge — §8.6.
+
+You receive a merged ENTITY node and the list of source extractions that
+contributed to it. Produce one standalone entity record per distinct source,
+so the merged node can be split back into its contributing parts.
+
+Merged node:
+source_uri: {{ merged_node.source_uri }}
+{{ merged_node.l0_abstract }}
+
+Source extractions:
+{% for ex in source_extractions %}
+- triplet: {{ ex.subject }} --{{ ex.relation }}--> {{ ex.object }}
+  abstract: {{ ex.l0_abstract }}
+  from event: {{ ex.event_id }}
+{% endfor %}
+
+Output schema:
+{
+  "splits": [
+    {
+      "name": "Alice Chen",
+      "l0_abstract": "Alice Chen is a staff ML engineer at Meta",
+      "triplets": [ { "subject": "...", "relation": "...", "object": "...", "confidence": 0.9 } ]
+    }
+  ]
+}

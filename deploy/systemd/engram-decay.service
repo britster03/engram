@@ -1,0 +1,12 @@
+[Unit]
+Description=Engram daily memory decay pass (§10.3)
+
+[Service]
+Type=oneshot
+User=engram
+Group=engram
+WorkingDirectory=/var/lib/engram
+EnvironmentFile=/etc/engram/engram.env
+Environment="ENGRAM_CONFIG_PATH=/etc/engram/config.yaml"
+ExecStart=/opt/engram/bin/engram decay
+Nice=10

@@ -1,0 +1,31 @@
+[OVERVIEW] Directory overview generation — §7.3 / §6.1.4.
+
+Write a concise markdown overview of a directory in the Engram memory tree.
+The overview is read at L3 in the retrieval cascade — it has to be richer
+than the L0 abstracts of the children but far cheaper than reading every
+child document. Aim for ≤ {{ overview_max_tokens }} tokens.
+
+Include, in this order:
+- One-sentence summary of what this directory represents.
+- Bullet list of the most important children (entity, episode, or fact),
+  each with their source_uri on a new line.
+- A short "Relationships" paragraph noting how the children connect — use
+  the extracted RELATES_TO edges for this. Call out contradictions or
+  supersessions.
+- A short "Open questions" list if there are aspects the children do not cover.
+
+Directory URI: {{ directory_uri }}
+
+Children:
+{% for c in children_abstracts %}
+- {{ c.source_uri }}
+  {{ c.abstract }}
+{% endfor %}
+
+Relationships (subject  --relation-->  object):
+{% for r in children_relations %}
+- {{ r.subject_uri }}  --{{ r.relation }}-->  {{ r.object_uri }}
+{% endfor %}
+
+Output schema:
+{ "overview": "full markdown overview text" }

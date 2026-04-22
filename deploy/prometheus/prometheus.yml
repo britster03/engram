@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    deployment: engram-prod
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: engram
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["engram:8000"]
+    scrape_timeout: 10s
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

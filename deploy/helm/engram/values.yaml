@@ -1,0 +1,125 @@
+# Default values for Engram. Override with -f values-prod.yaml.
+
+image:
+  repository: ghcr.io/your-org/engram
+  tag: ""                      # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+replicaCount: 3
+
+resources:
+  requests: { cpu: 500m,   memory: 1Gi }
+  limits:   { cpu: 2000m,  memory: 4Gi }
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 75
+
+pdb:
+  enabled: true
+  minAvailable: 2
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  host: engram.example.com
+  tls:
+    enabled: true
+    secretName: engram-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "4m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+# External services — point at managed or in-cluster deployments.
+neo4j:
+  deployInCluster: true
+  uri: ""                      # override when deployInCluster=false
+  storageClass: ssd
+  storage: 100Gi
+  resources:
+    requests: { cpu: 1000m, memory: 2Gi }
+    limits:   { cpu: 4000m, memory: 8Gi }
+
+redis:
+  deployInCluster: true
+  url: ""                      # override when deployInCluster=false
+  storageClass: ssd
+  storage: 20Gi
+
+persistence:
+  enabled: true
+  accessMode: ReadWriteMany
+  storageClass: nfs-csi
+  size: 200Gi
+
+# All secrets — prefer ExternalSecrets / SealedSecrets in production
+# rather than raw values. This is the template shape the chart expects.
+secrets:
+  create: true
+  apiKey: ""
+  adminKey: ""
+  coreModelApiKey: ""
+  frontierLlmApiKey: ""
+  neo4jAdminPassword: ""
+
+config:
+  retrieval:
+    l0_skip: false
+    max_reentries: 2
+    max_depth: L4
+  consolidation:
+    max_concurrent_tasks: 4
+    max_backlog: 10000
+  session:
+    timeout_minutes: 30
+
+tracing:
+  enabled: false
+  otlpEndpoint: ""             # e.g. http://otel-collector:4317
+
+prometheus:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+
+cronjobs:
+  decay:
+    enabled: true
+    schedule: "0 3 * * *"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: engram

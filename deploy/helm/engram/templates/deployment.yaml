@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "engram.fullname" . }}
+  labels: {{- include "engram.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: {{- include "engram.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "engram.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "engram.fullname" . }}
+      terminationGracePeriodSeconds: 60
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: engram
+          image: {{ include "engram.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - { name: ENGRAM_CONFIG_PATH, value: /etc/engram/config.yaml }
+            - { name: ENGRAM_LOG_FORMAT,  value: json }
+            - { name: ENGRAM_LOG_LEVEL,   value: INFO }
+            - name: ENGRAM_NODE_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            {{- if .Values.tracing.enabled }}
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.tracing.otlpEndpoint | quote }} }
+            - { name: OTEL_SERVICE_NAME, value: engram }
+            {{- end }}
+            - name: ENGRAM_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: ENGRAM_API_KEY } }
+            - name: ENGRAM_ADMIN_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: ENGRAM_ADMIN_KEY } }
+            - name: CORE_MODEL_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: CORE_MODEL_API_KEY } }
+            - name: FRONTIER_LLM_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: FRONTIER_LLM_API_KEY } }
+            - name: NEO4J_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: NEO4J_ADMIN_PASSWORD } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/engram, readOnly: true }
+            {{- if .Values.persistence.enabled }}
+            - { name: data,   mountPath: /var/lib/engram }
+            {{- end }}
+          startupProbe:
+            httpGet: { path: /livez, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /livez, port: http }
+            periodSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "engram.fullname" . }}-config
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "engram.fullname" . }}-data
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
