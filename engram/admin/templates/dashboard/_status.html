@@ -1,0 +1,53 @@
+<div x-show="mainTab === 'status'" x-cloak>
+    <div class="animate-fade-in-up">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Overview</h2>
+                <h3 class="text-2xl font-bold tracking-tight text-neutral-900">System Status</h3>
+            </div>
+            <div class="flex items-center gap-2">
+                <span x-show="healthStatus === 'healthy'" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                    Healthy
+                </span>
+                <span x-show="healthStatus === 'degraded'" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                    <span class="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse"></span>
+                    Degraded
+                </span>
+                <span x-show="healthStatus === 'unavailable'" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200">
+                    <span class="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
+                    Unavailable
+                </span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 mb-6">
+            <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-8 text-center">
+                <p class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">KG Nodes</p>
+                <p class="font-bold tracking-tight text-neutral-900 text-3xl" x-text="kgNodes"></p>
+            </div>
+            <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-8 text-center">
+                <p class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">KG Edges</p>
+                <p class="font-bold tracking-tight text-neutral-900 text-3xl" x-text="kgEdges"></p>
+            </div>
+            <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-8 text-center">
+                <p class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">Queue Depth</p>
+                <p class="font-bold tracking-tight text-neutral-900 text-3xl" x-text="queueDepth"></p>
+            </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 mb-8">
+            <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-8 text-center">
+                <p class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">Pending Events</p>
+                <p class="font-bold tracking-tight text-neutral-900 text-3xl" x-text="pendingEvents"></p>
+            </div>
+            <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-8 text-center">
+                <p class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">Processing</p>
+                <p class="font-bold tracking-tight text-neutral-900 text-3xl" x-text="processingEvents"></p>
+            </div>
+            <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-8 text-center">
+                <p class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">Outbox Pending</p>
+                <p class="font-bold tracking-tight text-neutral-900 text-3xl" x-text="outboxPending"></p>
+            </div>
+        </div>
+    </div>
+</div>

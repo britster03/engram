@@ -1,0 +1,37 @@
+<div x-show="mainTab === 'sessions'" x-cloak>
+    <div class="animate-fade-in-up">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Sessions</h2>
+                <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Active Sessions</h3>
+            </div>
+        </div>
+        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-neutral-50 border-b border-neutral-200">
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Session ID</th>
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Turns</th>
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Last Active</th>
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-neutral-100">
+                        <template x-for="s in sessions" :key="s.id">
+                            <tr class="hover:bg-neutral-50 transition-colors">
+                                <td class="px-6 py-3 font-mono text-neutral-700" x-text="s.id"></td>
+                                <td class="px-6 py-3 text-neutral-700" x-text="s.turns"></td>
+                                <td class="px-6 py-3 text-neutral-500" x-text="s.last_active"></td>
+                                <td class="px-6 py-3">
+                                    <span :class="s.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-neutral-100 text-neutral-600 border border-neutral-200'" class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium" x-text="s.status"></span>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <div x-show="sessions.length === 0" class="px-6 py-8 text-center text-neutral-500">No sessions found.</div>
+        </div>
+    </div>
+</div>

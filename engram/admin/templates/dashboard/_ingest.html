@@ -1,0 +1,32 @@
+<div x-show="mainTab === 'ingest'" x-cloak>
+    <div class="animate-fade-in-up">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Data Ingestion</h2>
+                <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Ingest Pipeline</h3>
+            </div>
+        </div>
+        <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-6 mb-6">
+            <form @submit.prevent="submitIngest()" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-neutral-700 mb-1.5">Session ID</label>
+                    <input x-model="ingest.session_id" type="text" class="w-full px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all" placeholder="Optional session identifier">
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-neutral-700 mb-1.5">User Message</label>
+                        <textarea x-model="ingest.user" rows="3" class="w-full px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all resize-none" placeholder="Enter user turn..."></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-neutral-700 mb-1.5">Assistant Message</label>
+                        <textarea x-model="ingest.assistant" rows="3" class="w-full px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all resize-none" placeholder="Enter assistant turn..."></textarea>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="submit" class="px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all">Submit Ingest</button>
+                    <span x-show="ingestStatus" x-text="ingestStatus" class="text-sm text-neutral-600"></span>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>

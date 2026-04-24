@@ -1,0 +1,45 @@
+    <nav class="w-full py-5 px-6 md:px-12 border-b border-neutral-100 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto flex items-center relative">
+            <div class="flex items-center gap-2">
+                <a href="/admin/dashboard" class="flex items-center gap-2">
+                    <img src="/admin/static/navbar-logo-light.svg" alt="Engram" class="w-9 h-9" x-show="activeTheme === 'light'">
+                    <img src="/admin/static/navbar-logo-dark.svg" alt="Engram" class="w-9 h-9" x-show="activeTheme === 'dark'" x-cloak>
+                </a>
+                <div class="flex flex-col gap-0">
+                    <a href="/admin/dashboard" class="font-bold tracking-tight text-xl leading-none">Engram</a>
+                    <span class="text-[10px] text-neutral-500 leading-none">v0.1.0</span>
+                </div>
+            </div>
+
+            <div class="hidden lg:flex items-center gap-1 bg-neutral-100 rounded-full p-1 absolute left-1/2 -translate-x-1/2">
+                <button @click="setMainTab('status')" :class="mainTab === 'status' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="bar-chart-3" class="w-4 h-4"></i>
+                    Status
+                </button>
+                <button @click="setMainTab('sessions')" :class="mainTab === 'sessions' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="message-square" class="w-4 h-4"></i>
+                    Sessions
+                </button>
+                <button @click="setMainTab('memories')" :class="mainTab === 'memories' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="database" class="w-4 h-4"></i>
+                    Memories
+                </button>
+                <button @click="setMainTab('ingest')" :class="mainTab === 'ingest' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="arrow-down-circle" class="w-4 h-4"></i>
+                    Ingest
+                </button>
+                <button @click="setMainTab('settings')" :class="mainTab === 'settings' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="settings" class="w-4 h-4"></i>
+                    Settings
+                </button>
+            </div>
+
+            <div class="flex items-center gap-3 ml-auto">
+                <a href="/admin/chat" class="hidden sm:flex items-center gap-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">
+                    <i data-lucide="message-circle" class="w-4 h-4"></i>
+                    Chat
+                </a>
+                <button @click="logout()" class="text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">Logout</button>
+            </div>
+        </div>
+    </nav>

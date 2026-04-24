@@ -1,0 +1,19 @@
+{
+  "app.title": "Engram Admin",
+  "app.tagline": "持続的なメモリ管理",
+  "dashboard.title": "ダッシュボード - Engram Admin",
+  "login.title_login": "ログイン - Engram Admin",
+  "login.login.label_api_key": "API キー",
+  "navbar.brand": "Engram",
+  "navbar.logout": "ログアウト",
+  "status.heading": "システム状態",
+  "status.stat.kg_nodes": "KGノード",
+  "status.stat.kg_edges": "KGエッジ",
+  "sessions.heading": "アクティブセッション",
+  "memories.heading": "記憶",
+  "ingest.heading": "データ取り込み",
+  "settings.heading": "設定",
+  "settings.language_label": "表示言語",
+  "chat.title": "チャット - Engram Admin",
+  "chat.input_placeholder": "メッセージを入力..."
+}

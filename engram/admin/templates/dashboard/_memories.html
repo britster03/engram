@@ -1,0 +1,31 @@
+<div x-show="mainTab === 'memories'" x-cloak>
+    <div class="animate-fade-in-up">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Long-Term Memory</h2>
+                <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Memories</h3>
+            </div>
+            <div class="flex items-center gap-2">
+                <input x-model="memSearch" @keyup.enter="searchMemories()" type="text" placeholder="Search by URI or content..." class="px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all">
+                <button @click="searchMemories()" class="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all">Search</button>
+            </div>
+        </div>
+        <div class="space-y-4">
+            <template x-for="m in memories" :key="m.uri">
+                <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-6 hover:shadow-md transition-all">
+                    <div class="flex items-start justify-between gap-4">
+                        <div class="flex-1 min-w-0">
+                            <p class="text-xs font-mono text-neutral-400 mb-1" x-text="m.uri"></p>
+                            <p class="text-sm text-neutral-800 leading-relaxed line-clamp-3" x-text="m.content"></p>
+                        </div>
+                        <div class="flex flex-col items-end gap-1">
+                            <span class="text-[10px] font-medium uppercase tracking-wider text-neutral-400" x-text="m.type"></span>
+                            <span class="text-[10px] text-neutral-400" x-text="new Date(m.created_at).toLocaleDateString()"></span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            <div x-show="memories.length === 0" class="px-6 py-8 text-center text-neutral-500">No memories found.</div>
+        </div>
+    </div>
+</div>

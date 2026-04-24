@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="{{ current_lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>{% block title %}Engram Admin{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/admin/static/favicon.svg">
+
+    <!-- Inter Font (self-hosted, Latin) -->
+    <link rel="stylesheet" href="/admin/static/fonts/inter/inter.css">
+
+    {% if current_lang == 'zh' %}
+    <link rel="stylesheet" href="/admin/static/fonts/noto-sans-sc/noto-sans-sc.css">
+    {% elif current_lang == 'zh-TW' %}
+    <link rel="stylesheet" href="/admin/static/fonts/noto-sans-tc/noto-sans-tc.css">
+    {% elif current_lang == 'ko' %}
+    <link rel="stylesheet" href="/admin/static/fonts/noto-sans-kr/noto-sans-kr.css">
+    {% elif current_lang == 'ja' %}
+    <link rel="stylesheet" href="/admin/static/fonts/noto-sans-jp/noto-sans-jp.css">
+    {% endif %}
+
+    <link rel="stylesheet" href="/admin/static/css/tailwind.css">
+
+    <script defer src="/admin/static/js/alpine.min.js"></script>
+    <script src="/admin/static/js/lucide.min.js"></script>
+
+    <script>
+        (function() {
+            var theme = localStorage.getItem('engram-admin-theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+
+    <script>
+        window._t = {{ locale_json | safe }};
+        window.t = function(key) { return window._t[key] !== undefined ? window._t[key] : key; };
+    </script>
+
+    <style>
+        [data-lucide] { display: inline-block; }
+        :root {
+            {% if current_lang == 'ko' %}
+            --font-sans: 'Noto Sans KR', 'Inter', system-ui, sans-serif;
+            {% elif current_lang == 'zh' %}
+            --font-sans: 'Noto Sans SC', 'Inter', system-ui, sans-serif;
+            {% elif current_lang == 'zh-TW' %}
+            --font-sans: 'Noto Sans TC', 'Inter', system-ui, sans-serif;
+            {% elif current_lang == 'ja' %}
+            --font-sans: 'Noto Sans JP', 'Inter', system-ui, sans-serif;
+            {% else %}
+            --font-sans: 'Inter', system-ui, sans-serif;
+            {% endif %}
+        }
+        body {
+            font-family: var(--font-sans) !important;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        [x-cloak] { display: none !important; }
+        .bg-grain {
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.03'/%3E%3C/svg%3E");
+        }
+        .card-hover {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px -10px rgba(0,0,0,0.1);
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0,0,0,0.1);
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="font-sans bg-white text-neutral-900 antialiased selection:bg-neutral-900 selection:text-white">
+    {% block content %}{% endblock %}
+
+    <script>
+        (function() {
+            if (typeof lucide === 'undefined' || !lucide.icons) return;
+            function toPascal(s) {
+                return s.replace(/(^|[-_ ])(\w)/g, function(m, sep, c) { return c.toUpperCase(); });
+            }
+            function replaceIcon(el) {
+                var name = el.getAttribute('data-lucide');
+                if (!name) return;
+                var def = lucide.icons[toPascal(name)];
+                if (!def) return;
+                var svg = lucide.createElement(def);
+                Array.from(el.attributes).forEach(function(a) {
+                    if (a.name !== 'data-lucide') svg.setAttribute(a.name, a.value);
+                });
+                svg.classList.add('lucide', 'lucide-' + name);
+                if (el.parentNode) el.parentNode.replaceChild(svg, el);
+            }
+            function processAll() {
+                document.querySelectorAll('i[data-lucide]').forEach(replaceIcon);
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', processAll);
+            } else {
+                processAll();
+            }
+            setInterval(function() {
+                if (document.querySelector('i[data-lucide]')) processAll();
+            }, 300);
+        })();
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

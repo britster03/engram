@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block title %}Chat - Engram Admin{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-white flex flex-col" x-data="chat()" x-init="init()">
+  {% include "dashboard/_navbar.html" %}
+
+  <main class="flex-grow relative overflow-hidden">
+    <div class="absolute inset-0 bg-grain pointer-events-none z-0"></div>
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-10 relative z-10 h-full flex flex-col">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-1">Session</h2>
+          <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Memory Query</h3>
+        </div>
+      </div>
+
+      <div class="flex-1 bg-white rounded-2xl border border-neutral-200 shadow-sm flex flex-col overflow-hidden" style="min-height: 400px;">
+        <div class="flex-1 overflow-y-auto p-4 space-y-4" id="chat-history" x-ref="history">
+          <template x-for="msg in messages" :key="msg.id">
+            <div :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+              <div :class="msg.role === 'user' ? 'bg-neutral-900 text-white rounded-2xl rounded-tr-sm' : 'bg-neutral-100 text-neutral-900 rounded-2xl rounded-tl-sm'" class="max-w-[80%] px-4 py-3 text-sm leading-relaxed">
+                <p x-html="purify(msg.content)"></p>
+              </div>
+            </div>
+          </template>
+          <div x-show="loading" class="flex justify-start">
+            <div class="bg-neutral-100 text-neutral-900 rounded-2xl rounded-tl-sm px-4 py-3 text-sm flex items-center gap-2">
+              <div class="w-4 h-4 border-2 border-neutral-300 border-t-neutral-900 rounded-full animate-spin"></div>
+              Thinking...
+            </div>
+          </div>
+        </div>
+
+        <div class="border-t border-neutral-200 p-4">
+          <form @submit.prevent="send()" class="flex gap-2">
+            <input x-model="input" type="text" class="flex-1 px-4 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all" placeholder="Ask Engram about a session or memory..." required>
+            <button type="submit" class="px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-2">
+              <i data-lucide="send" class="w-4 h-4"></i>
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.5/dist/purify.min.js"></script>
+<script>
+function purify(raw) {
+  if (!raw) return '';
+  return (window.DOMPurify && DOMPurify.sanitize) ? DOMPurify.sanitize(raw, { ALLOWED_TAGS: ['b','i','em','strong','code','pre','a','ul','ol','li','p','br'], ALLOWED_ATTR: ['href'] }) : raw.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function chat() {
+  return {
+    messages: [],
+    input: '',
+    loading: false,
+    streamAbort: null,
+    init() {
+      this.messages.push({id: Date.now(), role: 'assistant', content: 'Hello. I am the Engram admin assistant. Ask me about sessions, memories, or system status.'});
+    },
+    async send() {
+      if (!this.input.trim()) return;
+      const userMsg = {id: Date.now(), role: 'user', content: this.input};
+      this.messages.push(userMsg);
+      this.input = '';
+      this.loading = true;
+      const scroll = () => { this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; }); };
+      scroll();
+
+      let assistantMsg = {id: Date.now() + 1, role: 'assistant', content: ''};
+      this.messages.push(assistantMsg);
+
+      try {
+        const ctrl = new AbortController();
+        this.streamAbort = ctrl;
+        const resp = await fetch('/api/v1/query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            'Authorization': 'Bearer ' + (localStorage.getItem('engram_api_key') || '')
+          },
+          body: JSON.stringify({query: userMsg.content, stream: true}),
+          signal: ctrl.signal
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error('HTTP ' + resp.status + ': ' + text);
+        }
+
+        const contentType = resp.headers.get('content-type') || '';
+        if (!contentType.includes('text/event-stream')) {
+          const obj = await resp.json();
+          assistantMsg.content = String(obj.answer || obj.response || JSON.stringify(obj));
+          this.messages = [...this.messages];
+          this.loading = false;
+          this.streamAbort = null;
+          scroll();
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, {stream: true});
+          let eventName = '';
+          let data = '';
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventName = line.replace(/^event:\s*/, '');
+            } else if (line.startsWith('data:')) {
+              data = line.replace(/^data:\s*/, '');
+            } else if (line.trim() === '') {
+              if (eventName === 'delta' && data) {
+                try {
+                  const obj = JSON.parse(data);
+                  if (typeof obj.text === 'string') assistantMsg.content += obj.text;
+                  if (typeof obj.content === 'string') assistantMsg.content += obj.content;
+                  this.messages = [...this.messages];
+                  this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; });
+                } catch (_) {}
+              }
+              if (eventName === 'done') {
+                this.loading = false;
+                this.streamAbort = null;
+                scroll();
+                return;
+              }
+              if (eventName === 'error') {
+                throw new Error(data || 'Stream error');
+              }
+              eventName = '';
+              data = '';
+            }
+          }
+        }
+        // flush
+        if (buffer) {
+          const raw = buffer.replace(/^(event|data):\s*/, '');
+          try {
+            const obj = JSON.parse(raw);
+            if (typeof obj.text === 'string') assistantMsg.content += obj.text;
+            if (typeof obj.content === 'string') assistantMsg.content += obj.content;
+          } catch (_) {}
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          if (this.messages[this.messages.length - 1].role === 'assistant' && this.messages[this.messages.length - 1].content === '') {
+            this.messages[this.messages.length - 1].content = 'Error: ' + e.message;
+          } else {
+            this.messages.push({id: Date.now() + 1, role: 'assistant', content: 'Error: ' + e.message});
+          }
+        }
+      }
+      this.loading = false;
+      this.streamAbort = null;
+      scroll();
+    }
+  }
+}
+</script>
+{% endblock %}

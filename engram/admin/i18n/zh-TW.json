@@ -1,0 +1,19 @@
+{
+  "app.title": "Engram Admin",
+  "app.tagline": "持久記憶管理",
+  "dashboard.title": "儀表板 - Engram Admin",
+  "login.title_login": "登錄 - Engram Admin",
+  "login.login.label_api_key": "API 金鑰",
+  "navbar.brand": "Engram",
+  "navbar.logout": "退出",
+  "status.heading": "系統狀態",
+  "status.stat.kg_nodes": "知識圖譜節點",
+  "status.stat.kg_edges": "知識圖譜邊",
+  "sessions.heading": "活躍會話",
+  "memories.heading": "記憶",
+  "ingest.heading": "資料攝取",
+  "settings.heading": "設定",
+  "settings.language_label": "顯示語言",
+  "chat.title": "聊天 - Engram Admin",
+  "chat.input_placeholder": "輸入訊息..."
+}
