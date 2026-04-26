@@ -306,3 +306,16 @@ class SqliteStore:
                 (tenant_id,),
             ).fetchone()
         return int(row["c"])
+
+    def count_events_by_status(self, status: str) -> int:
+        row = self.get_conn().execute(
+            "SELECT COUNT(*) AS c FROM events WHERE status = ?",
+            (status,),
+        ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def count_outbox_pending(self) -> int:
+        row = self.get_conn().execute(
+            "SELECT COUNT(*) AS c FROM fs_outbox WHERE state = 'PENDING'"
+        ).fetchone()
+        return int(row["c"]) if row else 0

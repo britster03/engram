@@ -7,7 +7,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="min-h-screen bg-white flex flex-col" x-data="dashboard()" x-init="init()">
+<div class="min-h-screen bg-white flex flex-col" x-data="dashboard()" x-init="init()" data-theme="light">
   {% include "dashboard/_navbar.html" %}
 
   <main class="flex-grow relative overflow-hidden">

@@ -35,8 +35,10 @@ from engram.api.auth import AuthDep
 from engram.api.body_limit import BodySizeLimitMiddleware
 from engram.api.rate_limit import RateLimitMiddleware
 from engram.api.request_id import RequestIdMiddleware
+from engram.admin import routes as admin_ui_routes
 from engram.api.routes import (
     admin as admin_route,
+    chat as chat_route,
     consolidation as consolidation_route,
     events as events_route,
     memories as memories_route,
@@ -171,6 +173,8 @@ app.include_router(memories_route.router)
 app.include_router(events_route.router)
 app.include_router(consolidation_route.router)
 app.include_router(admin_route.router)
+app.include_router(chat_route.router)
+app.include_router(admin_ui_routes.admin_router)
 
 
 # ----------------------------------------------------------------------

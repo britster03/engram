@@ -47,8 +47,7 @@ def _build_context(request: Request) -> dict:
         "current_lang": lang,
         "locale_json": _load_locale_json(lang),
         "static": lambda path: f"/admin/static/{path}",
-        "logo_light": "/admin/static/logo-light.svg",
-        "logo_dark": "/admin/static/logo-dark.svg",
+        "logo": "/admin/static/engram_logo.svg",
     }
 
 

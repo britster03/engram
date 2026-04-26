@@ -11,6 +11,9 @@
             // Main tab state (Status, Sessions, Memories, Ingest, Settings)
             mainTab: 'status',
 
+            // Theme dropdown
+            themeDropdown: false,
+
             // Status tab state
             healthStatus: 'unknown',
             healthComponents: {},
@@ -44,7 +47,7 @@
             apiKey: localStorage.getItem('engram_api_key') || '',
 
             async init() {
-                this.applyTheme();
+                document.documentElement.setAttribute('data-theme', 'light');
                 this.applyTabStateFromUrl();
 
                 // Set initial tab
@@ -304,7 +307,7 @@
                 try {
                     const payload = {
                         source: 'admin_ui',
-                        pair: {
+                        turn_pair: {
                             user: { turn_idx: 0, content: this.ingest.user.trim() },
                             assistant: { turn_idx: 1, content: this.ingest.assistant.trim() },
                         },

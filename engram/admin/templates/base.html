@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <title>{% block title %}Engram Admin{% endblock %}</title>
-    <link rel="icon" type="image/svg+xml" href="/admin/static/favicon.svg">
+    <link rel="icon" type="image/svg+xml" href="/admin/static/engram_logo.svg">
 
     <!-- Inter Font (self-hosted, Latin) -->
     <link rel="stylesheet" href="/admin/static/fonts/inter/inter.css">
@@ -27,7 +27,8 @@
     <script>
         (function() {
             var theme = localStorage.getItem('engram-admin-theme') || 'light';
-            document.documentElement.setAttribute('data-theme', theme);
+            // Hardcode to light — per-page theme override is handled via data-theme on child divs
+            document.documentElement.setAttribute('data-theme', 'light');
         })();
     </script>
 
@@ -81,32 +82,47 @@
     <script>
         (function() {
             if (typeof lucide === 'undefined' || !lucide.icons) return;
+            var MARKER = '_lucide_replaced';
+            var _timer = null;
             function toPascal(s) {
                 return s.replace(/(^|[-_ ])(\w)/g, function(m, sep, c) { return c.toUpperCase(); });
             }
             function replaceIcon(el) {
+                if (!el || !el.isConnected || el.getAttribute(MARKER)) return;
                 var name = el.getAttribute('data-lucide');
                 if (!name) return;
                 var def = lucide.icons[toPascal(name)];
                 if (!def) return;
-                var svg = lucide.createElement(def);
+                try {
+                    var svg = lucide.createElement(def);
+                } catch (_) { return; }
                 Array.from(el.attributes).forEach(function(a) {
-                    if (a.name !== 'data-lucide') svg.setAttribute(a.name, a.value);
+                    if (a.name !== 'data-lucide' && a.name !== MARKER) svg.setAttribute(a.name, a.value);
                 });
                 svg.classList.add('lucide', 'lucide-' + name);
+                el.setAttribute(MARKER, '1');
                 if (el.parentNode) el.parentNode.replaceChild(svg, el);
             }
             function processAll() {
-                document.querySelectorAll('i[data-lucide]').forEach(replaceIcon);
+                if (typeof document === 'undefined' || !document.querySelectorAll) return;
+                var nodes = document.querySelectorAll('i[data-lucide]:not([' + MARKER + '])');
+                if (nodes.length === 0) {
+                    if (_timer) { clearInterval(_timer); _timer = null; }
+                    return;
+                }
+                nodes.forEach(replaceIcon);
             }
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', processAll);
             } else {
                 processAll();
             }
-            setInterval(function() {
-                if (document.querySelector('i[data-lucide]')) processAll();
-            }, 300);
+            // Wait for Alpine to boot first, then replace icons once
+            document.addEventListener('alpine:init', function() {
+                _timer = setInterval(processAll, 400);
+                // Stop polling after 15s to avoid infinite CPU use
+                setTimeout(function() { if (_timer) { clearInterval(_timer); _timer = null; } }, 15000);
+            });
         })();
     </script>
 

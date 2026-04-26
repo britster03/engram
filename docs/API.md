@@ -146,7 +146,198 @@ Response — 200 OK:
     }
   }
 }
+
+## Chat Completions
+
+### `POST /api/v1/chat/completions`
+
+Buffered mode is the default (`stream=false`).
+
+```json
+{
+  "messages": [
+    { "role": "system",  "content": "You are a helpful assistant." },
+    { "role": "user",    "content": "What project is Alice working on?" }
+  ],
+  "session_id": "sess-abc-123",    // optional; omit to auto-create
+  "stream": false,                 // optional, default false
+  "session_context": "...",        // optional explicit override
+  "max_depth": "L4",               // optional, default from config
+  "max_reentries": 2               // optional, default from config
+}
 ```
+
+Request rules (enforced by schema validation):
+
+- `messages` must contain at least one object with `role: "user"`.
+- The last message must have `role: "user"`.
+- `max_depth`, when provided, must match the pattern `^L[0-4]$|^SESSION$`.
+
+Response - 200 OK:
+
+```json
+{
+  "answer": "Alice is working on Project Atlas, a distributed ML pipeline.",
+  "session_id": "sess-abc-123",
+  "retrieval_metadata": {
+    "cascade_depth_reached": "L2",
+    "levels_visited": ["L0", "L1", "L2"],
+    "predicted_depth": "L2",
+    "nodes_retrieved": 3,
+    "total_context_tokens": 1842,
+    "reentries": 0,
+    "l0_decision": "CONTINUE",
+    "l0_reason": "regex:\\bmy\\s+(wife|husband|partner…",
+    "latency_ms": {
+      "l0_gate": 18,
+      "l1_plan": 1120,
+      "l1_execute": 43,
+      "l2_plan": 980,
+      "l2_execute": 65,
+      "msc_assembly": 15,
+      "frontier_answer_0": 2430,
+      "total": 4671
+    }
+  },
+  "finish_reason": "stop"
+}
+```
+
+#### Streaming (`stream=true`)
+
+Response content-type: `text/event-stream`.
+
+SSE events are emitted in this order:
+
+```text
+event: metadata
+data: {"retrieval_metadata": {...}}
+
+event: delta
+data: {"text": "Alice"}
+
+event: delta
+data: {"text": " is"}
+
+event: delta
+data: {"text": " working"}
+
+event: done
+data: {}
+```
+
+- `event: metadata` - single event carrying the retrieval metadata object.
+- `event: delta` - one event per token (or natural sub-word chunk). The `text` field contains the raw generated fragment.
+- `event: done` - signals completion. No body fields.
+- `event: error` - emitted if generation fails. `data: {"error": "..."}`.
+
+#### Buffered curl example
+
+```bash
+curl -sS https://api.engram.local/api/v1/chat/completions \
+  -H "Authorization: Bearer ${ENGRAM_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is Alice working on?"}
+    ]
+  }'
+```
+
+#### Streaming curl example
+
+Use `-N` so curl does not buffer the SSE stream.
+
+```bash
+curl -NsS https://api.engram.local/api/v1/chat/completions \
+  -H "Authorization: Bearer ${ENGRAM_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is Alice working on?"}
+    ],
+    "stream": true
+  }'
+```
+
+#### Python SDK example
+
+```python
+from engram_client import EngramClient
+
+client = EngramClient(api_key="...", base_url="https://api.engram.local")
+
+response = client.chat_completions(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is Alice working on?"}
+    ],
+    session_id="sess-abc-123",   # optional
+    max_depth="L2",
+)
+
+print(response.answer)
+print(response.session_id)
+```
+
+#### Python SDK streaming example
+
+```python
+for chunk in client.chat_completions_stream(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is Alice working on?"}
+    ],
+    session_id="sess-abc-123",   # optional
+    max_depth="L2",
+):
+    print(chunk, end="", flush=True)
+```
+
+#### TypeScript SDK example
+
+```typescript
+import { EngramClient } from '@engram/ts-client';
+
+const client = new EngramClient({
+  apiKey: process.env.ENGRAM_API_KEY!,
+  baseUrl: 'https://api.engram.local',
+});
+
+const result = await client.chatCompletions({
+  messages: [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'What is Alice working on?' },
+  ],
+  sessionId: 'sess-abc-123',   // optional
+  maxDepth: 'L2',
+});
+
+console.log(result.answer);
+console.log(result.session_id);
+```
+
+#### TypeScript SDK streaming example
+
+```typescript
+for await (const chunk of client.chatCompletionsStream({
+  messages: [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user', content: 'What is Alice working on?' },
+  ],
+  sessionId: 'sess-abc-123',   // optional
+  maxDepth: 'L2',
+})) {
+    process.stdout.write(chunk);
+}
+```
+
+### Notes
+
+- When `session_id` is omitted a new session is created automatically and returned in the response.
+- After the assistant answer is complete, the turn pair is appended to the session and a background ingest event fires automatically.
+- Auth and rate limits match `/api/v1/query` exactly.
+- The SSE stream is true token-by-token via the frontier LLM provider, not artificially chunked.
 
 ## Sessions
 

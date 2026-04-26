@@ -7,10 +7,9 @@ depth against oversized payloads.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
-
 
 # --- Per-field caps (characters, not tokens) -----------------------------
 MAX_CONTENT_LENGTH = 32_000          # per turn
@@ -96,6 +95,45 @@ class QueryResponse(BaseModel):
     answer: str
     session_id: str | None = None
     retrieval_metadata: dict[str, Any]
+
+
+class ChatCompletionMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(..., max_length=MAX_CONTENT_LENGTH)
+
+
+class ChatCompletionRequest(BaseModel):
+    messages: list[ChatCompletionMessage] = Field(..., min_length=1)
+    session_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    stream: bool = False
+    session_context: str | None = Field(default=None, max_length=MAX_SESSION_CONTEXT_LENGTH)
+    max_depth: str | None = Field(default=None, pattern=r"^L[0-4]$|^SESSION$")
+    max_reentries: int | None = Field(default=None, ge=0, le=5)
+
+    @field_validator("messages")
+    @classmethod
+    def _messages_rules(cls, v: list[ChatCompletionMessage]) -> list[ChatCompletionMessage]:
+        if not any(m.role == "user" for m in v):
+            raise ValueError("messages must contain at least one user message")
+        if v[-1].role != "user":
+            raise ValueError("last message must be from user")
+        return v
+
+    @field_validator("session_id")
+    @classmethod
+    def _safe_ascii(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if any(c.isspace() for c in v):
+            raise ValueError("must not contain whitespace")
+        return v
+
+
+class ChatCompletionResponse(BaseModel):
+    answer: str
+    session_id: str
+    retrieval_metadata: dict[str, Any]
+    finish_reason: str = "stop"
 
 
 class HealthResponse(BaseModel):

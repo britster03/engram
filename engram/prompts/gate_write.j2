@@ -1,19 +1,64 @@
 [GATE] Write-path gate — §5.4.2.
 
-You are classifying a user⇄assistant turn pair. Decide whether it contains any
-storable long-term information about the user, their entities, events, facts,
-or resources.
+You are classifying a user⇄assistant turn pair. Decide whether it contains
+ANY information worth remembering for this user or the people, organizations,
+projects, products, places, documents, processes, or other entities they
+engage with.
 
-Store (true) when the pair contains at least one of:
-- A new fact about the user, a named entity, or a resource.
-- An update to a previously-stated fact.
-- A decision, preference, or commitment that will matter later.
-- An event (something the user did, or that happened to them, with a time anchor).
+This system is domain-agnostic. The user may be using it as a personal
+second brain, or as a shared knowledge layer for an organization across any
+role (engineering, legal, medical, sales, research, design, operations,
+household, creative work, etc.). Make no assumption about the user's
+profession or subject matter.
 
-Skip (false) when the pair is:
-- Pure pleasantries, confirmations, acknowledgements.
-- A generic factual question about the world (not about the user or their entities).
-- A transient task ("summarize this paragraph") with no user-specific information.
+Bias strongly toward storing. Downstream stages filter low-confidence
+extractions and decay unused memories; a missed write cannot be recovered.
+When uncertain, choose store=true.
+
+Store (true) when the pair contains any of:
+- A fact, attribute, or relationship about the user, another person, an
+  organization, a project, a product, a tool, a place, a document, a
+  dataset, a process, or any other named or describable entity.
+- A decision, preference, opinion, commitment, plan, or stated intent.
+- An event, milestone, status update, blocker, outcome, or change — past,
+  ongoing, or scheduled.
+- Domain-specific context that frames how the user works: terminology,
+  codenames, conventions, role structures, taxonomies, success criteria,
+  constraints, deadlines.
+- Reference material the user is working with: a specific document,
+  codebase area, client, case, account, dataset, or artifact mentioned by
+  name or distinguishing description.
+- Any of the above embedded inside an otherwise-transient request. The
+  surface task may be skippable on its own; the embedded signal is what
+  gets stored. Example: "summarize this contract for the Henderson
+  acquisition" — the summarization is transient, but "user is working on
+  the Henderson acquisition" is storable.
+
+Skip (false) ONLY when ALL of these hold:
+- No entity, project, decision, preference, event, or contextual signal
+  specific to the user or their world appears in the pair.
+- The user's request is fully answerable from generic parametric knowledge
+  (e.g., "what year did WW2 end", "explain quicksort", "translate this
+  Latin phrase", "tell me a joke").
+- The exchange is purely social (greetings, thanks, acknowledgements) or a
+  one-off meta-task with no embedded specifics ("rephrase this sentence"
+  with no attached context about who or what it is for).
+
+If a transient surface AND any embedded signal are both present, store=true.
+
+Examples:
+- USER: "Tell me a joke." / ASSISTANT: <joke>
+  → { "store": false, "reason": "Generic request, no user-specific signal." }
+- USER: "What's the capital of Brazil?" / ASSISTANT: "Brasília."
+  → { "store": false, "reason": "Generic world-knowledge question." }
+- USER: "Summarize this paragraph for the Q3 board deck."
+  → { "store": true, "reason": "Embedded signal: user is preparing a Q3 board deck." }
+- USER: "I started seeing Dr. Patel for the migraines last week."
+  → { "store": true, "reason": "New event and entity (Dr. Patel) in user's world." }
+- USER: "Bob from Finance owns vendor onboarding now."
+  → { "store": true, "reason": "Fact about a third-party entity in user's organization." }
+- USER: "Thanks!" / ASSISTANT: "You're welcome."
+  → { "store": false, "reason": "Pure acknowledgement." }
 
 Preceding session summary (if any):
 {{ session_summary or "(none)" }}

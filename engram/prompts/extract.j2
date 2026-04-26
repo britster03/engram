@@ -1,18 +1,70 @@
 [EXTRACT] S-R-O extraction + L0 abstract — §5.4.3.
 
 You receive a user⇄assistant turn pair plus preceding session context for
-coreference resolution. Produce:
+coreference resolution. The write-path gate has already determined this
+pair contains storable signal. Your job is to extract it, even when the
+signal is embedded inside an otherwise-transient request.
 
-1. `resolved_text`: the assistant's final utterance with all pronouns and
-   deictic references replaced by their explicit referents (Alice, Project
-   Atlas, "Canada" etc). Use the user turn and session context for resolution.
+This system is domain-agnostic. The user may be working in any
+domain — personal life, engineering, legal, medical, sales, research,
+operations, creative work, household management, etc. Extract facts about
+any entity that appears: people, organizations, projects, products,
+documents, places, processes, events, tools, datasets, concepts.
+
+Produce three outputs:
+
+1. `resolved_text`: a coreference-resolved rendering of the storable
+   content from the pair. Replace pronouns and deictic references
+   ("there", "that project", "she") with explicit referents using the
+   user turn, assistant turn, and session context.
+
+   Source material: by default, the assistant's final utterance. BUT if
+   the storable signal lives in the user's turn (e.g., the user
+   references a project, document, or entity that the assistant doesn't
+   echo back), include the relevant user content too. The goal is that
+   `resolved_text` stands alone as the canonical record of what is worth
+   remembering from this exchange.
+
 2. `triplets`: atomic subject-relation-object facts extracted from
-   `resolved_text`. Each triplet has a confidence in [0, 1]. Use snake_case
-   relation labels (works_at, lives_in, reports_to, started_on). Discard
-   any fact with confidence < 0.3.
-3. `l0_abstract`: one sentence (≤ 30 words) that captures the most
-   important fact for vector retrieval. This string is embedded — make it
-   information-dense and self-contained.
+   `resolved_text`. Use snake_case relation labels (works_at, lives_in,
+   reports_to, started_on, owns, manages, working_on, references,
+   prefers, decided_to, has_deadline, located_in, depends_on).
+
+   Distinguish two kinds of facts and assign confidence accordingly:
+
+   - ASSERTED facts: directly stated by the user or assistant.
+     "I started at Meta last week" → (user, works_at, meta) at high
+     confidence (0.85–0.95).
+
+   - REFERENCED facts: inferred from context, where an entity is
+     mentioned in passing without being the subject of an explicit
+     statement. "Summarize this contract for the Henderson acquisition"
+     → (user, working_on, henderson_acquisition) at moderate confidence
+     (0.5–0.7). The user is involved with the Henderson acquisition;
+     that much is safe. Anything more specific is not.
+
+   Do not fabricate. If the surrounding session context makes a
+   referenced fact clearer, use it; otherwise keep the triplet minimal
+   and the confidence honest. Discard any fact with confidence < 0.3.
+
+   Triplets may include:
+   - Facts about the user (preferences, role, relationships, events).
+   - Facts about third parties and entities (people, orgs, projects).
+   - Relationships between two non-user entities ("Bob reports to
+     Alice", "Project Atlas uses Ray").
+   - Domain-specific framings ("the Henderson deal closes in Q3",
+     "the auth service is owned by the platform team").
+
+3. `l0_abstract`: one sentence (≤ 30 words), information-dense and
+   self-contained, capturing the most important fact for vector
+   retrieval. This string is embedded; it must be useful when matched
+   against future queries with no other context.
+
+   For pairs with multiple facts, prioritize the fact most likely to be
+   queried later. For embedded-signal pairs, the abstract should name
+   the entity and its relationship to the user
+   ("User is working on the Henderson acquisition contract."), not
+   describe the surface task ("User asked for a contract summary.").
 
 Preceding session context:
 {{ session_context or "(none)" }}

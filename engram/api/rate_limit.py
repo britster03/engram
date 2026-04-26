@@ -243,7 +243,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         path = request.url.path
         dimension: str | None = None
-        if path.startswith("/api/v1/query"):
+        if path.startswith("/api/v1/query") or path.startswith("/api/v1/chat"):
             dimension = "query"
         elif path.startswith("/api/v1/ingest") or path.endswith("/message"):
             dimension = "ingest"

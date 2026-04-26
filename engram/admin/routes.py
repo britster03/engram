@@ -12,8 +12,6 @@ from fastapi.staticfiles import StaticFiles
 from engram.admin.auth import require_ui_auth, verify_api_key, create_session_token, SESSION_COOKIE_NAME, SESSION_MAX_AGE
 from engram.deps import get_state
 
-from engram.retrieval import templates as tplt
-
 log = logging.getLogger(__name__)
 
 admin_router = APIRouter()
@@ -136,9 +134,10 @@ async def admin_stats(request: Request):
     state = _get_state_safe()
     kg_counts = {}
     try:
-        rows = tplt.run_template(
-            state.neo4j,
-            "t_admin_stats",
+        rows = state.neo4j.run_template(
+            "MATCH (n:Node) WITH count(n) AS nodes "
+            "OPTIONAL MATCH ()-[r]->() "
+            "RETURN nodes, count(r) AS edges",
             {},
             timeout_s=3,
         )
@@ -182,18 +181,15 @@ async def admin_sessions(request: Request):
     verify_ui_auth(request)
     state = _get_state_safe()
     try:
-        keys = state.session_cache.scan("*")
+        raw_sessions = state.session_cache.list_sessions()
         sessions = []
-        for key in keys:
-            sid = key.split(":")[-1]
-            data = state.session_cache.get(sid)
-            if not data:
-                continue
+        for data in raw_sessions:
+            sid = data.get("session_id", "")
             sessions.append({
                 "id": sid,
                 "status": data.get("status", "ACTIVE"),
                 "turns": len(data.get("turns", [])),
-                "last_active": data.get("last_active", data.get("created_at", "")),
+                "last_active": data.get("created_at", ""),
             })
         sessions.sort(key=lambda s: s["last_active"] or "", reverse=True)
         return JSONResponse({"sessions": sessions})

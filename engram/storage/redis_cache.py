@@ -78,7 +78,7 @@ class SessionCache:
             self._memory[key] = (time.time() + ttl, raw)
 
     def delete(
-        self, session_id: str, *, tenant_id: str | None = None,
+        self, session_id: str, *, tenant_id: str | None = None
     ) -> None:
         key = self._key(session_id, tenant_id=tenant_id)
         if self._client is not None:
@@ -86,3 +86,21 @@ class SessionCache:
         else:
             assert self._memory is not None
             self._memory.pop(key, None)
+
+    def list_sessions(self, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        """Return all stored sessions for the current tenant as raw dicts."""
+        tid = tenant_id or current_tenant_id()
+        prefix = f"session:{tid}:"
+        results: list[dict[str, Any]] = []
+        if self._client is not None:
+            for key in self._client.scan_iter(match=f"{prefix}*"):
+                raw = self._client.get(key)
+                if raw:
+                    results.append(json.loads(raw))
+        else:
+            assert self._memory is not None
+            now = time.time()
+            for key, (expires, raw) in list(self._memory.items()):
+                if key.startswith(prefix) and expires >= now:
+                    results.append(json.loads(raw))
+        return results

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from engram import frontmatter, prompts, tokens as tok_mod, tracing
 from engram.config import EngramConfig
@@ -37,6 +37,17 @@ def _depth_rank(depth: str) -> int:
         return _DEPTH_ORDER.index(depth)
     except ValueError:
         return len(_DEPTH_ORDER) - 1
+
+
+def _notify_step(
+    on_step: Callable[[dict[str, Any]], None] | None,
+    md: RetrievalMetadata,
+    step: str,
+) -> None:
+    """Emit a snapshot of retrieval metadata after a cascade step."""
+    if on_step is None:
+        return
+    on_step({"step": step, **md.to_dict()})
 
 
 @dataclass
@@ -94,6 +105,7 @@ def run_query(
     session_context: str | None = None,
     max_depth: str | None = None,
     max_reentries: int | None = None,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResult:
     md = RetrievalMetadata()
     max_depth = max_depth or ctx.cfg.retrieval.max_depth
@@ -125,11 +137,12 @@ def run_query(
     md.latency_ms["l0_gate"] = (time.perf_counter() - t) * 1000
     md.l0_decision = gate.decision
     md.l0_reason = gate.reason
+    _notify_step(on_step, md, "l0_gate")
     if gate.decision == "BYPASS":
         # Go straight to the frontier with only session context + query.
         msc = _assemble_msc(session_context=session_context, ltm_blocks=[], user_query=query)
         return _answer_loop(ctx, md, session_context, query, msc, max_reentries,
-                            accumulated_hits=[])
+                            accumulated_hits=[], on_step=on_step)
 
     # --- L1 ------------------------------------------------------------------
     t = time.perf_counter()
@@ -142,6 +155,7 @@ def run_query(
     md.levels_visited.append("L1")
     md.cascade_depth_reached = "L1"
     md.predicted_depth = plan.get("predicted_depth", "L4")
+    _notify_step(on_step, md, "l1_plan")
 
     if plan.get("session_sufficient") and plan.get("session_answer_context"):
         msc = _assemble_msc(
@@ -150,7 +164,7 @@ def run_query(
             user_query=query,
         )
         return _answer_loop(ctx, md, session_context, query, msc, max_reentries,
-                            accumulated_hits=[])
+                            accumulated_hits=[], on_step=on_step)
 
     t = time.perf_counter()
     with tracing.span("query.l1_execute"):
@@ -158,6 +172,7 @@ def run_query(
     md.latency_ms["l1_execute"] = (time.perf_counter() - t) * 1000
     md.nodes_retrieved = len(accumulated)
     current_results = accumulated
+    _notify_step(on_step, md, "l1_execute")
 
     predicted_depth = plan.get("predicted_depth", "L4")
     target_depth = _depth_rank(predicted_depth)
@@ -182,6 +197,7 @@ def run_query(
         md.latency_ms[f"{level_name.lower()}_plan"] = (time.perf_counter() - t) * 1000
         md.levels_visited.append(level_name)
         md.cascade_depth_reached = level_name
+        _notify_step(on_step, md, f"{level_name.lower()}_plan")
         if ln_plan.get("terminate_cascade"):
             break
         t = time.perf_counter()
@@ -192,6 +208,7 @@ def run_query(
             )
         md.latency_ms[f"{level_name.lower()}_execute"] = (time.perf_counter() - t) * 1000
         md.nodes_retrieved = len(current_results)
+        _notify_step(on_step, md, f"{level_name.lower()}_execute")
         prev_level = level_name
 
     # --- MSC assembly --------------------------------------------------------
@@ -200,6 +217,7 @@ def run_query(
     md.latency_ms["msc_assembly"] = (time.perf_counter() - t) * 1000
     msc = _assemble_msc(session_context=session_context, ltm_blocks=ltm_blocks, user_query=query)
     md.total_context_tokens = _est_tokens(msc)
+    _notify_step(on_step, md, "msc_assembly")
 
     return _answer_loop(
         ctx,
@@ -209,6 +227,7 @@ def run_query(
         msc,
         max_reentries,
         accumulated_hits=current_results,
+        on_step=on_step,
     )
 
 
@@ -634,6 +653,7 @@ def _answer_loop(
     max_reentries: int,
     *,
     accumulated_hits: list[dict[str, Any]],
+    on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResult:
     reentries = 0
     current_msc = msc
@@ -657,6 +677,7 @@ def _answer_loop(
             md.latency_ms[f"frontier_answer_{reentries}"] = (
                 time.perf_counter() - t
             ) * 1000
+            _notify_step(on_step, md, "frontier_error")
             return QueryResult(
                 answer=(
                     "The answer generator is temporarily unavailable. "
@@ -667,6 +688,7 @@ def _answer_loop(
         md.latency_ms[f"frontier_answer_{reentries}"] = (time.perf_counter() - t) * 1000
         if verdict.verdict == "ANSWER" or not allow_more:
             md.reentries = reentries
+            _notify_step(on_step, md, "frontier_answer")
             return QueryResult(answer=verdict.answer or "(no answer produced)",
                                 retrieval_metadata=md)
         reentries += 1
@@ -696,3 +718,4 @@ def _answer_loop(
         )
         md.nodes_retrieved = len(hits)
         md.total_context_tokens = _est_tokens(current_msc)
+        _notify_step(on_step, md, f"reentry_{reentries}")
