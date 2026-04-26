@@ -37,3 +37,7 @@ package-lock.json
 # Local screenshots / debug artifacts
 *.png
 *_scope_check.*
+
+# Runtime artifacts
+chromedriver
+event_ledger.db
