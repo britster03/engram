@@ -33,6 +33,11 @@ deliver exactly enough context to the frontier LLM, and no more.
 ## Quickstart (dev)
 
 ```bash
+# Automated setup (Python venv, deps, secrets, Docker, init)
+./scripts/quickstart.sh
+
+# Or step by step:
+
 # 1. Python + venv
 python3.10 -m venv .venv
 source .venv/bin/activate
@@ -41,7 +46,7 @@ pip install -e '.[dev]'
 # 2. Secrets
 cp .env.example .env
 # Fill in ENGRAM_API_KEY, CORE_MODEL_API_KEY, FRONTIER_LLM_API_KEY,
-# NEO4J_ADMIN_PASSWORD — placeholders like "change-me-*" are refused at boot.
+# NEO4J_ADMIN_PASSWORD, and ANTHROPIC_BASE_URL (see .env.example).
 
 # 3. Backing services
 docker compose up -d
@@ -56,6 +61,11 @@ uvicorn engram.api.app:app --port 8000
 
 # 6. Smoke-test end-to-end
 python -m engram.cli smoke
+
+# 7. Admin UI
+#    Dashboard:  http://localhost:8000/admin/dashboard
+#    Chat:        http://localhost:8000/admin/chat
+#    Login:       http://localhost:8000/admin/login
 ```
 
 ## Production deployment
