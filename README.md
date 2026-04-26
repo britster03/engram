@@ -46,7 +46,11 @@ pip install -e '.[dev]'
 # 2. Secrets
 cp .env.example .env
 # Fill in ENGRAM_API_KEY, CORE_MODEL_API_KEY, FRONTIER_LLM_API_KEY,
-# NEO4J_ADMIN_PASSWORD, and ANTHROPIC_BASE_URL (see .env.example).
+# NEO4J_ADMIN_PASSWORD, and ANTHROPIC_BASE_URL.
+# For MiniMax (used here), set:
+#   ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+#   CORE_MODEL_API_KEY=your_minimax_key
+#   FRONTIER_LLM_API_KEY=your_minimax_key
 
 # 3. Backing services
 docker compose up -d

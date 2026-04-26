@@ -10,10 +10,17 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 echo "=== Engram Quickstart ==="
 cd "$ROOT_DIR"
 
+# Load .env if it exists (allows manual editing of secrets)
+if [ -f ".env" ]; then
+    set -a
+    source .env
+    set +a
+fi
+
 # 1. Python venv
 if [ ! -d ".venv" ]; then
     echo "[1] Creating Python venv..."
-    python3.10 -m venv .venv
+    python3 -m venv .venv
 fi
 echo "[1] Activating venv..."
 source .venv/bin/activate
@@ -68,9 +75,22 @@ echo "[6] Initializing schemas..."
 python -m engram.cli migrate
 python -m engram.cli init
 
+# 7. Start API server in background
+echo "[7] Starting API server..."
+uvicorn engram.api.app:app --port 8000 &
+API_PID=$!
+sleep 3
+if kill -0 $API_PID 2>/dev/null; then
+    echo "  API server running on http://localhost:8000"
+else
+    echo "  WARNING: API server failed to start — check logs"
+fi
+
 echo ""
 echo "=== Done ==="
-echo "  API server:   uvicorn engram.api.app:app --port 8000"
 echo "  Admin UI:     http://localhost:8000/admin/dashboard"
 echo "  Chat UI:      http://localhost:8000/admin/chat"
-echo "  Smoke test:   python -m engram.cli smoke"
+echo "  API docs:     http://localhost:8000/docs"
+echo "  Smoke test:   python -m engram.cli smoke  (optional)"
+echo ""
+echo "  To stop the server:  kill $API_PID"
