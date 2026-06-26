@@ -35,21 +35,66 @@ limits, disposable performance caches, and Ollama Cloud inference support.
 
 ## Quickstart
 
+Prerequisites:
+
+- Python 3.10 or newer
+- Docker with Compose support
+- An Ollama Cloud API key for hosted inference
+
+Manual setup:
+
 ```bash
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
 cp .env.example .env
-# Fill in ENGRAM_API_KEY, ENGRAM_ADMIN_KEY, OLLAMA_API_KEY,
-# and NEO4J_ADMIN_PASSWORD. Do not commit .env.
+```
+
+Open `.env` and fill in the required values. `.env` is gitignored and must not
+be committed.
+
+```bash
+# Generate values to paste into .env.
+printf 'ENGRAM_API_KEY=engram-dev-%s\n' "$(openssl rand -hex 16)"
+printf 'ENGRAM_ADMIN_KEY=engram-admin-%s\n' "$(openssl rand -hex 16)"
+printf 'ENGRAM_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
+```
+
+Set these fields in `.env`:
+
+- `ENGRAM_API_KEY`: default local API access key
+- `ENGRAM_ADMIN_KEY`: Admin UI and admin API key
+- `ENGRAM_SECRET_KEY`: stable Admin UI session signing key
+- `OLLAMA_API_KEY`: Ollama Cloud inference key
+- `NEO4J_ADMIN_PASSWORD`: local Neo4j password
+
+Load the local environment before running CLI or API commands:
+
+```bash
+set -a
+source .env
+set +a
 
 docker compose up -d
+docker compose ps
+
 python -m engram.cli migrate
 python -m engram.cli init
+python -m engram.cli health
 
 uvicorn engram.api.app:app --host 127.0.0.1 --port 8000
 ```
+
+Automated local bootstrap is also available:
+
+```bash
+./scripts/quickstart.sh
+```
+
+The script creates a virtualenv, installs dev dependencies, prompts for missing
+secrets, starts Docker services, initializes schemas, and starts the API server.
+If you use it, add `ENGRAM_SECRET_KEY` to `.env` for stable Admin UI sessions.
 
 Useful local URLs:
 
@@ -59,6 +104,17 @@ Useful local URLs:
 - Chat: `http://127.0.0.1:8000/admin/chat`
 - KG visualization: `http://127.0.0.1:8000/admin/kg`
 - Metrics: `http://127.0.0.1:8000/metrics`
+
+The bootstrap `ENGRAM_API_KEY` creates the default local tenant on first boot.
+To create additional tenant-scoped Engram API keys, use the admin CLI after
+loading `.env`:
+
+```bash
+python -m engram.cli admin create-tenant dev --display-name "Local Dev"
+python -m engram.cli admin mint-key dev
+```
+
+Generated tenant keys are printed once and stored only as hashes.
 
 ## Ollama Cloud Inference
 
