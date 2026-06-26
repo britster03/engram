@@ -124,8 +124,8 @@ def mint_key(tenant_id: str, request: Request) -> MintKeyResponse:
     state = get_state()
     try:
         api_key = state.tenant_registry.issue_key(tenant_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail="tenant not found") from err
     state.audit.record(
         tenant_id=tenant_id, actor=_actor(request), action="tenant.key.mint",
         target=tenant_id,
@@ -139,8 +139,8 @@ def revoke_key(tenant_id: str, key_hash: str, request: Request) -> dict[str, Any
     state = get_state()
     try:
         revoked = state.tenant_registry.revoke_key(tenant_id, key_hash)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail="tenant not found") from err
     if not revoked:
         raise HTTPException(status_code=404, detail="key_hash not found for tenant")
     state.audit.record(
@@ -162,8 +162,8 @@ def update_quotas(
             raise KeyError(tenant_id)
         updated = TenantQuotas(**{**current.quotas.__dict__, **quotas})
         state.tenant_registry.update_quotas(tenant_id, updated)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail="tenant not found") from err
     t = state.tenant_registry.get(tenant_id)
     state.audit.record(
         tenant_id=tenant_id, actor=_actor(request), action="tenant.quotas.update",
@@ -178,8 +178,8 @@ def suspend(tenant_id: str, request: Request) -> TenantPayload:
     state = get_state()
     try:
         state.tenant_registry.update_status(tenant_id, "SUSPENDED")
-    except KeyError:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail="tenant not found") from err
     state.audit.record(
         tenant_id=tenant_id, actor=_actor(request), action="tenant.suspend",
         target=tenant_id,
@@ -193,8 +193,8 @@ def resume(tenant_id: str, request: Request) -> TenantPayload:
     state = get_state()
     try:
         state.tenant_registry.update_status(tenant_id, "ACTIVE")
-    except KeyError:
-        raise HTTPException(status_code=404, detail="tenant not found")
+    except KeyError as err:
+        raise HTTPException(status_code=404, detail="tenant not found") from err
     state.audit.record(
         tenant_id=tenant_id, actor=_actor(request), action="tenant.resume",
         target=tenant_id,

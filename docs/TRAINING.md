@@ -159,7 +159,7 @@ Update `config.yaml`:
 
 ```yaml
 core_model:
-  provider: "local"                        # swap from "anthropic"
+  provider: "local"                        # swap from "ollama_cloud"
   model_path: "./models/engram-core-dpo"
   temperature: 0.1
   max_tokens: 2048

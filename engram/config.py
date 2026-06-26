@@ -47,18 +47,18 @@ class GatingConfig(BaseModel):
 
 
 _OPENAI_COMPAT_PROVIDERS = (
-    "openai", "openai_compat", "ollama", "groq", "gemini",
+    "openai", "openai_compat", "ollama", "ollama_cloud", "groq", "gemini",
     "openrouter", "together", "deepseek",
 )
 
 
 class CoreModelConfig(BaseModel):
-    # anthropic | local | any OpenAI-compatible provider (§engram.models.providers)
+    # local | Ollama | any OpenAI-compatible provider (§engram.models.providers)
     provider: Literal[
-        "local", "anthropic", "openai", "openai_compat", "ollama",
+        "local", "openai", "openai_compat", "ollama", "ollama_cloud",
         "groq", "gemini", "openrouter", "together", "deepseek",
-    ] = "anthropic"
-    model_path: str = "claude-sonnet-4-6"
+    ] = "ollama_cloud"
+    model_path: str = "kimi-k2.7-code:cloud"
     api_base: str | None = None
     api_key: str | None = None
     temperature: float = 0.1
@@ -68,10 +68,10 @@ class CoreModelConfig(BaseModel):
 
 class FrontierLlmConfig(BaseModel):
     provider: Literal[
-        "anthropic", "openai", "openai_compat", "ollama",
+        "openai", "openai_compat", "ollama", "ollama_cloud",
         "groq", "gemini", "openrouter", "together", "deepseek",
-    ] = "anthropic"
-    model_path: str = "claude-sonnet-4-6"
+    ] = "ollama_cloud"
+    model_path: str = "kimi-k2.7-code:cloud"
     api_base: str | None = None
     api_key: str | None = None
     temperature: float = 0.3

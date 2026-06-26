@@ -45,7 +45,9 @@ def train(
         import torch  # type: ignore
         from torch.utils.data import DataLoader, Dataset  # type: ignore
         from transformers import (  # type: ignore
-            AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup,
+            AutoModel,
+            AutoTokenizer,
+            get_cosine_schedule_with_warmup,
         )
     except ImportError as err:
         raise SystemExit(
@@ -96,9 +98,11 @@ def train(
     loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    backbone.to(device); head.to(device)
+    backbone.to(device)
+    head.to(device)
     for epoch in range(epochs):
-        backbone.train(); head.train()
+        backbone.train()
+        head.train()
         for step, batch_ in enumerate(loader):
             batch_ = {k: v.to(device) for k, v in batch_.items()}
             outputs = backbone(
@@ -109,7 +113,9 @@ def train(
             logits = head(cls)
             loss = loss_fn(logits, batch_["labels"])
             loss.backward()
-            optim.step(); sched.step(); optim.zero_grad()
+            optim.step()
+            sched.step()
+            optim.zero_grad()
             if step % 50 == 0:
                 print(f"epoch={epoch} step={step} loss={loss.item():.4f}")
 

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from engram.api.auth import AuthDep
 from engram.deps import get_state
+from engram.tenancy import current_tenant_id
 
 router = APIRouter(prefix="/api/v1/consolidation", tags=["consolidation"], dependencies=[AuthDep])
 
@@ -29,20 +30,24 @@ class StatusResponse(BaseModel):
 @router.get("/status", response_model=StatusResponse)
 def status() -> StatusResponse:
     state = get_state()
+    tenant_id = current_tenant_id()
     conn = state.sqlite.get_conn()
     by_task_type: dict[str, int] = {}
     for row in conn.execute(
         "SELECT task_type, COUNT(*) AS c FROM consolidation_tasks "
-        "WHERE status IN ('PENDING', 'PROCESSING') GROUP BY task_type"
+        "WHERE status IN ('PENDING', 'PROCESSING') AND tenant_id = ? GROUP BY task_type",
+        (tenant_id,),
     ).fetchall():
         by_task_type[row["task_type"]] = int(row["c"])
     by_status: dict[str, int] = {}
     for row in conn.execute(
-        "SELECT status, COUNT(*) AS c FROM consolidation_tasks GROUP BY status"
+        "SELECT status, COUNT(*) AS c FROM consolidation_tasks "
+        "WHERE tenant_id = ? GROUP BY status",
+        (tenant_id,),
     ).fetchall():
         by_status[row["status"]] = int(row["c"])
     return StatusResponse(
-        queue_depth=state.sqlite.queue_depth(),
+        queue_depth=state.sqlite.queue_depth(tenant_id=tenant_id),
         by_task_type=by_task_type,
         by_status=by_status,
     )
@@ -51,6 +56,7 @@ def status() -> StatusResponse:
 @router.post("/trigger")
 def trigger(req: TriggerRequest) -> dict[str, Any]:
     state = get_state()
+    tenant_id = current_tenant_id()
     allowed = {
         "CONSOLIDATE_OVERVIEW",
         "REGENERATE_MANIFEST",
@@ -64,6 +70,9 @@ def trigger(req: TriggerRequest) -> dict[str, Any]:
     if req.task_type not in allowed:
         raise HTTPException(status_code=400, detail=f"unknown task_type: {req.task_type}")
     task_id = state.sqlite.enqueue_task(
-        node_id=req.node_id, task_type=req.task_type, priority=req.priority
+        node_id=req.node_id,
+        task_type=req.task_type,
+        priority=req.priority,
+        tenant_id=tenant_id,
     )
     return {"task_id": task_id, "status": "PENDING" if task_id else "ALREADY_QUEUED"}

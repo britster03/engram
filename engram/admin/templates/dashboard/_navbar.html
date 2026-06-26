@@ -38,7 +38,43 @@
                     <i data-lucide="message-circle" class="w-4 h-4"></i>
                     Chat
                 </a>
+                <a href="/admin/kg" class="hidden sm:flex items-center gap-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">
+                    <i data-lucide="network" class="w-4 h-4"></i>
+                    KG
+                </a>
                 <button @click="logout()" class="text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">Logout</button>
+            </div>
+        </div>
+        <div class="max-w-7xl mx-auto mt-4 lg:hidden overflow-x-auto pills-scrollbar">
+            <div class="flex items-center gap-1 min-w-max bg-neutral-100 rounded-full p-1">
+                <button @click="setMainTab('status')" :class="mainTab === 'status' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="bar-chart-3" class="w-3.5 h-3.5"></i>
+                    Status
+                </button>
+                <button @click="setMainTab('sessions')" :class="mainTab === 'sessions' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="message-square" class="w-3.5 h-3.5"></i>
+                    Sessions
+                </button>
+                <button @click="setMainTab('memories')" :class="mainTab === 'memories' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="database" class="w-3.5 h-3.5"></i>
+                    Memories
+                </button>
+                <button @click="setMainTab('ingest')" :class="mainTab === 'ingest' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="arrow-down-circle" class="w-3.5 h-3.5"></i>
+                    Ingest
+                </button>
+                <button @click="setMainTab('settings')" :class="mainTab === 'settings' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-600 hover:text-neutral-900'" class="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="settings" class="w-3.5 h-3.5"></i>
+                    Settings
+                </button>
+                <a href="/admin/chat" class="px-3 py-1.5 rounded-full text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="message-circle" class="w-3.5 h-3.5"></i>
+                    Chat
+                </a>
+                <a href="/admin/kg" class="px-3 py-1.5 rounded-full text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all duration-200 flex items-center gap-1.5">
+                    <i data-lucide="network" class="w-3.5 h-3.5"></i>
+                    KG
+                </a>
             </div>
         </div>
     </nav>

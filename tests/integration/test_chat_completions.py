@@ -68,8 +68,8 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EngramConfig:
     monkeypatch.setenv("NEO4J_ADMIN_PASSWORD", "x")
     cfg = EngramConfig.model_validate({
         "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
+        "core_model": {"provider": "ollama_cloud", "api_key": "x"},
+        "frontier_llm": {"provider": "ollama_cloud", "api_key": "x"},
         "filesystem": {"data_dir": str(tmp_path / "mem")},
         "event_ledger": {"path": str(tmp_path / "ev.db")},
         "consolidation": {"db_path": str(tmp_path / "cons.db")},
@@ -203,12 +203,13 @@ def test_chat_completions_ingest_fired(client: TestClient, cfg: EngramConfig):
 
     sqlite = SqliteStore(cfg.event_ledger.path)
     rows = sqlite.get_conn().execute(
-        "SELECT source, session_id FROM events WHERE session_id = ? AND source = 'session'",
+        "SELECT source, session_id, status FROM events WHERE session_id = ? AND source = 'session'",
         (session_id,),
     ).fetchall()
     assert len(rows) >= 1
     assert rows[0]["source"] == "session"
     assert rows[0]["session_id"] == session_id
+    assert rows[0]["status"] == "RECEIVED"
 
 
 def test_chat_completions_empty_messages_no_user(client: TestClient, cfg: EngramConfig):

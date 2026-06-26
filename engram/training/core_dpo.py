@@ -28,7 +28,7 @@ def train(sft_model: Path, held_out: Path, out_dir: Path, *,
     # Deferred imports — ML deps are optional.
     from datasets import Dataset  # type: ignore
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-    from trl import DPOTrainer, DPOConfig  # type: ignore
+    from trl import DPOConfig, DPOTrainer  # type: ignore
 
     rows = [json.loads(line) for line in held_out.read_text().splitlines() if line]
     # Each row is expected to carry (prompt, chosen, rejected) after the

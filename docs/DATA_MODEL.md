@@ -252,7 +252,7 @@ updated_at  TEXT DEFAULT datetime('now')
 
 ## 4. Redis — session cache (§9.2)
 
-One key per session: `session:{session_id}` → JSON payload:
+One key per tenant/session pair: `session:{tenant_id}:{session_id}` -> JSON payload:
 
 ```json
 {

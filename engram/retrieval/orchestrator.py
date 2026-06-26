@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from engram import frontmatter, prompts, tokens as tok_mod, tracing
+from engram import frontmatter, prompts, tracing
+from engram import tokens as tok_mod
 from engram.config import EngramConfig
 from engram.frontmatter import FrontmatterError
 from engram.models.core import CoreModelError, CoreModelProvider
@@ -24,7 +26,6 @@ from engram.retrieval.l0_gate import AlwaysClass0Classifier, L0Classifier, run_l
 from engram.retrieval.templates import TemplateError, run_template
 from engram.retrieval.tree_render import render_tree
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.neo4j_store import Neo4jStore
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class QueryResult:
 class OrchestratorContext:
     cfg: EngramConfig
     fs: FilesystemStore
-    neo4j: Neo4jStore
+    neo4j: Any
     core: CoreModelProvider
     frontier: FrontierLLMProvider
     embed: EmbeddingService
@@ -142,7 +143,7 @@ def run_query(
         # Go straight to the frontier with only session context + query.
         msc = _assemble_msc(session_context=session_context, ltm_blocks=[], user_query=query)
         return _answer_loop(ctx, md, session_context, query, msc, max_reentries,
-                            accumulated_hits=[], on_step=on_step)
+                            max_depth=max_depth, accumulated_hits=[], on_step=on_step)
 
     # --- L1 ------------------------------------------------------------------
     t = time.perf_counter()
@@ -164,7 +165,7 @@ def run_query(
             user_query=query,
         )
         return _answer_loop(ctx, md, session_context, query, msc, max_reentries,
-                            accumulated_hits=[], on_step=on_step)
+                            max_depth=max_depth, accumulated_hits=[], on_step=on_step)
 
     t = time.perf_counter()
     with tracing.span("query.l1_execute"):
@@ -226,6 +227,7 @@ def run_query(
         query,
         msc,
         max_reentries,
+        max_depth=max_depth,
         accumulated_hits=current_results,
         on_step=on_step,
     )
@@ -517,7 +519,7 @@ def _format_ltm_blocks(
         source_uri = r.get("source_uri")
         if not source_uri:
             continue
-        if "overview" in r and r["overview"]:
+        if r.get("overview"):
             body = r["overview"]
             level = "L3"
         elif cascade_depth in ("L4",):
@@ -652,6 +654,7 @@ def _answer_loop(
     msc: str,
     max_reentries: int,
     *,
+    max_depth: str,
     accumulated_hits: list[dict[str, Any]],
     on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResult:
@@ -710,7 +713,19 @@ def _answer_loop(
                     continue
                 r["retrieval_level"] = "L1_reentry"
                 hits.append(r)
-        ltm_blocks = _format_ltm_blocks(ctx, hits, "L4")
+        suggested_depth = verdict.suggested_depth or md.predicted_depth or max_depth
+        hits = _run_reentry_cascade(
+            ctx,
+            md,
+            session_context,
+            query,
+            hits,
+            suggested_depth=suggested_depth,
+            max_depth=max_depth,
+            reentry_idx=reentries,
+            on_step=on_step,
+        )
+        ltm_blocks = _format_ltm_blocks(ctx, hits, md.cascade_depth_reached)
         current_msc = _assemble_msc(
             session_context=session_context,
             ltm_blocks=ltm_blocks,
@@ -719,3 +734,68 @@ def _answer_loop(
         md.nodes_retrieved = len(hits)
         md.total_context_tokens = _est_tokens(current_msc)
         _notify_step(on_step, md, f"reentry_{reentries}")
+
+
+def _run_reentry_cascade(
+    ctx: OrchestratorContext,
+    md: RetrievalMetadata,
+    session_context: str | None,
+    query: str,
+    hits: list[dict[str, Any]],
+    *,
+    suggested_depth: str,
+    max_depth: str,
+    reentry_idx: int,
+    on_step: Callable[[dict[str, Any]], None] | None,
+) -> list[dict[str, Any]]:
+    """Resume the Core planner/executor loop when Frontier says NEED_MORE."""
+    target_depth = min(_depth_rank(suggested_depth), _depth_rank(max_depth))
+    if target_depth <= _depth_rank(md.cascade_depth_reached):
+        return hits
+
+    current_results = hits
+    previous_level = md.cascade_depth_reached
+    if _depth_rank(previous_level) < _depth_rank("L1"):
+        previous_level = "L1"
+        if "L1" not in md.levels_visited:
+            md.levels_visited.append("L1")
+        md.cascade_depth_reached = "L1"
+
+    for level_name in ("L2", "L3", "L4"):
+        if _depth_rank(level_name) <= _depth_rank(previous_level):
+            continue
+        if _depth_rank(level_name) > target_depth:
+            break
+        t = time.perf_counter()
+        with tracing.span(f"query.{level_name.lower()}_reentry_plan"):
+            ln_plan = _ln_plan(
+                ctx,
+                level=level_name,
+                query=query,
+                session_context=session_context,
+                previous_level=previous_level,
+                previous_results=current_results,
+            )
+        md.latency_ms[f"{level_name.lower()}_reentry_{reentry_idx}_plan"] = (
+            time.perf_counter() - t
+        ) * 1000
+        md.levels_visited.append(level_name)
+        md.cascade_depth_reached = level_name
+        _notify_step(on_step, md, f"{level_name.lower()}_reentry_plan")
+        if ln_plan.get("terminate_cascade"):
+            break
+        t = time.perf_counter()
+        with tracing.span(f"query.{level_name.lower()}_reentry_execute"):
+            current_results = _execute_commands(
+                ctx,
+                ln_plan.get("commands", []),
+                level=level_name,
+                existing=current_results,
+            )
+        md.latency_ms[f"{level_name.lower()}_reentry_{reentry_idx}_execute"] = (
+            time.perf_counter() - t
+        ) * 1000
+        md.nodes_retrieved = len(current_results)
+        _notify_step(on_step, md, f"{level_name.lower()}_reentry_execute")
+        previous_level = level_name
+    return current_results

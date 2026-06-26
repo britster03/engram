@@ -2,10 +2,8 @@
 
 For accurate budget enforcement in MSC assembly (§4.4.2) we need a real
 tokenizer, not `len(text) / 3.5`. The frontier LLM's own tokenizer would be
-ideal; Anthropic publishes a tokenizer, and we fall back to `tiktoken`
-(OpenAI's widely-used BPE) when anthropic's SDK tokenizer isn't available
-at runtime. If neither import succeeds, we use the char-ratio heuristic as
-a last-ditch fallback with a safety factor.
+ideal; this implementation uses `tiktoken` when available and otherwise uses
+the char-ratio heuristic as a last-ditch fallback with a safety factor.
 
 Counters are process-cached to avoid reloading the BPE vocab per call.
 """
@@ -18,7 +16,7 @@ import threading
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_ENCODING = "cl100k_base"      # GPT-4 / Claude-family compatible BPE
+_DEFAULT_ENCODING = "cl100k_base"      # widely supported chat-model BPE
 _FALLBACK_CHAR_RATIO = 3.5              # chars per token, conservative
 _SAFETY_FACTOR = 1.10                   # fallback scales +10% to stay under budgets
 

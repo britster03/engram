@@ -22,7 +22,7 @@ core_model:
   provider: "openai"
   model_path: "gpt-4o-mini"
   api_base: null             # use api.openai.com/v1
-  api_key: ${CORE_MODEL_API_KEY}
+  api_key: ${OPENAI_API_KEY}
   temperature: 0.1
   max_tokens: 2048
   timeout_seconds: 30
@@ -31,7 +31,8 @@ core_model:
 frontier_llm:
   provider: "openai"
   model_path: "gpt-4o-mini"
-  api_key: ${FRONTIER_LLM_API_KEY}
+  api_base: null
+  api_key: ${OPENAI_API_KEY}
   temperature: 0.3
   max_tokens: 4096
 

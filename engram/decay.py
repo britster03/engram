@@ -1,6 +1,6 @@
 """Soft memory decay (§10).
 
-retrieval_weight = α·recency + β·frequency + γ·centrality, with percentile
+retrieval_weight = alpha*recency + beta*frequency + gamma*centrality, with percentile
 normalisation for frequency and centrality per §10.1. Runs as a daily cron
 over all ACTIVE nodes; HISTORICAL nodes are exempt.
 """
@@ -10,10 +10,9 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any
 
 from engram.config import DecayConfig
-from engram.storage.neo4j_store import Neo4jStore
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ def compute_weight(
 # ----------------------------------------------------------------------
 
 def run_daily(
-    neo4j: Neo4jStore,
+    neo4j: Any,
     cfg: DecayConfig,
     *,
     batch_size: int = 10_000,
@@ -102,7 +101,7 @@ def _days_since(iso_ts: str | None) -> float:
     return max(0.0, (now - then).total_seconds() / 86400.0)
 
 
-def _compute_percentiles(neo4j: Neo4jStore) -> tuple[float, float]:
+def _compute_percentiles(neo4j: Any) -> tuple[float, float]:
     try:
         access_rows = neo4j.run_template(
             "MATCH (n:Node) WHERE n.status = 'ACTIVE' "
@@ -125,11 +124,11 @@ def _compute_percentiles(neo4j: Neo4jStore) -> tuple[float, float]:
 def _percentile(values: list[int], pct: float) -> int:
     if not values:
         return 1
-    k = int(round((pct / 100.0) * (len(values) - 1)))
+    k = round((pct / 100.0) * (len(values) - 1))
     return max(1, values[k])
 
 
-def _fetch_batch(neo4j: Neo4jStore, offset: int, batch_size: int) -> list[dict]:
+def _fetch_batch(neo4j: Any, offset: int, batch_size: int) -> list[dict]:
     try:
         return neo4j.run_template(
             "MATCH (n:Node) WHERE n.status = 'ACTIVE' "
@@ -144,7 +143,7 @@ def _fetch_batch(neo4j: Neo4jStore, offset: int, batch_size: int) -> list[dict]:
         return []
 
 
-def _write_weight(neo4j: Neo4jStore, source_uri: str, weight: float) -> None:
+def _write_weight(neo4j: Any, source_uri: str, weight: float) -> None:
     try:
         neo4j.run_template(
             "MATCH (n:Node {source_uri: $uri}) SET n.retrieval_weight = $w",
@@ -154,7 +153,7 @@ def _write_weight(neo4j: Neo4jStore, source_uri: str, weight: float) -> None:
         log.debug("write weight failed for %s", source_uri, exc_info=True)
 
 
-def _clamp_historical(neo4j: Neo4jStore) -> None:
+def _clamp_historical(neo4j: Any) -> None:
     try:
         neo4j.run_template(
             "MATCH (n:Node) WHERE n.status = 'HISTORICAL' SET n.retrieval_weight = 0.0",

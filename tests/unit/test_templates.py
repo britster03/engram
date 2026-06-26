@@ -31,7 +31,7 @@ def test_missing_required_params_raises():
 
 def test_hops_clamp_applied():
     class DummyNeo:
-        def run_template(self, cypher, params, timeout_s=None):  # noqa: ARG002
+        def run_template(self, cypher, params, timeout_s=None):
             return [params]
 
     out = templates.run_template(

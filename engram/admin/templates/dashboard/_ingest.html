@@ -28,5 +28,76 @@
                 </div>
             </form>
         </div>
+        <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-6">
+            <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5">
+                <div>
+                    <h4 class="text-sm font-bold tracking-tight text-neutral-900">Bulk Upload</h4>
+                    <p class="text-xs text-neutral-500 mt-1">JSONL, CSV, or ZIP containing .txt/.md documents.</p>
+                </div>
+                <label class="flex items-center gap-2 text-sm text-neutral-600">
+                    <input type="checkbox" x-model="bulk.dryRun" data-testid="bulk-dry-run" class="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900">
+                    Dry run
+                </label>
+            </div>
+            <form @submit.prevent="submitBulkUpload()" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-[1fr_180px_160px] gap-3">
+                    <input type="file" @change="bulk.file = $event.target.files[0]" data-testid="bulk-file-input" accept=".jsonl,.ndjson,.csv,.zip" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm">
+                    <input x-model="bulk.sessionId" data-testid="bulk-session-id" type="text" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm" placeholder="Session ID">
+                    <select x-model="bulk.fileFormat" data-testid="bulk-file-format" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm">
+                        <option value="">Infer format</option>
+                        <option value="jsonl">JSONL</option>
+                        <option value="csv">CSV</option>
+                        <option value="zip">ZIP</option>
+                    </select>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="submit" data-testid="bulk-upload-submit" class="px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-1.5">
+                        <i data-lucide="upload" class="w-4 h-4"></i>
+                        Upload
+                    </button>
+                    <span x-show="bulkStatus" x-text="bulkStatus" data-testid="bulk-status" class="text-sm text-neutral-600"></span>
+                </div>
+            </form>
+            <div x-show="bulkJob" x-cloak class="mt-5 border-t border-neutral-100 pt-4">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                    <div>
+                        <p class="text-xs text-neutral-400">Status</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.status" data-testid="bulk-result-status"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-neutral-400">Accepted</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.accepted_count" data-testid="bulk-result-accepted"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-neutral-400">Rejected</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.rejected_count" data-testid="bulk-result-rejected"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-neutral-400">Events</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.event_ids?.length || 0" data-testid="bulk-result-events"></p>
+                    </div>
+                </div>
+                <div x-show="bulkJob?.rejected_rows?.length" class="overflow-x-auto rounded-xl border border-neutral-200">
+                    <table class="w-full text-xs">
+                        <thead class="bg-neutral-50">
+                            <tr>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Row</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Reason</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Preview</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-neutral-100">
+                            <template x-for="row in (bulkJob?.rejected_rows || [])" :key="row.row_number + row.reason">
+                                <tr>
+                                    <td class="px-3 py-2 font-mono text-neutral-600" x-text="row.row_number"></td>
+                                    <td class="px-3 py-2 text-neutral-700" x-text="row.reason"></td>
+                                    <td class="px-3 py-2 text-neutral-500" x-text="row.preview || ''"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </div>
 </div>

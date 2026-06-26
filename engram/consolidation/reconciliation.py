@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from typing import Any
 
 from engram.config import EngramConfig
 from engram.storage.sqlite import SqliteStore
@@ -21,14 +22,14 @@ log = logging.getLogger(__name__)
 class ReconciliationContext:
     cfg: EngramConfig
     sqlite: SqliteStore
-    drive_event: callable  # (event_id) -> None, injected by caller
-    neo4j: "object | None" = None  # optional for directory staleness check
+    neo4j: Any | None = None  # optional for directory staleness check
 
 
 def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     """Single reconciliation pass. Returns counts of what was requeued."""
     counts = {
         "received_stuck": 0,
+        "processing_stuck": 0,
         "gated_store_stuck": 0,
         "written_stuck": 0,
         "index_failed_retried": 0,
@@ -42,8 +43,20 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         "AND julianday('now') - julianday(created_at) > 5.0/1440"
     ).fetchall()
     for row in stuck_received:
-        ctx.drive_event(row["event_id"])
+        _requeue_event(ctx.sqlite, row["event_id"])
         counts["received_stuck"] += 1
+
+    # 1b. events.status = PROCESSING and claim age > 5 minutes → replay.
+    # The durable worker uses PROCESSING as a shared claim state. If its
+    # process dies after claiming but before completion, reconciliation can
+    # safely re-drive the idempotent pipeline.
+    stuck_processing = conn.execute(
+        "SELECT event_id FROM events WHERE status = 'PROCESSING' "
+        "AND julianday('now') - julianday(coalesce(processed_at, created_at)) > 5.0/1440"
+    ).fetchall()
+    for row in stuck_processing:
+        _requeue_event(ctx.sqlite, row["event_id"])
+        counts["processing_stuck"] += 1
 
     # 2. events.status = GATED_STORE with no extraction → requeue
     stuck_gated = conn.execute(
@@ -52,7 +65,7 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         "WHERE e.status = 'GATED_STORE' AND x.event_id IS NULL"
     ).fetchall()
     for row in stuck_gated:
-        ctx.drive_event(row["event_id"])
+        _requeue_event(ctx.sqlite, row["event_id"])
         counts["gated_store_stuck"] += 1
 
     # 3. fs_outbox.state = WRITTEN for > 2 minutes → replay KG index step
@@ -61,7 +74,7 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         "AND julianday('now') - julianday(written_at) > 2.0/1440"
     ).fetchall()
     for row in stuck_written:
-        ctx.drive_event(row["event_id"])
+        _requeue_event(ctx.sqlite, row["event_id"])
         counts["written_stuck"] += 1
 
     # 4. fs_outbox.state = INDEX_FAILED with retry_count < 3 → replay with backoff
@@ -70,7 +83,7 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         "WHERE state = 'INDEX_FAILED' AND retry_count < 3"
     ).fetchall()
     for row in failed:
-        ctx.drive_event(row["event_id"])
+        _requeue_event(ctx.sqlite, row["event_id"])
         counts["index_failed_retried"] += 1
 
     # 5. §7.4 daily scan: enqueue CONSOLIDATE_OVERVIEW for directories whose
@@ -97,6 +110,16 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
             log.debug("stale-directory scan failed", exc_info=True)
 
     return counts
+
+
+def _requeue_event(sqlite: SqliteStore, event_id: str) -> None:
+    """Return a stuck event to the durable worker's claimable state."""
+    with sqlite.transaction() as conn:
+        conn.execute(
+            "UPDATE events SET status = 'RECEIVED', retry_count = retry_count + 1, "
+            "error_message = NULL, processed_at = NULL WHERE event_id = ?",
+            (event_id,),
+        )
 
 
 def run_forever(ctx: ReconciliationContext, stop: threading.Event) -> None:

@@ -1,128 +1,135 @@
 # Engram
 
-Production implementation of the **AI Memory Management System** defined in
-[`Engram_SDD.pdf`](Engram_SDD.pdf) v1.0.
+Engram is a FastAPI AI memory service based on the original
+[Engram_SDD.pdf](Engram_SDD.pdf) v1.0. It gives agents durable long-term
+memory through an event-sourced ingest pipeline, an authoritative `mem://`
+filesystem store, a derived knowledge graph, and a shallow-to-deep retrieval
+cascade that assembles Minimal Sufficient Context for a frontier model.
 
-Engram gives conversational agents durable long-term memory through a
-retrieval cascade that enforces the **Minimal Sufficient Context** principle:
-deliver exactly enough context to the frontier LLM, and no more.
+The current codebase also includes post-SDD extensions: first-class
+multi-tenancy, an Admin UI, bulk upload, KG visualization, tenant-scoped rate
+limits, disposable performance caches, and Ollama Cloud inference support.
 
-## What's inside
+## Current Capabilities
 
-* Full ingest pipeline: event-sourced with outbox, idempotent, crash-safe.
-* Full retrieval cascade: L0 gate → L1 plan + vector search → L2 graph
-  traversal → L3 overviews → L4 full documents + multi-hop, with fused
-  plan-judge calls at L2+ and frontier re-entry on NEED_MORE.
-* Three-model inference stack: BGE-Small-EN embeddings, swappable Core
-  Model (Anthropic API by default; local Qwen3.5-0.8B via LoRA supported),
-  any frontier LLM.
-* Conflict resolution with DUPLICATE / CONTRADICTION / CO_EXISTENCE + SUPERSEDES.
-* Entity linking with cosine + name-overlap thresholds + LLM disambiguation.
-* Memory consolidation with overview generation, manifest regeneration,
-  ancestor propagation, atomization, normalization, temporalization, and
-  integration task types.
-* Session management with automatic compaction and re-ingest of
-  uncompacted turns (§8.3.2).
-* Soft memory decay with percentile-normalised recency / frequency /
-  centrality.
-* Reconciliation worker for stuck-state recovery and directory staleness.
-* REST API matching §11.1, bearer-token auth, per-bucket rate limiting,
-  Prometheus metrics at `/metrics`.
-* CLI: `engram init | migrate | health | smoke | rebuild-kg | decay`.
+- Durable ingest: API paths commit event rows; the durable ingest worker is the
+  only component that processes received ingest events.
+- Filesystem-authoritative memory: Markdown files under `data/mem` are source
+  of truth; Neo4j or the in-memory KG is a rebuildable derived index.
+- Retrieval cascade: L0 gate, L1 planning and vector search, L2 graph
+  traversal, L3 overviews, L4 full documents and multi-hop retrieval, with
+  frontier `NEED_MORE` re-entry.
+- SDD-visible memory behavior: low-confidence triplets become `FACT` nodes
+  with `LOW_CONFIDENCE` status, and session close writes `SESSION_SUMMARY`
+  memories.
+- Tenant isolation: tenant context scopes SQLite rows, filesystem paths, KG
+  nodes and edges, session cache keys, rate limits, admin operations, and
+  idempotency.
+- Admin surfaces: REST API, CLI, and browser Admin UI for login, dashboard,
+  ingest, bulk upload, sessions, memories, retrieval traces, chat, and KG
+  visualization.
+- Provider support: Ollama Cloud by default, local Ollama,
+  OpenAI-compatible providers, and a local provider scaffold.
+- Operations: migrations, health/readiness checks, metrics, JSON logging,
+  tracing hooks, reconciliation, consolidation, decay, and KG rebuild.
 
-## Quickstart (dev)
+## Quickstart
 
 ```bash
-# Automated setup (Python venv, deps, secrets, Docker, init)
-./scripts/quickstart.sh
-
-# Or step by step:
-
-# 1. Python + venv
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-# 2. Secrets
 cp .env.example .env
-# Fill in ENGRAM_API_KEY, CORE_MODEL_API_KEY, FRONTIER_LLM_API_KEY,
-# NEO4J_ADMIN_PASSWORD, and ANTHROPIC_BASE_URL.
-# For MiniMax (used here), set:
-#   ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
-#   CORE_MODEL_API_KEY=your_minimax_key
-#   FRONTIER_LLM_API_KEY=your_minimax_key
+# Fill in ENGRAM_API_KEY, ENGRAM_ADMIN_KEY, OLLAMA_API_KEY,
+# and NEO4J_ADMIN_PASSWORD. Do not commit .env.
 
-# 3. Backing services
 docker compose up -d
-docker compose ps   # wait healthy
-
-# 4. Initialise schemas + indexes
 python -m engram.cli migrate
 python -m engram.cli init
 
-# 5. Run the API
-uvicorn engram.api.app:app --port 8000
-
-# 6. Smoke-test end-to-end
-python -m engram.cli smoke
-
-# 7. Admin UI
-#    Dashboard:  http://localhost:8000/admin/dashboard
-#    Chat:        http://localhost:8000/admin/chat
-#    Login:       http://localhost:8000/admin/login
+uvicorn engram.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-## Production deployment
+Useful local URLs:
+
+- API health: `http://127.0.0.1:8000/api/v1/health`
+- Admin login: `http://127.0.0.1:8000/admin/login`
+- Dashboard: `http://127.0.0.1:8000/admin/dashboard`
+- Chat: `http://127.0.0.1:8000/admin/chat`
+- KG visualization: `http://127.0.0.1:8000/admin/kg`
+- Metrics: `http://127.0.0.1:8000/metrics`
+
+## Ollama Cloud Inference
+
+The default `config.yaml` uses Ollama Cloud for both Core and Frontier
+inference:
 
 ```bash
-# Place TLS certs in deploy/tls/ (see deploy/tls/README.md)
-# Put real secrets in .env.prod
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-docker compose exec engram engram migrate
-docker compose exec engram engram init
-curl -fsS https://engram.example.com/readyz | jq
+export OLLAMA_API_KEY=...
+uvicorn engram.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-Full production runbook at [docs/PRODUCTION.md](docs/PRODUCTION.md) — covers
-pre-flight checklist, incident playbook, capacity planning, and the scope
-limits of the deployment (single-region; multi-tenant supported with admin
-API, per-tenant quotas, audit log; not yet active/active across regions).
-Multi-tenant scale docs at [docs/SCALING.md](docs/SCALING.md); authoritative
-feature audit at [docs/FEATURES.md](docs/FEATURES.md); live-run evidence
-at [docs/VALIDATION.md](docs/VALIDATION.md).
+The provider alias is `ollama_cloud`, the default base is
+`https://ollama.com/api`, and the default cloud model is `kimi-k2.7-code:cloud`.
+Local Ollama remains the `ollama` provider and maps to
+`http://localhost:11434/v1`.
 
-## Documentation
+## API Surface
 
-A new engineer should be able to read [`docs/`](docs/) cover-to-cover and
-understand the system. Start with [`docs/README.md`](docs/README.md).
+The public API is rooted at `/api/v1` and includes:
 
-* [ARCHITECTURE](docs/ARCHITECTURE.md) — four-layer architecture, storage boundaries, component wiring.
-* [DATA_MODEL](docs/DATA_MODEL.md) — mem:// filesystem, KG schema, SQLite tables, conflict rules, decay formulas.
-* [FLOWS](docs/FLOWS.md) — ingest pipeline and retrieval cascade sequence diagrams.
-* [API](docs/API.md) — every REST endpoint with request/response examples.
-* [RUNBOOK](docs/RUNBOOK.md) — deploy, backup, restore, migrate, rebuild, decay, alerting.
-* [DEV_GUIDE](docs/DEV_GUIDE.md) — code layout, extension recipes, test strategy, design invariants.
-* [TRAINING](docs/TRAINING.md) — bootstrap mode, trace collection, Gate classifier, Core SFT, DPO.
+- `/health`, `/config`, `/ingest`, `/query`
+- `/chat/completions`
+- `/sessions/*`
+- `/memories/*`
+- `/events/{event_id}/retry`
+- `/ingest/bulk` and `/ingest/bulk/{job_id}`
+- `/kg/graph`
+- `/consolidation/*`
+- `/admin/*` tenant and audit endpoints
 
-## Testing
+Bulk upload supports JSONL/NDJSON, CSV turn pairs, and ZIP uploads containing
+`.txt` or `.md` documents. KG graph results are tenant-scoped and bounded by
+depth and limit parameters.
+
+## Testing And QA
 
 ```bash
+.venv/bin/pytest -q -m 'not e2e'
 .venv/bin/pytest -q
 ```
 
-All tests run without Docker, without API keys, without network —
-LLM / embeddings / Neo4j are replaced by deterministic stubs (see
-`tests/integration/stubs.py` and `tests/integration/fake_neo4j.py`).
+The e2e collection includes API and browser coverage. The Ollama Cloud live
+smoke test skips unless `OLLAMA_API_KEY` is present in the environment.
+Recent QA artifacts are kept under `qa-artifacts/` and include browser
+screenshots/logs for login, dashboard, ingest, bulk upload, memories, sessions,
+chat retrieval traces, and KG visualization.
 
-For real end-to-end validation against live services, run
-`python -m engram.cli smoke` (requires Docker up + API keys in `.env`).
+## Documentation
 
-## Configuration
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): current architecture and
+  storage/caching boundaries.
+- [docs/FEATURES.md](docs/FEATURES.md): implemented features, SDD coverage,
+  post-SDD extensions, and known limits.
+- [docs/API.md](docs/API.md): REST API reference. Some retained docs may lag
+  the newest surfaces; treat the three files above as the canonical current
+  overview.
+- [docs/DATA_MODEL.md](docs/DATA_MODEL.md): memory file, KG, and SQLite data
+  model.
+- [docs/FLOWS.md](docs/FLOWS.md): ingest and retrieval sequence diagrams.
+- [docs/PRODUCTION.md](docs/PRODUCTION.md), [docs/RUNBOOK.md](docs/RUNBOOK.md),
+  and [docs/SCALING.md](docs/SCALING.md): deployment and operations notes.
+- [docs/TRAINING.md](docs/TRAINING.md): optional model-training pipeline.
 
-Canonical config: [`config.yaml`](config.yaml) (mirrors SDD §15.1 exactly).
-Secrets come from environment variables referenced as `${VAR}`. The config
-loader refuses to start if any required secret is unset.
+## Cache Policy
 
-## License & attribution
+The SDD requires session caching for active conversation state. The current
+implementation keeps that session cache and also adds two disposable,
+non-authoritative performance caches:
 
-Implements the architecture specified in `Engram_SDD.pdf` (v1.0, April 2026).
+- embedding cache: exact text plus model tag to embedding vector
+- overview cache: tenant plus directory URI to rendered overview text
+
+Deleting those performance caches must not delete memory or change tenant
+ownership. They only avoid repeated computation and filesystem reads.

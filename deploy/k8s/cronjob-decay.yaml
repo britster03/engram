@@ -25,8 +25,7 @@ spec:
                 - name: ENGRAM_LOG_FORMAT
                   value: json
                 - { name: ENGRAM_API_KEY,        valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } } }
-                - { name: CORE_MODEL_API_KEY,    valueFrom: { secretKeyRef: { name: engram-secrets, key: CORE_MODEL_API_KEY } } }
-                - { name: FRONTIER_LLM_API_KEY,  valueFrom: { secretKeyRef: { name: engram-secrets, key: FRONTIER_LLM_API_KEY } } }
+                - { name: OLLAMA_API_KEY,        valueFrom: { secretKeyRef: { name: engram-secrets, key: OLLAMA_API_KEY } } }
                 - { name: NEO4J_ADMIN_PASSWORD,  valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } } }
               volumeMounts:
                 - { name: config, mountPath: /etc/engram, readOnly: true }

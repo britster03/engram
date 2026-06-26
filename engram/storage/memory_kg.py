@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from engram.tenancy import current_tenant_id
 
@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    num = sum(x * y for x, y in zip(a, b))
+    num = sum(x * y for x, y in zip(a, b, strict=True))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(x * x for x in b) ** 0.5
     if na == 0.0 or nb == 0.0:
@@ -332,6 +332,75 @@ class InMemoryKnowledgeGraph:
                 if tenant_id is None or t == tenant_id:
                     yield uri, dict(node)
 
+    def graph(
+        self,
+        *,
+        root_uri: str | None = None,
+        depth: int = 1,
+        limit: int = 100,
+        node_type: str | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return a bounded tenant-scoped graph view."""
+        tid = tenant_id or current_tenant_id()
+        depth = max(0, min(depth, 4))
+        limit = max(1, min(limit, 500))
+        with self._lock:
+            if root_uri:
+                if (tid, root_uri) not in self._nodes:
+                    return {"nodes": [], "edges": []}
+                selected: set[str] = {root_uri}
+                frontier = {root_uri}
+                for _ in range(depth):
+                    next_frontier: set[str] = set()
+                    for e in self._edges:
+                        if e.tenant_id != tid:
+                            continue
+                        if e.subject_uri in frontier and e.object_uri not in selected:
+                            next_frontier.add(e.object_uri)
+                        if e.object_uri in frontier and e.subject_uri not in selected:
+                            next_frontier.add(e.subject_uri)
+                    selected.update(next_frontier)
+                    frontier = next_frontier
+                    if len(selected) >= limit or not frontier:
+                        break
+            else:
+                selected = {
+                    uri
+                    for (t, uri), node in self._nodes.items()
+                    if t == tid and (node_type is None or node.get("node_type") == node_type)
+                }
+            ordered = sorted(selected)[:limit]
+            selected = set(ordered)
+            nodes: list[dict[str, Any]] = []
+            for uri in ordered:
+                node = self._nodes.get((tid, uri))
+                if not node:
+                    continue
+                if node_type and node.get("node_type") != node_type:
+                    continue
+                nodes.append(_graph_node(uri, node))
+            node_ids = {n["id"] for n in nodes}
+            edges: list[dict[str, Any]] = []
+            seen_edges: set[tuple[str, str, str, str]] = set()
+            for e in self._edges:
+                if e.tenant_id != tid:
+                    continue
+                if e.subject_uri not in node_ids or e.object_uri not in node_ids:
+                    continue
+                key = (e.subject_uri, e.object_uri, e.type, e.relation_label)
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                edges.append({
+                    "source": e.subject_uri,
+                    "target": e.object_uri,
+                    "type": e.type,
+                    "label": e.props.get("relation_label") or e.relation_label or e.type,
+                    "status": e.props.get("status"),
+                })
+            return {"nodes": nodes, "edges": edges}
+
     # ------------------------------------------------------------------
     # Flat-dict views for diagnostics + legacy callers that want a single
     # collection without the tenant key. Returns copies; mutating them has
@@ -357,3 +426,19 @@ class InMemoryKnowledgeGraph:
                 }
                 for e in self._edges
             ]
+
+
+def _graph_node(uri: str, node: dict[str, Any]) -> dict[str, Any]:
+    normalize = (
+        cast(dict[str, Any], node.get("normalize"))
+        if isinstance(node.get("normalize"), dict)
+        else {}
+    )
+    return {
+        "id": uri,
+        "label": normalize.get("canonical_name") or node.get("source_uri") or uri,
+        "source_uri": uri,
+        "node_type": node.get("node_type"),
+        "status": node.get("status"),
+        "l0_abstract": node.get("l0_abstract"),
+    }

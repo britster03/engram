@@ -1,7 +1,6 @@
 import os
 import secrets
 
-from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -57,9 +56,12 @@ async def require_ui_auth(request: Request):
         try:
             cfg = get_config()
             admin_key = getattr(cfg.api, "admin_key", None) or os.environ.get("ENGRAM_ADMIN_KEY")
-            if admin_key and auth.startswith("Bearer "):
-                if secrets.compare_digest(auth.split(" ", 1)[1].strip(), admin_key):
-                    return None
+            if (
+                admin_key
+                and auth.startswith("Bearer ")
+                and secrets.compare_digest(auth.split(" ", 1)[1].strip(), admin_key)
+            ):
+                return None
         except Exception:
             pass
 

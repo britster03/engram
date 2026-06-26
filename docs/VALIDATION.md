@@ -54,7 +54,7 @@ KG index, consolidation enqueue. Per-pair latency and triplet count:
 
 | # | Utterance | Latency | Triplets extracted |
 |---|---|---|---|
-| 1 | "I just started a staff software engineer role at Anthropic on the alignment team." | 3.8s | 2 |
+| 1 | "I just started a staff software engineer role on the Ollama Cloud team." | 3.8s | 2 |
 | 2 | "My first day was November 3rd, 2025." | 3.4s | 1 |
 | 3 | "I'm renting an apartment in Hayes Valley, San Francisco, through end of 2026." | 3.6s | 2 |
 | 4 | "My wife's birthday is June 14th." | 2.9s | 1 |
@@ -69,7 +69,7 @@ Every node correctly carried `tenant_id = _default`.
 
 **5 DOCUMENT nodes** (episodes):
 
-- `mem://user/episodes/2026-04-22_the-user-started-a-staff-software-engineer-role-at-anthropic.md`
+- `mem://user/episodes/2026-04-22_the-user-started-a-staff-software-engineer-role-on-the-ollama-cloud-team.md`
 - `mem://user/episodes/2026-04-22_user-s-first-day-was-november-3rd-2025.md`
 - `mem://user/episodes/2026-04-22_the-user-is-renting-an-apartment-in-hayes-valley-san-francis.md`
 - `mem://user/episodes/2026-04-22_the-user-s-wife-has-a-birthday-on-june-14th.md`
@@ -81,7 +81,7 @@ Every node correctly carried `tenant_id = _default`.
 user                                              Alice
 user's wife                                       Project Helix
 post-training evaluation pipeline                 apartment in Hayes Valley, San Francisco
-staff software engineer role at Anthropic         November 3rd, 2025
+staff software engineer role on Ollama Cloud team November 3rd, 2025
 June 14th                                         end of 2026
 ```
 
@@ -111,7 +111,7 @@ conflict classifier executed 8 times (once per triplet) — all returned
 
 | Query | Answer | Cascade | Nodes | Re-entries | Latency |
 |---|---|---|---|---|---|
-| Where does the user work and what team? | "The user works at Anthropic on the alignment team." | L1 | 10 | 1 | 5.6s |
+| Where does the user work and what team? | "The user works on the Ollama Cloud team." | L1 | 10 | 1 | 5.6s |
 | When is the user's wife's birthday? | "June 14th" | L1 | 0 | 0 | 2.6s |
 | Where does the user live and until when? | "The user lives in Hayes Valley, San Francisco, until the end of 2026." | L1 | 0 | 0 | 2.7s |
 
@@ -218,7 +218,7 @@ shape matches what `gating.classifier_path` expects.
 | Helm chart against a real cluster | No `kind` / k3s cluster spun up yet | Next validation round: `kind create cluster` + `helm install` + `kubectl get pods` screenshot |
 | Production-scale load test | Locust harness exists; no measured numbers | 100 VUs × 15 min against a single pod; collect p50/p95/p99 for /query and /ingest |
 | End-to-end Qwen3.5-0.8B SFT | Multi-GPU-day experiment | Out of scope for codebase validation; will run on real traces post-deploy |
-| Live Anthropic integration | Operator-side testing | Validate with a real `ANTHROPIC_API_KEY` via `scripts/validation/openai_live_test.py --provider anthropic --model claude-sonnet-4-6` |
+| Live Ollama Cloud integration | Operator-side testing | Validate with a real `OLLAMA_API_KEY` via `ENGRAM_CONFIG_PATH=./config.yaml python -m engram.cli smoke` |
 
 These are the final gaps between "code that works in principle" and
 "battle-tested in production." Each is pure configuration / operator

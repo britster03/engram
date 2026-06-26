@@ -23,6 +23,7 @@ import random
 import string
 import time
 import uuid
+from typing import ClassVar
 
 try:
     from locust import HttpUser, LoadTestShape, between, events, task
@@ -111,9 +112,7 @@ class EngramUser(HttpUser):
             catch_response=True,
             name="/api/v1/sessions/{id}/message",
         ) as r:
-            if r.status_code in {202, 200}:
-                r.success()
-            elif r.status_code == 429:
+            if r.status_code in {202, 200} or r.status_code == 429:
                 r.success()
             else:
                 r.failure(f"unexpected {r.status_code}: {r.text[:120]}")
@@ -147,7 +146,7 @@ class EngramUser(HttpUser):
 # ----------------------------------------------------------------------
 
 class EngramStages(LoadTestShape):
-    stages = [
+    stages: ClassVar[list[dict[str, int]]] = [
         {"duration":  60, "users":  10, "spawn_rate": 2},    # warm-up
         {"duration": 300, "users":  50, "spawn_rate": 5},    # steady
         {"duration": 120, "users": 200, "spawn_rate": 20},   # spike
@@ -176,7 +175,7 @@ _errors_in_window: list[tuple[float, bool]] = []
 
 @events.request.add_listener
 def _on_request(request_type, name, response_time, response_length, exception,
-                context, **kwargs):  # noqa: ANN001
+                context, **kwargs):
     now = time.time()
     _errors_in_window.append((now, exception is not None))
     while _errors_in_window and now - _errors_in_window[0][0] > _ERROR_WINDOW_SECS:

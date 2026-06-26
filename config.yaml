@@ -18,18 +18,19 @@ gating:
   memory_hit_threshold: 0.75
 
 core_model:
-  provider: "anthropic"                       # "local" | "anthropic" | "openai" | "ollama"
-  model_path: "claude-sonnet-4-6"             # bootstrap-mode model for Core tasks
-  api_base: null
-  api_key: ${CORE_MODEL_API_KEY}
+  provider: "ollama_cloud"                    # "ollama_cloud" for hosted Ollama inference
+  model_path: "kimi-k2.7-code:cloud"
+  api_base: "https://ollama.com/api"
+  api_key: ${OLLAMA_API_KEY}
   temperature: 0.1
   max_tokens: 2048
-  timeout_seconds: 30
+  timeout_seconds: 60
 
 frontier_llm:
-  provider: "anthropic"
-  model_path: "claude-sonnet-4-6"
-  api_key: ${FRONTIER_LLM_API_KEY}
+  provider: "ollama_cloud"
+  model_path: "kimi-k2.7-code:cloud"
+  api_base: "https://ollama.com/api"
+  api_key: ${OLLAMA_API_KEY}
   temperature: 0.3
   max_tokens: 4096
 

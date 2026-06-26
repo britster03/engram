@@ -89,7 +89,10 @@ def train(
         from datasets import Dataset  # type: ignore
         from peft import LoraConfig, get_peft_model  # type: ignore
         from transformers import (  # type: ignore
-            AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments,
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            Trainer,
+            TrainingArguments,
         )
     except ImportError as err:
         raise SystemExit(
@@ -125,7 +128,7 @@ def train(
         bf16=True, report_to="none",
     )
     trainer = Trainer(
-        model=model, args=args, train_dataset=ds_tok, tokenizer=tokenizer,
+        model=model, args=args, train_dataset=ds_tok, processing_class=tokenizer,
     )
     trainer.train()
     model.save_pretrained(out_dir)

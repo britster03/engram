@@ -17,7 +17,7 @@ from engram.config import GatingConfig
 
 
 class EmbeddingService:
-    _instance: "EmbeddingService | None" = None
+    _instance: EmbeddingService | None = None
     _lock = threading.Lock()
 
     def __init__(self, cfg: GatingConfig, cache: Any | None = None) -> None:
@@ -25,7 +25,12 @@ class EmbeddingService:
 
         self.cfg = cfg
         self.model = SentenceTransformer(cfg.embedding_model_path, device=cfg.device)
-        self.dim = int(self.model.get_sentence_embedding_dimension())
+        get_dim = getattr(
+            self.model,
+            "get_embedding_dimension",
+            self.model.get_sentence_embedding_dimension,
+        )
+        self.dim = int(get_dim())
         if self.dim != 384:
             raise RuntimeError(
                 f"expected 384-dim embeddings, got {self.dim}; update Neo4j vector index"
@@ -34,7 +39,7 @@ class EmbeddingService:
         self._model_tag = cfg.embedding_model_path.replace("/", "_")
 
     @classmethod
-    def get(cls, cfg: GatingConfig, *, cache: Any | None = None) -> "EmbeddingService":
+    def get(cls, cfg: GatingConfig, *, cache: Any | None = None) -> EmbeddingService:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(cfg, cache=cache)

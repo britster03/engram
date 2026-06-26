@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from engram.ingest.conflict import ConflictDecision, apply_decision, classify
-
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from tests.integration.providers import DeterministicEmbeddingService
 
@@ -16,9 +13,11 @@ class StaticNeo(InMemoryKnowledgeGraph):
     def __init__(self, edges: list[dict]) -> None:
         super().__init__()
         self._edges = edges
+        self.queries: list[tuple[str, dict]] = []
 
-    def run_template(self, cypher, params, timeout_s=None):  # noqa: ARG002
-        if "RELATES_TO" in cypher and "RETURN id(r)" in cypher:
+    def run_template(self, cypher, params, timeout_s=None):
+        self.queries.append((cypher, params))
+        if "RELATES_TO" in cypher and "RETURN elementId(r)" in cypher:
             return list(self._edges)
         return []
 
@@ -58,6 +57,7 @@ def test_duplicate_short_circuits():
     )
     assert decision.case == "DUPLICATE"
     assert decision.existing_edge_id == 1
+    assert "$tenant_id" in neo.queries[0][0]
 
 
 def test_contradiction_triggers_supersession_plan():
@@ -88,11 +88,16 @@ def test_apply_decision_for_duplicate_noop_and_contradiction_supersedes():
     calls: list[str] = []
 
     class RecordingNeo(InMemoryKnowledgeGraph):
+        def __init__(self):
+            super().__init__()
+            self.queries: list[str] = []
+
         def merge_edge(self, **kwargs):
             calls.append(f"merge:{kwargs['edge_type']}:{kwargs['relation_label']}")
             super().merge_edge(**kwargs)
 
-        def run_template(self, cypher, params, timeout_s=None):  # noqa: ARG002
+        def run_template(self, cypher, params, timeout_s=None):
+            self.queries.append(cypher)
             if "SET r.status = 'HISTORICAL'" in cypher:
                 calls.append("supersede")
             if "SET r.last_accessed_at" in cypher:
@@ -121,3 +126,4 @@ def test_apply_decision_for_duplicate_noop_and_contradiction_supersedes():
     )
     assert "supersede" in calls
     assert "merge:RELATES_TO:works_at" in calls
+    assert all("$tenant_id" in query for query in neo.queries)

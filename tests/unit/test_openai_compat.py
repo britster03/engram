@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import httpx
+import openai
 import pytest
 
 from engram.config import CoreModelConfig, FrontierLlmConfig
@@ -15,12 +17,11 @@ from engram.models.providers import (
 )
 
 
-def test_build_core_rejects_anthropic_only_to_anthropic_adapter():
-    # sanity: the anthropic branch still works
-    cfg = CoreModelConfig(provider="anthropic", api_key="x")
+def test_build_core_defaults_to_ollama_cloud_adapter():
+    cfg = CoreModelConfig(provider="ollama_cloud", api_key="x")
     p = build_core_provider(cfg)
-    from engram.models.providers.anthropic_provider import AnthropicCoreProvider
-    assert isinstance(p, AnthropicCoreProvider)
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+    assert isinstance(p, OllamaCloudCoreProvider)
 
 
 @pytest.mark.parametrize("provider", list(_OPENAI_COMPAT_BASES.keys()))
@@ -38,10 +39,56 @@ def test_build_core_accepts_all_openai_compat_providers(provider: str):
 def test_build_core_rejects_unknown_provider():
     # The Literal prevents this at the Pydantic layer, but the factory
     # should also gate by string name.
-    cfg = CoreModelConfig(provider="anthropic", api_key="x")
+    cfg = CoreModelConfig(provider="ollama_cloud", api_key="x")
     cfg.provider = "lolcats"  # type: ignore[assignment]
     with pytest.raises(NotImplementedError):
         build_core_provider(cfg)
+
+
+def test_build_core_accepts_local_provider_without_loading_model():
+    cfg = CoreModelConfig(provider="local", model_path="./models/engram-core-dpo")
+    p = build_core_provider(cfg)
+    from engram.models.providers.local_provider import LocalCoreProvider
+
+    assert isinstance(p, LocalCoreProvider)
+    assert p._model is None
+
+
+def test_build_core_accepts_ollama_cloud_provider(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test-key")
+    cfg = CoreModelConfig(provider="ollama_cloud", model_path="kimi-k2.7-code:cloud")
+    p = build_core_provider(cfg)
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+
+    assert isinstance(p, OllamaCloudCoreProvider)
+    assert p.cfg.api_base == "https://ollama.com/api"
+    assert p.cfg.api_key == "ollama-test-key"
+
+
+def test_ollama_cloud_core_complete_returns_parsed_json():
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+
+    cfg = CoreModelConfig(
+        provider="ollama_cloud",
+        api_base="https://ollama.com/api",
+        api_key="ollama-test-key",
+        model_path="kimi-k2.7-code:cloud",
+    )
+    provider = OllamaCloudCoreProvider(cfg)
+    provider._post_chat = MagicMock(return_value={
+        "message": {"content": json.dumps({"store": True, "reason": "fact"})},
+        "prompt_eval_count": 7,
+        "eval_count": 5,
+    })
+
+    result = provider.complete(system_prompt="[GATE] ...", user_prompt="...")
+
+    assert result.output == {"store": True, "reason": "fact"}
+    assert result.tokens_in == 7
+    assert result.tokens_out == 5
+    payload = provider._post_chat.call_args.args[0]
+    assert payload["model"] == "kimi-k2.7-code:cloud"
+    assert payload["format"] == "json"
 
 
 def test_openai_compat_complete_returns_parsed_json():
@@ -109,3 +156,22 @@ def test_build_frontier_works_for_openai():
     p = build_frontier_provider(cfg)
     from engram.models.providers.openai_compat import OpenAICompatFrontierProvider
     assert isinstance(p, OpenAICompatFrontierProvider)
+
+
+def test_openai_compat_frontier_maps_api_errors_to_core_model_error():
+    from engram.models.core import CoreModelError
+    from engram.models.providers.openai_compat import OpenAICompatFrontierProvider
+
+    cfg = FrontierLlmConfig(
+        provider="openai",
+        api_key="sk",
+        model_path="gpt-4o-mini",
+    )
+    provider = OpenAICompatFrontierProvider(cfg)
+    request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+    provider._call_chat = MagicMock(  # type: ignore[method-assign]
+        side_effect=openai.APIConnectionError(request=request)
+    )
+
+    with pytest.raises(CoreModelError, match="frontier API error"):
+        provider.answer(system_prompt="", msc="", user_query="test")

@@ -81,10 +81,8 @@ Each layer enforces its own boundary:
 * **SQLite / Postgres**: every table has `tenant_id`; every query
   filters by it. The consolidation queue dedup index is keyed on
   `(tenant_id, node_id, task_type)`.
-* **Session cache**: keys are `session:{session_id}`; session IDs are
-  chosen by tenants so collisions are their concern. An operator can
-  move to per-tenant key namespacing with one constant change if
-  required.
+* **Session cache**: keys are `session:{tenant_id}:{session_id}` so two
+  tenants can reuse the same session ID without sharing state.
 * **Audit log**: every row tagged with `tenant_id` and indexed on it.
   Admin tailing is scoped by default.
 
@@ -203,8 +201,7 @@ helm install engram deploy/helm/engram \
   --namespace engram --create-namespace \
   --set image.repository=ghcr.io/your-org/engram \
   --set secrets.apiKey=${ENGRAM_API_KEY} \
-  --set secrets.coreModelApiKey=${CORE_MODEL_API_KEY} \
-  --set secrets.frontierLlmApiKey=${FRONTIER_LLM_API_KEY} \
+  --set secrets.ollamaApiKey=${OLLAMA_API_KEY} \
   --set secrets.neo4jAdminPassword=${NEO4J_ADMIN_PASSWORD} \
   --set ingress.host=engram.example.com
 ```
@@ -238,7 +235,7 @@ in-flight requests complete before the container exits.
 ### Tracing
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` and the app auto-instruments FastAPI,
-HTTPX (outbound to Anthropic), and Redis. Custom spans wrap every
+HTTPX outbound model calls, and Redis. Custom spans wrap every
 pipeline stage via `engram.tracing.span(...)`. Traces carry
 `tenant_id` as a span attribute so Tempo / Honeycomb / Jaeger views
 slice cleanly per tenant.

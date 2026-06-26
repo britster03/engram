@@ -17,14 +17,13 @@ What this codebase is ready for, today:
   key rotation audited in an append-only log. See [SCALING.md](SCALING.md).
 - **Air-gapped / offline** deployments via the Ollama backend — point
   `core_model.provider=ollama` at a local Ollama server and no outbound
-  HTTPS is required. Same interface works with OpenAI, Groq, Gemini,
-  Anthropic, OpenRouter, Together, DeepSeek.
+  HTTPS is required. Hosted inference defaults to Ollama Cloud.
 - Single primary region. Backups replicated off-host.
 - 1–2 gunicorn workers behind nginx TLS, or a Kubernetes deployment (3+
   replicas with HPA). Leader-election via Redis lease keeps the
   consolidation + reconciliation workers as singletons across replicas.
 - Throughput up to ~20 queries/s and ~200 ingests/s on a 4-vCPU / 16 GB
-  host with Neo4j co-located. Empirically verified against real OpenAI
+  host with Neo4j co-located. Empirically verified against remote model APIs
   + real Neo4j in [VALIDATION.md](VALIDATION.md).
 
 What it is **not** ready for:
@@ -60,7 +59,7 @@ Before the first boot:
 - [ ] DNS record points at this host.
 - [ ] Filesystem at `./data/mem` (or whatever `ENGRAM_DATA_DIR` names) has
       at least 50 GB free and is on a volume that is snapshot-backed.
-- [ ] Anthropic account has quota sufficient for the expected call volume.
+- [ ] Ollama Cloud account has quota sufficient for the expected call volume.
       Rough ratio: each query consumes 2–5 Core Model calls plus 1 Frontier
       call; each ingest consumes 2–4 Core Model calls.
 - [ ] Neo4j admin password rotated from the `docker-compose.yml` default.
@@ -139,7 +138,7 @@ after the 202 response, the next process to boot picks the event up on the
 first poll (default 1 second). Reconciliation catches rarer stuck states
 every 60 seconds.
 
-**LLM retries + circuit breakers.** Every call into Anthropic goes through
+**LLM retries + circuit breakers.** Every outbound model call goes through
 `engram/resilience.py::resilient`. Breakers are per-provider (one for
 `core`, one for `frontier`); 5 failures in a rolling window open the
 breaker for 30s.
@@ -229,9 +228,9 @@ at `http://<host>:3000` (default admin/admin — change immediately).
 
 1. Check `engram_ingest_events_total{final_status="FAILED"}` — is it a burst
    or a steady elevated rate?
-2. Check the Anthropic status page. If it's an outage: the circuit breaker
-   for `anthropic_core` should be open (visible on `/readyz`). Wait it out.
-3. If Anthropic is up: tail the JSON logs for `event=CoreModelError` — is
+2. Check Ollama Cloud status. If it's an outage: the model provider circuit
+   breaker should be open (visible on `/readyz`). Wait it out.
+3. If Ollama Cloud is up: tail the JSON logs for `event=CoreModelError` — is
    there a schema change in the Core Model response? If so, look for a
    recent prompt template change and revert.
 4. Use `POST /api/v1/events/{event_id}/retry` to replay individual failed
@@ -241,7 +240,7 @@ at `http://<host>:3000` (default admin/admin — change immediately).
 
 1. Look at `engram_query_latency_seconds{phase}` breakdown — which phase
    regressed?
-   - `frontier_answer_*` — frontier is slow. Check Anthropic status.
+   - `frontier_answer_*` — frontier is slow. Check Ollama Cloud status.
    - `l1_plan` / `l2_plan` — Core Model is slow.
    - `l1_execute` / `vector_search` — Neo4j is slow. Check
      `docker compose logs neo4j` and vector index health.

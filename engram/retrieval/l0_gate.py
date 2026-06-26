@@ -24,7 +24,6 @@ from typing import Protocol
 from engram.models.embeddings import EmbeddingService
 from engram.storage.neo4j_store import Neo4jStore
 
-
 # ---- Regex OR-gate (§3.1.1). Deployment-tunable. --------------------------------
 
 _FIRST_SENTENCE = re.compile(r"^[^.!?]*[.!?]?")

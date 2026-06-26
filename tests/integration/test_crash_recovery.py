@@ -14,10 +14,10 @@ from engram.config import EngramConfig
 from engram.consolidation.reconciliation import ReconciliationContext, run_once
 from engram.ingest.worker import IngestContext, process_event
 from engram.storage.filesystem import FilesystemStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.sqlite import SqliteStore
 from engram.uri import pair_id as pair_id_fn
 
-from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
 
 
@@ -25,8 +25,8 @@ from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
 def cfg(tmp_path: Path) -> EngramConfig:
     return EngramConfig.model_validate({
         "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
+        "core_model": {"provider": "ollama_cloud", "api_key": "x"},
+        "frontier_llm": {"provider": "ollama_cloud", "api_key": "x"},
         "filesystem": {"data_dir": str(tmp_path / "mem")},
         "event_ledger": {"path": str(tmp_path / "ev.db")},
         "consolidation": {"db_path": str(tmp_path / "cons.db")},
@@ -77,7 +77,7 @@ def test_process_event_is_idempotent_on_replay(cfg: EngramConfig):
 
 
 def test_reconciliation_requeues_received_stuck(cfg: EngramConfig):
-    ingest, sqlite, _, _ = _ctx(cfg)
+    _ingest, sqlite, _, _ = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s2", "I live in Chicago.", "Got it.", 0)
     # Force the event's created_at into the past so the reconciliation worker
     # classifies it as stuck.
@@ -87,21 +87,16 @@ def test_reconciliation_requeues_received_stuck(cfg: EngramConfig):
             "WHERE event_id = ?",
             (eid,),
         )
-    driven: list[str] = []
-    def _drive(event_id: str) -> None:
-        driven.append(event_id)
-        process_event(ingest, event_id)
-    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite, drive_event=_drive))
+    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
     assert counts["received_stuck"] == 1
-    assert driven == [eid]
-    # After recovery, status is terminal
     refreshed = sqlite.get_event(eid)
     assert refreshed is not None
-    assert refreshed["status"] in {"COMPLETE", "GATED_SKIP"}
+    assert refreshed["status"] == "RECEIVED"
+    assert refreshed["retry_count"] == 1
 
 
 def test_reconciliation_retries_index_failed(cfg: EngramConfig):
-    ingest, sqlite, _, _ = _ctx(cfg)
+    _ingest, sqlite, _, _ = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s3", "I moved to Paris.", "Noted.", 0)
     # Put fs_outbox into INDEX_FAILED with retry_count < 3.
     with sqlite.transaction() as conn:
@@ -110,24 +105,20 @@ def test_reconciliation_retries_index_failed(cfg: EngramConfig):
             "VALUES (?, 'mem://user/episodes/x.md', 'INDEX_FAILED', 1, datetime('now'))",
             (eid,),
         )
-    driven: list[str] = []
-    counts = run_once(
-        ReconciliationContext(
-            cfg=cfg, sqlite=sqlite, drive_event=driven.append
-        )
-    )
+    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
     assert counts["index_failed_retried"] == 1
-    assert driven == [eid]
+    refreshed = sqlite.get_event(eid)
+    assert refreshed is not None
+    assert refreshed["status"] == "RECEIVED"
 
 
 def test_gated_store_without_extraction_requeues(cfg: EngramConfig):
-    ingest, sqlite, _, _ = _ctx(cfg)
+    _ingest, sqlite, _, _ = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s4", "I own a dog named Rex.", "Cute.", 0)
     with sqlite.transaction() as conn:
         conn.execute("UPDATE events SET status = 'GATED_STORE' WHERE event_id = ?", (eid,))
-    driven: list[str] = []
-    counts = run_once(
-        ReconciliationContext(cfg=cfg, sqlite=sqlite, drive_event=driven.append)
-    )
+    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
     assert counts["gated_store_stuck"] == 1
-    assert driven == [eid]
+    refreshed = sqlite.get_event(eid)
+    assert refreshed is not None
+    assert refreshed["status"] == "RECEIVED"

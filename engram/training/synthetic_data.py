@@ -37,9 +37,9 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 
 # ----------------------------------------------------------------------
 # Grammar building blocks
@@ -52,7 +52,7 @@ _PEOPLE = [
     "Yara", "Zane",
 ]
 _COMPANIES = [
-    "Meta", "Google", "Anthropic", "Stripe", "Figma", "OpenAI",
+    "Meta", "Google", "Ollama", "Stripe", "Figma", "OpenAI",
     "Cloudflare", "Shopify", "Vercel", "Snowflake", "Databricks",
     "GitHub", "DeepMind", "Notion", "Ramp",
 ]
@@ -130,7 +130,6 @@ def gen_gate_write(n: int, *, seed: int = 0) -> list[dict[str, Any]]:
             store = False
             reason = "pleasantry / no durable content"
         else:
-            person = rnd.choice(_PEOPLE)
             company = rnd.choice(_COMPANIES)
             city = rnd.choice(_CITIES)
             kind = rnd.choice(["job", "move", "project", "event", "preference", "fact"])
@@ -232,13 +231,15 @@ def gen_l1_plan(n: int, *, seed: int = 2) -> list[dict[str, Any]]:
     out = []
     depths = ["L1", "L2", "L3", "L4"]
     modes = ["AGFS", "KG", "HYBRID"]
+    questions = [
+        *_QUESTIONS_CONTEXT_DEPENDENT,
+        "Where does the user work?",
+        "What's the user's home city?",
+        "Who is the user's manager?",
+        "What projects does the user contribute to?",
+    ]
     for _ in range(n):
-        q = rnd.choice(_QUESTIONS_CONTEXT_DEPENDENT + [
-            f"Where does the user work?",
-            f"What's the user's home city?",
-            f"Who is the user's manager?",
-            f"What projects does the user contribute to?",
-        ])
+        q = rnd.choice(questions)
         depth = rnd.choice(depths)
         mode = rnd.choice(modes)
         sys_p = f"[L1_PLAN] Level-1 retrieval planner — §3.2.\n\n…User query:\n{q}\n"
@@ -266,8 +267,7 @@ def gen_ln_plan(n: int, *, seed: int = 3) -> list[dict[str, Any]]:
     out = []
     for _ in range(n):
         terminate = rnd.random() < 0.4
-        level = rnd.choice(["L2", "L3", "L4"])
-        sys_p = f"[LN_PLAN] Fused plan-with-judge — §4.2.\n\n…Previous level (L1) results:\n(stub)\n"
+        sys_p = "[LN_PLAN] Fused plan-with-judge — §4.2.\n\n…Previous level (L1) results:\n(stub)\n"
         body = {
             "previous_level_sufficient": terminate,
             "terminate_cascade": terminate,

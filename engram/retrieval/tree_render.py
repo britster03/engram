@@ -14,7 +14,6 @@ from engram.frontmatter import FrontmatterError
 from engram.storage.filesystem import FilesystemStore
 from engram.uri import path_to_uri
 
-
 MIN_NODE_TOKENS = 20
 
 
@@ -36,7 +35,7 @@ def render_tree(
 ) -> str:
     """Produce a compact breadth-first tree sketch under `max_tokens`.
 
-    Always renders at least depth 1–2. Emits ellipsis markers for truncated
+    Always renders at least depth 1-2. Emits ellipsis markers for truncated
     subtrees so the Core Model knows what is missing.
     """
     root_path = fs.data_dir

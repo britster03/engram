@@ -42,8 +42,8 @@ cascade / model settings.
 ```json
 {
   "retrieval": { "max_depth": "L4", "max_reentries": 2, ... },
-  "core_model": { "provider": "anthropic", "model_path": "claude-sonnet-4-6" },
-  "frontier_llm": { "provider": "anthropic", "model_path": "claude-sonnet-4-6" }
+  "core_model": { "provider": "ollama_cloud", "model_path": "kimi-k2.7-code:cloud" },
+  "frontier_llm": { "provider": "ollama_cloud", "model_path": "kimi-k2.7-code:cloud" }
 }
 ```
 

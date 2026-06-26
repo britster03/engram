@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 import redis
 from fastapi import Request
@@ -182,6 +182,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         mem_query = InMemoryLimiter(capacity=query_per_min, refill_per_minute=query_per_min)
         mem_ingest = InMemoryLimiter(capacity=ingest_per_min, refill_per_minute=ingest_per_min)
+        self._legacy_query: RateLimiterBackend
+        self._legacy_ingest: RateLimiterBackend
         if redis_url:
             try:
                 self._legacy_query = _FallbackWrapper(
@@ -203,7 +205,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             self._legacy_query = mem_query
             self._legacy_ingest = mem_ingest
 
-        self._per_tenant: dict[tuple[str, str], Any] = {}
+        self._per_tenant: dict[tuple[str, str], RateLimiterBackend] = {}
         self._per_tenant_lock = threading.Lock()
 
     # Public accessors for existing tests
@@ -217,13 +219,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _bucket_for_tenant(
         self, tenant_id: str, dimension: str, capacity: int,
-    ):
+    ) -> RateLimiterBackend:
         key = (tenant_id, dimension)
         with self._per_tenant_lock:
             existing = self._per_tenant.get(key)
             if existing is not None:
                 return existing
             mem = InMemoryLimiter(capacity=capacity, refill_per_minute=capacity)
+            limiter: RateLimiterBackend
             if self.redis_url:
                 try:
                     limiter = _FallbackWrapper(

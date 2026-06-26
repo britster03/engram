@@ -10,6 +10,7 @@ from engram.config import EngramConfig
 from engram.ingest.worker import IngestContext, process_event
 from engram.retrieval.orchestrator import OrchestratorContext, run_query
 from engram.storage.filesystem import FilesystemStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.sqlite import SqliteStore
 from engram.tenancy import (
     Tenant,
@@ -18,16 +19,19 @@ from engram.tenancy import (
 )
 from engram.uri import pair_id as pair_id_fn
 
-from engram.storage.memory_kg import InMemoryKnowledgeGraph
-from .providers import DeterministicCoreProvider, DeterministicEmbeddingService, DeterministicFrontierProvider
+from .providers import (
+    DeterministicCoreProvider,
+    DeterministicEmbeddingService,
+    DeterministicFrontierProvider,
+)
 
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> EngramConfig:
     return EngramConfig.model_validate({
         "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
+        "core_model": {"provider": "ollama_cloud", "api_key": "x"},
+        "frontier_llm": {"provider": "ollama_cloud", "api_key": "x"},
         "filesystem": {"data_dir": str(tmp_path / "mem")},
         "event_ledger": {"path": str(tmp_path / "ev.db")},
         "session_cache": {"backend": "memory"},

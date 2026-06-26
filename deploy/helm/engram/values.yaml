@@ -69,8 +69,7 @@ secrets:
   create: true
   apiKey: ""
   adminKey: ""
-  coreModelApiKey: ""
-  frontierLlmApiKey: ""
+  ollamaApiKey: ""
   neo4jAdminPassword: ""
 
 config:

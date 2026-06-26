@@ -34,8 +34,10 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any
 
 from engram import metrics as metrics_mod
 from engram.config import EngramConfig
@@ -43,7 +45,6 @@ from engram.ingest.worker import IngestContext, process_event
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
 
 log = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class DurableIngestContext:
     cfg: EngramConfig
     sqlite: SqliteStore
     fs: FilesystemStore
-    neo4j: Neo4jStore
+    neo4j: Any
     core: CoreModelProvider
     embed: EmbeddingService
     ingest_context_factory: Callable[[], IngestContext]
@@ -109,10 +110,8 @@ class DurableIngestWorker:
             self._poll_thread.join(timeout=timeout_s)
         # Drain remaining items with sentinels so workers exit cleanly.
         for _ in self._workers:
-            try:
+            with suppress(queue.Full):
                 self._queue.put_nowait("__STOP__")
-            except queue.Full:
-                pass
         for t in self._workers:
             t.join(timeout=timeout_s)
         log.info("durable ingest worker stopped")
@@ -140,18 +139,11 @@ class DurableIngestWorker:
     def _claim_batch(self) -> list[str]:
         """Claim up to `batch_size` events in status=RECEIVED.
 
-        Claiming is a single UPDATE ... RETURNING that flips RECEIVED →
-        RECEIVED (no status change needed; we use in-process dedup via
-        `_in_flight` because the pipeline itself is idempotent and every
-        step updates status). The alternative would be a CLAIMED status,
-        but that complicates reconciliation — keep the state machine flat.
+        Claiming is an SQLite transaction that flips RECEIVED → PROCESSING.
+        That state transition is shared across API workers and replicas,
+        unlike the process-local `_in_flight` set used only for queue hygiene.
         """
-        conn = self.ctx.sqlite.get_conn()
-        rows = conn.execute(
-            "SELECT event_id FROM events WHERE status = 'RECEIVED' "
-            "ORDER BY created_at LIMIT ?",
-            (self.batch_size,),
-        ).fetchall()
+        rows = self.ctx.sqlite.claim_pending_events(limit=self.batch_size)
         claimed: list[str] = []
         with self._in_flight_lock:
             for r in rows:
@@ -183,7 +175,7 @@ class DurableIngestWorker:
             ctx = self.ctx.ingest_context_factory()
             final = process_event(ctx, event_id)
             metrics_mod.ingest_events_total.labels(final_status=final).inc()
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             log.exception("durable ingest failed for %s", event_id)
             try:
                 self.ctx.sqlite.set_event_status(
@@ -202,7 +194,7 @@ def start_background(
     cfg: EngramConfig,
     sqlite: SqliteStore,
     fs: FilesystemStore,
-    neo4j: Neo4jStore,
+    neo4j: Any,
     core: CoreModelProvider,
     embed: EmbeddingService,
     *,

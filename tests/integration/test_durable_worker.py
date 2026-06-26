@@ -11,10 +11,10 @@ from engram.config import EngramConfig
 from engram.ingest.durable_worker import DurableIngestContext, DurableIngestWorker
 from engram.ingest.worker import IngestContext
 from engram.storage.filesystem import FilesystemStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.sqlite import SqliteStore
 from engram.uri import pair_id as pair_id_fn
 
-from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
 
 
@@ -22,8 +22,8 @@ from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
 def cfg(tmp_path: Path) -> EngramConfig:
     return EngramConfig.model_validate({
         "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
+        "core_model": {"provider": "ollama_cloud", "api_key": "x"},
+        "frontier_llm": {"provider": "ollama_cloud", "api_key": "x"},
         "filesystem": {"data_dir": str(tmp_path / "mem")},
         "event_ledger": {"path": str(tmp_path / "ev.db")},
         "consolidation": {"db_path": str(tmp_path / "cons.db")},
@@ -87,7 +87,7 @@ def _wait_for_terminal(sqlite: SqliteStore, event_ids: list[str], *, timeout_s: 
 
 
 def test_worker_drains_pending_events(cfg: EngramConfig):
-    worker, sqlite, neo = _build_worker(cfg)
+    worker, sqlite, _neo = _build_worker(cfg)
     event_ids = []
     for i in range(3):
         eid = _enqueue(sqlite, "s", i,
@@ -105,21 +105,29 @@ def test_worker_drains_pending_events(cfg: EngramConfig):
         assert ev["status"] in {"COMPLETE", "GATED_SKIP"}
 
 
+def test_claim_batch_is_shared_across_worker_instances(cfg: EngramConfig):
+    worker1, sqlite, _neo = _build_worker(cfg)
+    eid = _enqueue(sqlite, "s", 0, "I live in Chicago.", "OK")
+    worker2, _sqlite2, _neo2 = _build_worker(cfg)
+
+    assert worker1._claim_batch() == [eid]
+    assert worker2._claim_batch() == []
+    ev = sqlite.get_event(eid)
+    assert ev is not None
+    assert ev["status"] == "PROCESSING"
+
+
 def test_worker_is_idempotent_on_replay(cfg: EngramConfig):
     """Restart the worker — events already COMPLETE are left alone."""
-    worker, sqlite, neo = _build_worker(cfg)
+    worker, sqlite, _neo = _build_worker(cfg)
     eid = _enqueue(sqlite, "s", 0, "I live in Chicago.", "OK")
     worker.start()
     try:
         _wait_for_terminal(sqlite, [eid], timeout_s=5.0)
     finally:
         worker.stop(timeout_s=3.0)
-    before_nodes = len(neo.nodes)
     # Second worker instance on the same DB
-    worker2, sqlite2, neo2 = _build_worker(cfg)
-    # Rehydrate state in the fake neo by replaying — we're using a fresh
-    # InMemoryKnowledgeGraph, so the count check just ensures no duplicate writes
-    # happen on the same events.
+    worker2, _sqlite2, _neo2 = _build_worker(cfg)
     worker2.start()
     time.sleep(0.5)
     try:
@@ -133,7 +141,7 @@ def test_worker_is_idempotent_on_replay(cfg: EngramConfig):
 
 def test_failed_events_are_marked(cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch):
     """Simulate a pipeline crash — the worker marks the event FAILED."""
-    worker, sqlite, neo = _build_worker(cfg)
+    worker, sqlite, _neo = _build_worker(cfg)
     eid = _enqueue(sqlite, "s", 0, "I just joined Meta", "ok")
 
     # Monkey-patch process_event to always explode.

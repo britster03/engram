@@ -15,16 +15,17 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from engram.tenancy import DEFAULT_TENANT_ID
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS events (
     event_id      TEXT PRIMARY KEY,
-    pair_id       TEXT UNIQUE NOT NULL,
+    pair_id       TEXT NOT NULL,
     tenant_id     TEXT NOT NULL DEFAULT '_default',
     session_id    TEXT,
     source        TEXT NOT NULL,
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_status   ON events(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_session  ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_tenant   ON events(tenant_id, status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_tenant_pair ON events(tenant_id, pair_id);
 
 CREATE TABLE IF NOT EXISTS fs_outbox (
     event_id      TEXT PRIMARY KEY,
@@ -90,6 +92,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_pending_unique
     WHERE status IN ('PENDING', 'PROCESSING');
 CREATE INDEX IF NOT EXISTS idx_tasks_status  ON consolidation_tasks(status, priority, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_tenant  ON consolidation_tasks(tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS bulk_jobs (
+    job_id          TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL DEFAULT '_default',
+    source          TEXT NOT NULL,
+    filename        TEXT,
+    dry_run         INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL,
+    total_count     INTEGER NOT NULL DEFAULT 0,
+    accepted_count  INTEGER NOT NULL DEFAULT 0,
+    rejected_count  INTEGER NOT NULL DEFAULT 0,
+    rejected_rows   TEXT NOT NULL DEFAULT '[]',
+    event_ids       TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_jobs_tenant_created
+    ON bulk_jobs(tenant_id, created_at);
 """
 
 
@@ -169,26 +189,46 @@ class SqliteStore:
             return event_id, True
         except sqlite3.IntegrityError:
             row = self.get_conn().execute(
-                "SELECT event_id FROM events WHERE pair_id = ?", (pair_id,)
+                "SELECT event_id FROM events WHERE tenant_id = ? AND pair_id = ?",
+                (tenant_id, pair_id),
             ).fetchone()
             if row is None:
                 raise
             return row["event_id"], False
 
     def set_event_status(
-        self, event_id: str, status: str, error_message: str | None = None
+        self,
+        event_id: str,
+        status: str,
+        error_message: str | None = None,
+        *,
+        tenant_id: str | None = None,
     ) -> None:
+        tenant_clause = "" if tenant_id is None else " AND tenant_id = ?"
+        params: tuple[Any, ...]
+        if tenant_id is None:
+            params = (status, error_message, event_id)
+        else:
+            params = (status, error_message, event_id, tenant_id)
         with self.transaction() as conn:
             conn.execute(
                 "UPDATE events SET status = ?, error_message = ?, processed_at = datetime('now') "
-                "WHERE event_id = ?",
-                (status, error_message, event_id),
+                f"WHERE event_id = ?{tenant_clause}",
+                params,
             )
 
-    def get_event(self, event_id: str) -> dict[str, Any] | None:
-        row = self.get_conn().execute(
-            "SELECT * FROM events WHERE event_id = ?", (event_id,)
-        ).fetchone()
+    def get_event(
+        self, event_id: str, *, tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if tenant_id is None:
+            row = self.get_conn().execute(
+                "SELECT * FROM events WHERE event_id = ?", (event_id,)
+            ).fetchone()
+        else:
+            row = self.get_conn().execute(
+                "SELECT * FROM events WHERE event_id = ? AND tenant_id = ?",
+                (event_id, tenant_id),
+            ).fetchone()
         if row is None:
             return None
         d = dict(row)
@@ -198,18 +238,41 @@ class SqliteStore:
     def claim_pending_events(
         self, limit: int = 10, *, tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Atomically move RECEIVED → PROCESSING (tracked via a NULL processed_at)."""
-        if tenant_id is None:
-            rows = self.get_conn().execute(
-                "SELECT * FROM events WHERE status = 'RECEIVED' "
-                "ORDER BY created_at LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = self.get_conn().execute(
-                "SELECT * FROM events WHERE status = 'RECEIVED' AND tenant_id = ? "
-                "ORDER BY created_at LIMIT ?",
-                (tenant_id, limit),
+        """Atomically claim RECEIVED events for a durable worker.
+
+        The claim is a shared SQLite state transition, so independent API
+        workers/replicas cannot pick the same event before processing starts.
+        Reconciliation treats stale PROCESSING rows as replayable.
+        """
+        if limit <= 0:
+            return []
+        with self.transaction() as conn:
+            if tenant_id is None:
+                selected = conn.execute(
+                    "SELECT event_id FROM events WHERE status = 'RECEIVED' "
+                    "ORDER BY created_at LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                selected = conn.execute(
+                    "SELECT event_id FROM events WHERE status = 'RECEIVED' AND tenant_id = ? "
+                    "ORDER BY created_at LIMIT ?",
+                    (tenant_id, limit),
+                ).fetchall()
+            event_ids = [r["event_id"] for r in selected]
+            if not event_ids:
+                return []
+            placeholders = ",".join("?" for _ in event_ids)
+            conn.execute(
+                f"UPDATE events SET status = 'PROCESSING', processed_at = datetime('now'), "
+                f"error_message = NULL WHERE status = 'RECEIVED' "
+                f"AND event_id IN ({placeholders})",
+                tuple(event_ids),
+            )
+            rows = conn.execute(
+                f"SELECT * FROM events WHERE event_id IN ({placeholders}) "
+                "ORDER BY created_at",
+                tuple(event_ids),
             ).fetchall()
         return [dict(r, payload=json.loads(r["payload"])) for r in rows]
 
@@ -319,3 +382,84 @@ class SqliteStore:
             "SELECT COUNT(*) AS c FROM fs_outbox WHERE state = 'PENDING'"
         ).fetchone()
         return int(row["c"]) if row else 0
+
+    # ------------------------------------------------------------------
+    # Bulk ingest jobs
+    # ------------------------------------------------------------------
+
+    def save_bulk_job(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        source: str,
+        filename: str | None,
+        dry_run: bool,
+        status: str,
+        total_count: int,
+        accepted_count: int,
+        rejected_count: int,
+        rejected_rows: list[dict[str, Any]],
+        event_ids: list[str],
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO bulk_jobs "
+                "(job_id, tenant_id, source, filename, dry_run, status, total_count, "
+                "accepted_count, rejected_count, rejected_rows, event_ids, completed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "CASE WHEN ? THEN datetime('now') ELSE NULL END)",
+                (
+                    job_id,
+                    tenant_id,
+                    source,
+                    filename,
+                    1 if dry_run else 0,
+                    status,
+                    total_count,
+                    accepted_count,
+                    rejected_count,
+                    json.dumps(rejected_rows),
+                    json.dumps(event_ids),
+                    status != "QUEUED",
+                ),
+            )
+
+    def set_bulk_job_status(
+        self,
+        job_id: str,
+        status: str,
+        *,
+        tenant_id: str | None = None,
+    ) -> None:
+        tenant_clause = "" if tenant_id is None else " AND tenant_id = ?"
+        params: tuple[Any, ...] = (
+            (status, job_id) if tenant_id is None else (status, job_id, tenant_id)
+        )
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE bulk_jobs SET status = ?, "
+                "completed_at = COALESCE(completed_at, datetime('now')) "
+                f"WHERE job_id = ?{tenant_clause}",
+                params,
+            )
+
+    def get_bulk_job(
+        self, job_id: str, *, tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if tenant_id is None:
+            row = self.get_conn().execute(
+                "SELECT * FROM bulk_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        else:
+            row = self.get_conn().execute(
+                "SELECT * FROM bulk_jobs WHERE job_id = ? AND tenant_id = ?",
+                (job_id, tenant_id),
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["dry_run"] = bool(d.get("dry_run"))
+        d["rejected_rows"] = json.loads(d.get("rejected_rows") or "[]")
+        d["event_ids"] = json.loads(d.get("event_ids") or "[]")
+        return d

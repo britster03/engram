@@ -3,11 +3,11 @@
 {% block title %}Dashboard - Engram Admin{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/admin/static/css/dashboard.css">
+<link rel="stylesheet" href="{{ static('css/dashboard.css') }}">
 {% endblock %}
 
 {% block content %}
-<div class="min-h-screen bg-white flex flex-col" x-data="dashboard()" x-init="init()" data-theme="light">
+<div class="min-h-screen bg-white flex flex-col overflow-x-hidden" x-data="dashboard()" data-theme="light">
   {% include "dashboard/_navbar.html" %}
 
   <main class="flex-grow relative overflow-hidden">
@@ -23,5 +23,5 @@
     </div>
   </main>
 </div>
-<script src="/admin/static/js/dashboard.js"></script>
+<script src="{{ static('js/dashboard.js') }}"></script>
 {% endblock %}

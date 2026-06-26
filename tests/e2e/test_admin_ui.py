@@ -4,17 +4,45 @@ These tests exercise the full browser stack: login, navigation,
 ingest pipeline, chat, and SQLite data propagation.
 """
 
+import os
 import sqlite3
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
+import yaml
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support import expected_conditions as EC  # noqa: N812
 from selenium.webdriver.support.ui import WebDriverWait
 
 pytestmark = pytest.mark.e2e
+
+TAB_LABELS = {
+    "status": "Status",
+    "sessions": "Sessions",
+    "memories": "Memories",
+    "ingest": "Ingest",
+    "settings": "Settings",
+}
+
+
+def _event_ledger_path() -> Path:
+    override = os.environ.get("ENGRAM_EVENT_LEDGER_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    cfg_path = os.environ.get("ENGRAM_CONFIG_PATH")
+    if cfg_path:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        configured = (cfg.get("event_ledger") or {}).get("path")
+        if configured:
+            path = Path(configured).expanduser()
+            return path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
+
+    return (Path.cwd() / "data" / "event_ledger.db").resolve()
 
 
 @pytest.fixture(scope="session")
@@ -74,6 +102,21 @@ def admin_logged_in_driver(selenium_driver, base_url, admin_key):
     drv.delete_all_cookies()
     drv.get(f"{base_url}/admin/login")
     drv.execute_script("localStorage.clear();")
+
+
+def _nav_tab_button(wait: WebDriverWait, tab_key: str):
+    label = TAB_LABELS[tab_key]
+    return wait.until(
+        EC.element_to_be_clickable(
+            (By.XPATH, f"//nav//button[contains(normalize-space(.), '{label}')]")
+        )
+    )
+
+
+def _set_ingest_session(drv, session_id: str) -> None:
+    session_input = drv.find_element(By.CSS_SELECTOR, 'input[x-model="ingest.session_id"]')
+    session_input.clear()
+    session_input.send_keys(session_id)
 
 
 @pytest.mark.e2e
@@ -153,11 +196,7 @@ def test_dashboard_tab_navigation(admin_logged_in_driver, base_url):
     }
 
     for tab_key, heading_xpath in tab_checks.items():
-        btn = wait.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, f"//nav//button[contains(@click, \"setMainTab('{tab_key}')\")]")
-            )
-        )
+        btn = _nav_tab_button(wait, tab_key)
         drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
         btn.click()
 
@@ -204,11 +243,7 @@ def test_ingest_via_dashboard(admin_logged_in_driver, base_url):
     drv = admin_logged_in_driver
     wait = WebDriverWait(drv, 30)
 
-    ingest_btn = wait.until(
-        EC.element_to_be_clickable(
-            (By.XPATH, "//nav//button[contains(@click, \"setMainTab('ingest')\")]")
-        )
-    )
+    ingest_btn = _nav_tab_button(wait, "ingest")
     drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", ingest_btn)
     ingest_btn.click()
 
@@ -216,6 +251,7 @@ def test_ingest_via_dashboard(admin_logged_in_driver, base_url):
 
     user_ta = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]')))
     asst_ta = drv.find_element(By.CSS_SELECTOR, 'textarea[x-model="ingest.assistant"]')
+    _set_ingest_session(drv, f"e2e-dashboard-{uuid4().hex}")
 
     user_ta.clear()
     user_ta.send_keys("E2E test user message")
@@ -238,11 +274,7 @@ def test_session_appears_after_ingest(admin_logged_in_driver, base_url):
     drv = admin_logged_in_driver
     wait = WebDriverWait(drv, 30)
 
-    ingest_btn = wait.until(
-        EC.element_to_be_clickable(
-            (By.XPATH, "//nav//button[contains(@click, \"setMainTab('ingest')\")]")
-        )
-    )
+    ingest_btn = _nav_tab_button(wait, "ingest")
     drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", ingest_btn)
     ingest_btn.click()
 
@@ -250,6 +282,7 @@ def test_session_appears_after_ingest(admin_logged_in_driver, base_url):
 
     user_ta = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]')))
     asst_ta = drv.find_element(By.CSS_SELECTOR, 'textarea[x-model="ingest.assistant"]')
+    _set_ingest_session(drv, f"e2e-session-{uuid4().hex}")
     user_ta.clear()
     user_ta.send_keys("Session test query")
     asst_ta.clear()
@@ -286,24 +319,21 @@ def test_sqlite_events_after_ingest(admin_logged_in_driver, base_url):
     drv = admin_logged_in_driver
     wait = WebDriverWait(drv, 30)
 
-    db_path = Path("/home/hp/engram/data/event_ledger.db")
+    db_path = _event_ledger_path()
     conn_before = sqlite3.connect(str(db_path))
     cur_before = conn_before.cursor()
     cur_before.execute("SELECT COUNT(*) FROM events")
     count_before = cur_before.fetchone()[0]
     conn_before.close()
 
-    ingest_btn = wait.until(
-        EC.element_to_be_clickable(
-            (By.XPATH, "//nav//button[contains(@click, \"setMainTab('ingest')\")]")
-        )
-    )
+    ingest_btn = _nav_tab_button(wait, "ingest")
     drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", ingest_btn)
     ingest_btn.click()
     wait.until(EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Ingest Pipeline')]")))
 
     user_ta = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]')))
     asst_ta = drv.find_element(By.CSS_SELECTOR, 'textarea[x-model="ingest.assistant"]')
+    _set_ingest_session(drv, f"e2e-sqlite-{uuid4().hex}")
     user_ta.clear()
     user_ta.send_keys("SQLite propagation test")
     asst_ta.clear()

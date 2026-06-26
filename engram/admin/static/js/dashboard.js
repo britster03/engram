@@ -39,6 +39,9 @@
             // Ingest tab state
             ingest: { session_id: '', user: '', assistant: '' },
             ingestStatus: '',
+            bulk: { file: null, dryRun: false, sessionId: '', fileFormat: '' },
+            bulkStatus: '',
+            bulkJob: null,
 
             // Settings tab state
             language: localStorage.getItem('engram-admin-lang') || 'en',
@@ -105,6 +108,8 @@
                 const mainTab = params.get('tab');
                 const valid = new Set(['status', 'sessions', 'memories', 'ingest', 'settings']);
                 this.mainTab = valid.has(mainTab) ? mainTab : 'status';
+                const prefix = params.get('prefix');
+                if (prefix) this.memSearch = prefix;
             },
 
             syncTabStateToUrl() {
@@ -238,7 +243,7 @@
 
             async createSession() {
                 try {
-                    const response = await fetch('/api/v1/sessions', {
+                    const response = await fetch('/admin/api/sessions', {
                         method: 'POST',
                         headers: this._authHeaders(),
                     });
@@ -275,7 +280,7 @@
                         params.set('prefix', this.memSearch.trim());
                     }
                     params.set('limit', '50');
-                    const response = await fetch('/api/v1/memories?' + params.toString(), {
+                    const response = await fetch('/admin/api/memories?' + params.toString(), {
                         headers: this._authHeaders(),
                     });
                     if (response.ok) {
@@ -315,7 +320,7 @@
                     if (this.ingest.session_id.trim()) {
                         payload.session_id = this.ingest.session_id.trim();
                     }
-                    const response = await fetch('/api/v1/ingest', {
+                    const response = await fetch('/admin/api/ingest', {
                         method: 'POST',
                         headers: { ...this._authHeaders(), 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),
@@ -335,6 +340,55 @@
                     }
                 } catch (err) {
                     this.ingestStatus = 'Error: ' + err.message;
+                }
+            },
+
+            async submitBulkUpload() {
+                if (!this.bulk.file) {
+                    this.bulkStatus = 'Choose a JSONL, CSV, or ZIP file.';
+                    return;
+                }
+                this.bulkStatus = 'Uploading...';
+                this.bulkJob = null;
+                const form = new FormData();
+                form.append('file', this.bulk.file);
+                form.append('dry_run', this.bulk.dryRun ? 'true' : 'false');
+                if (this.bulk.sessionId.trim()) form.append('session_id', this.bulk.sessionId.trim());
+                if (this.bulk.fileFormat) form.append('file_format', this.bulk.fileFormat);
+                try {
+                    const response = await fetch('/admin/api/ingest/bulk', {
+                        method: 'POST',
+                        headers: this._authHeaders(),
+                        body: form,
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.bulkJob = data;
+                        this.bulkStatus = `${data.status}: ${data.accepted_count} accepted, ${data.rejected_count} rejected`;
+                        if (!data.dry_run && data.job_id) this.pollBulkJob(data.job_id);
+                        this.pollPipeline();
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin/login';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.bulkStatus = 'Error: ' + (data.detail || response.statusText);
+                    }
+                } catch (err) {
+                    this.bulkStatus = 'Error: ' + err.message;
+                }
+            },
+
+            async pollBulkJob(jobId) {
+                try {
+                    const response = await fetch('/admin/api/ingest/bulk/' + encodeURIComponent(jobId), {
+                        headers: this._authHeaders(),
+                    });
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    this.bulkJob = data;
+                    this.bulkStatus = `${data.status}: ${data.accepted_count} accepted, ${data.rejected_count} rejected`;
+                } catch (_) {
+                    // best-effort status refresh
                 }
             },
 

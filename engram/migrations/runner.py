@@ -24,9 +24,8 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
 
 from engram.config import EngramConfig
 from engram.storage.filesystem import FilesystemStore
@@ -89,8 +88,8 @@ def pending_migrations() -> list[tuple[int, Callable[[MigrationContext], None]]]
     entries: list[tuple[int, Callable[[MigrationContext], None]]] = []
     for _, mod_name, _ in pkgutil.iter_modules(scripts_pkg.__path__):
         mod = importlib.import_module(f"engram.migrations.scripts.{mod_name}")
-        version = int(getattr(mod, "SCHEMA_VERSION"))
-        upgrade = getattr(mod, "upgrade")
+        version = int(mod.SCHEMA_VERSION)
+        upgrade = mod.upgrade
         entries.append((version, upgrade))
     entries.sort(key=lambda p: p[0])
     return entries

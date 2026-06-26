@@ -38,7 +38,8 @@ engram/
 │   ├── frontier.py         # FrontierLLMProvider ABC + streaming contract
 │   ├── embeddings.py       # BGE-Small service (singleton)
 │   └── providers/
-│       └── anthropic_provider.py   # Claude adapter (core + frontier)
+│       ├── ollama_cloud.py         # Hosted Ollama adapter (core + frontier)
+│       └── openai_compat.py        # OpenAI-compatible adapter
 │
 ├── ingest/
 │   ├── worker.py           # 7-step pipeline
@@ -205,6 +206,6 @@ These are non-negotiable; protect them in review:
   still computes the full form — don't "optimise" by removing the norm.
 * **Neo4j `shortestPath` doesn't accept property predicates inline** —
   filter after the MATCH. See `templates/cypher/t_path_between.cypher`.
-* **`anthropic` SDK requires an API key at constructor time.** The
+* **Remote provider SDKs require API keys at constructor time.** The
   `build_core_provider` and `build_frontier_provider` functions raise
   early if the key is missing; don't defer this check.

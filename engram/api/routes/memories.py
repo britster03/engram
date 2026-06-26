@@ -8,10 +8,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from engram.api.auth import AuthDep
 from engram import frontmatter
-from engram.frontmatter import FrontmatterError
+from engram.api.auth import AuthDep
 from engram.deps import get_state
+from engram.frontmatter import FrontmatterError
+from engram.tenancy import current_tenant_id
 
 log = logging.getLogger(__name__)
 
@@ -44,16 +45,18 @@ def list_memories(
     cursor: str | None = Query(default=None),
 ) -> MemoryListResponse:
     state = get_state()
+    tenant_id = current_tenant_id()
     # Prefer Neo4j for listing if possible; fall back to filesystem walk for empty KG.
     try:
         rows = state.neo4j.run_template(
             "MATCH (n:Node) WHERE n.source_uri STARTS WITH $prefix "
+            "AND n.tenant_id = $tenant_id "
             "AND n.status = 'ACTIVE' "
             "AND ($cursor IS NULL OR n.source_uri > $cursor) "
             "RETURN n.source_uri AS source_uri, n.node_type AS node_type, "
             "n.l0_abstract AS l0_abstract, n.status AS status "
             "ORDER BY n.source_uri LIMIT $limit",
-            {"prefix": prefix, "cursor": cursor, "limit": limit + 1},
+            {"prefix": prefix, "cursor": cursor, "limit": limit + 1, "tenant_id": tenant_id},
             timeout_s=5,
         )
     except Exception:
@@ -76,6 +79,7 @@ def get_memory(source_uri: str) -> MemoryResponse:
     if not source_uri.startswith("mem://"):
         source_uri = f"mem://{source_uri.lstrip('/')}"
     state = get_state()
+    tenant_id = current_tenant_id()
     if not state.fs.exists(source_uri):
         raise HTTPException(status_code=404, detail=f"memory not found: {source_uri}")
     try:
@@ -86,10 +90,11 @@ def get_memory(source_uri: str) -> MemoryResponse:
     # Pull outgoing RELATES_TO edges for quick navigation
     try:
         edges = state.neo4j.run_template(
-            "MATCH (n:Node {source_uri: $uri})-[r:RELATES_TO]->(m:Node) "
-            "WHERE r.status = 'ACTIVE' "
+            "MATCH (n:Node {tenant_id: $tenant_id, source_uri: $uri})"
+            "-[r:RELATES_TO]->(m:Node {tenant_id: $tenant_id}) "
+            "WHERE r.tenant_id = $tenant_id AND r.status = 'ACTIVE' "
             "RETURN r.relation_label AS relation, m.source_uri AS object_uri LIMIT 25",
-            {"uri": source_uri},
+            {"uri": source_uri, "tenant_id": tenant_id},
             timeout_s=5,
         )
     except Exception:
@@ -180,14 +185,17 @@ def history(source_uri: str) -> dict[str, Any]:
     if not source_uri.startswith("mem://"):
         source_uri = f"mem://{source_uri.lstrip('/')}"
     state = get_state()
+    tenant_id = current_tenant_id()
     try:
         rows = state.neo4j.run_template(
-            "MATCH (latest:Node {source_uri: $uri}) "
+            "MATCH (latest:Node {tenant_id: $tenant_id, source_uri: $uri}) "
             "MATCH path = (latest)-[:SUPERSEDES*0..]->(n:Node) "
+            "WHERE n.tenant_id = $tenant_id "
+            "AND all(rel IN relationships(path) WHERE rel.tenant_id = $tenant_id) "
             "RETURN n.source_uri AS source_uri, n.status AS status, "
             "n.created_at AS created_at, length(path) AS distance "
             "ORDER BY distance LIMIT 50",
-            {"uri": source_uri},
+            {"uri": source_uri, "tenant_id": tenant_id},
             timeout_s=5,
         )
     except Exception:
@@ -204,14 +212,15 @@ def _walk_fs(state, prefix: str, limit: int, cursor: str | None) -> list[dict[st
     from engram import uri as uri_mod
 
     try:
-        start_path = state.fs.path_for(prefix)
+        tenant_root = state.fs.tenant_scope_path()
+        start_path = tenant_root if prefix == "mem://" else state.fs.path_for(prefix)
     except Exception:
         return []
     if not start_path.exists():
         return []
     items: list[dict[str, Any]] = []
     for path in sorted(start_path.rglob("*.md")):
-        u = uri_mod.path_to_uri(path, state.fs.data_dir)
+        u = uri_mod.path_to_uri(path, tenant_root)
         if cursor and u <= cursor:
             continue
         try:

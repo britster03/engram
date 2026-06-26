@@ -19,11 +19,11 @@ All caches share the same backend protocol so tests can swap in a
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import threading
 import time
-from typing import Any, Protocol
+from contextlib import suppress
+from typing import Protocol, cast
 
 import redis
 
@@ -84,7 +84,7 @@ class RedisCache:
 
     def get(self, key: str) -> bytes | None:
         try:
-            return self.client.get(self._k(key))
+            return cast(bytes | None, self.client.get(self._k(key)))
         except redis.RedisError as err:
             log.debug("redis cache GET failed for %s: %s", key, err)
             return None
@@ -99,10 +99,8 @@ class RedisCache:
             log.debug("redis cache SET failed for %s: %s", key, err)
 
     def delete(self, key: str) -> None:
-        try:
+        with suppress(redis.RedisError):
             self.client.delete(self._k(key))
-        except redis.RedisError:
-            pass
 
 
 def build_cache(url: str | None, namespace: str) -> CacheBackend:

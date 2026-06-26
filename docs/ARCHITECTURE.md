@@ -1,162 +1,172 @@
 # Architecture
 
-Engram is an AI memory management system. It gives conversational agents
-durable long-term memory through a **retrieval cascade** that enforces the
-**Minimal Sufficient Context (MSC)** principle: deliver exactly enough
-context to the frontier LLM, no more.
+Engram is a durable memory service for conversational agents. The original SDD
+defines a filesystem-authoritative memory system with event-sourced ingest and
+a shallow-to-deep retrieval cascade. The current implementation keeps those
+invariants and adds multi-tenancy, Admin UI workflows, bulk upload, KG
+visualization, and additional provider options.
 
-This document is the high-level map. See [FLOWS.md](FLOWS.md) for detailed
-sequences and [DATA_MODEL.md](DATA_MODEL.md) for the persisted shapes.
+See [FEATURES.md](FEATURES.md) for implementation status and [DATA_MODEL.md](DATA_MODEL.md)
+for persisted shapes.
 
-## Four layers
+## Runtime Layers
 
-| Layer | Components | File paths |
+| Layer | Responsibilities | Main code |
 |---|---|---|
-| Interface | REST API, CLI | `engram/api/`, `engram/cli.py` |
-| Orchestration | Retrieval orchestrator, session manager, ingest worker, consolidation worker, reconciliation worker | `engram/retrieval/`, `engram/session/`, `engram/ingest/`, `engram/consolidation/` |
-| Intelligence | Gating classifier (L0), Core Model, Frontier LLM, embedding service | `engram/models/` |
-| Storage | Filesystem (`mem://`), Neo4j (KG), SQLite (control plane), Redis (session cache) | `engram/storage/` |
+| Interface | REST API, OpenAI-compatible chat endpoint, Admin UI, CLI, clients | `engram/api/`, `engram/admin/`, `engram/cli.py`, `clients/` |
+| Orchestration | Retrieval cascade, ingest worker, sessions, consolidation, reconciliation, decay | `engram/retrieval/`, `engram/ingest/`, `engram/session/`, `engram/consolidation/`, `engram/decay.py` |
+| Intelligence | Embeddings, Core Model tasks, Frontier LLM answers, provider adapters | `engram/models/`, `engram/prompts/` |
+| Storage | Filesystem, SQLite, Neo4j or in-memory KG, Redis/session state, disposable caches | `engram/storage/`, `engram/cache.py` |
 
-The layers talk to each other through narrow contracts: the API calls into
-orchestration; orchestration calls the intelligence + storage layers; no
-layer reaches past its neighbour. Each contract is typed by a Pydantic or
-`dataclass` DTO.
+The API layer does not process ingest events directly. It records durable rows
+or resets status. The durable ingest worker owns extraction, filesystem writes,
+KG indexing, and consolidation enqueueing.
 
-## Storage boundaries
+## Storage Boundaries
 
-Engram uses **three storage backends with strict responsibilities**:
-
-| Backend | Stores | Authoritative? |
+| Store | Contents | Authority |
 |---|---|---|
-| **Filesystem** (`./data/mem`) | Every memory's body (`*.md`), directory overviews (`overview.md`), manifests (`.manifest`) | **Yes** — source of truth |
-| **Neo4j** | Node topology, `l0_embedding` vector index, fulltext index over `l0_abstract`, semantic edges | No — derived index |
-| **SQLite (WAL)** | Event ledger, ingest outbox, consolidation task queue, extractions, linked_entities, migration metadata | Control plane only |
-| **Redis** | Session cache keyed by `session:{session_id}` | Ephemeral |
+| Filesystem under `data/mem` | Memory Markdown, frontmatter, overviews, manifests | Authoritative memory body and metadata |
+| SQLite event ledger | Events, outboxes, bulk jobs, recovery state, consolidation tasks, tenants, audit rows | Authoritative control plane |
+| Neo4j | Tenant-scoped nodes, edges, vector index, full-text index, traversal graph | Derived index, rebuildable |
+| In-memory KG | Test/dev alternative to Neo4j | Derived index, rebuildable |
+| Redis session cache | Active session state keyed as `session:{tenant_id}:{session_id}` | Ephemeral session state |
+| Redis or memory performance caches | Embedding vectors and rendered overviews | Disposable optimization only |
 
-**Boundary rule (§2.2):** if the data is used to filter/sort/join, it lives
-as a KG property. If a model consumes it as natural-language context, it
-lives on disk. If it tracks processing state, it lives in SQLite. Every
-piece of data has exactly one authoritative home.
+Boundary rule: natural-language memory content lives on disk, queryable graph
+metadata lives in the KG, process state lives in SQLite, and active session
+state lives in the session cache. No performance cache is source of truth.
 
-## Three-model inference stack
+## Cache Policy
 
-```
-            Gating Model        Core Model         Frontier LLM
-          (BGE-Small 33M)  (Qwen3.5-0.8B or API)  (Claude / GPT-4 / …)
-                 │                  │                    │
-            embeddings          planning, extraction,    final answer
-          + L0 classifier       dedup, overview          (ANSWER | NEED_MORE)
-```
+The SDD Phase 1 rule is "session-only caching". The current implementation
+keeps the required session cache and adds two post-SDD performance caches:
 
-* **Gating model**: `engram/models/embeddings.py` (BGE-Small-EN-v1.5, 384-d).
-* **Core model**: abstract provider at `engram/models/core.py`; Anthropic
-  adapter at `engram/models/providers/anthropic_provider.py`. Swap
-  implementations by changing `core_model.provider` in `config.yaml`.
-* **Frontier LLM**: `engram/models/frontier.py` (abstract) and the same
-  Anthropic adapter. Supports both buffered `answer()` and `stream_answer()`
-  per §4.3.2.
+- `EmbeddingCache`: exact text plus model tag to embedding vector. This avoids
+  recomputing embeddings for repeated strings.
+- `OverviewCache`: tenant plus directory URI to rendered overview text. This
+  avoids repeated overview reads/renders during retrieval.
 
-## Request lifecycles (50-ft view)
+Both caches are tenant-safe and disposable. Clearing them should only make the
+next request slower. It must not remove a memory, change a KG edge, affect
+tenant ownership, or change correctness.
 
-### Ingest (write path)
+## Ingest Flow
 
-```
-POST /api/v1/ingest
-     │
-     ▼
-SQLite event ledger (sync, idempotent on pair_id)
-     │
-     ▼ (background task)
-Write-path gate → S-R-O extraction → entity linking
-     │
-     ▼
-Filesystem write (authoritative) → fs_outbox=WRITTEN
-     │
-     ▼
-Dedup/conflict → KG merge → fs_outbox=INDEXED
-     │
-     ▼
-Enqueue CONSOLIDATE_OVERVIEW + REGENERATE_MANIFEST + PROPAGATE_OVERVIEW
+```text
+POST /api/v1/ingest, /api/v1/sessions/*/message, /api/v1/chat/completions,
+or /api/v1/ingest/bulk
+  -> record event row in SQLite
+  -> durable ingest worker claims RECEIVED events
+  -> write-path gate
+  -> extraction
+  -> entity linking
+  -> filesystem write and outbox update
+  -> conflict resolution
+  -> KG index update
+  -> consolidation task enqueue
 ```
 
-### Query (read path)
+Session and chat paths may use response callbacks to append completed turns to
+the ledger, but event processing still happens only in the durable worker.
+Retry paths reset failed rows to `RECEIVED`; they do not run extraction inline.
 
-```
-POST /api/v1/query
-     │
-     ▼
-L0 binary gate (regex + optional classifier + memory-hit fallback)
-     │            └── BYPASS → frontier directly
-     ▼ CONTINUE
-L1 plan (Core Model) + vector search
-     │
-     ▼
-L2 graph traversal (Cypher templates, fused plan-judge)
-     │
-     ▼
-L3 directory overviews
-     │
-     ▼
-L4 full documents + multi-hop
-     │
-     ▼
-MSC assembly (10/30/50/10 token-budget split)
-     │
-     ▼
-Frontier LLM → ANSWER | NEED_MORE (re-enter up to max_reentries)
+Low-confidence triplets follow the SDD confidence tiers:
+
+- `confidence >= 0.6`: create/update semantic edges.
+- `0.3 <= confidence < 0.6`: write a `FACT` memory with `LOW_CONFIDENCE`
+  status.
+- `confidence < 0.3`: ignore the triplet.
+
+## Retrieval Flow
+
+```text
+POST /api/v1/query or /api/v1/chat/completions
+  -> L0 gate
+  -> L1 Core plan and vector search
+  -> L2 bounded graph traversal through templates
+  -> L3 directory overviews
+  -> L4 full documents and multi-hop commands
+  -> Minimal Sufficient Context assembly
+  -> Frontier answer
+  -> optional NEED_MORE re-entry
 ```
 
-See [FLOWS.md](FLOWS.md) for the annotated step-by-step.
+The Core Model never emits raw Cypher. It selects bounded templates from
+`templates/cypher/`, including path, neighborhood, temporal, history, prefix,
+cross-reference, and vector-search templates.
 
-## Background workers
+## Sessions
 
-| Worker | Cadence | Responsibility |
+Sessions live in the tenant-scoped session cache while active. A session can be
+compacted during a long conversation. On close, Engram writes a durable
+`SESSION_SUMMARY` memory and re-enqueues raw turns for durable ingest. The
+session cache entry can then be deleted without losing long-term memory.
+
+## Tenant Isolation
+
+Tenant context is resolved from bearer tokens and bound to the request. The
+tenant id scopes:
+
+- SQLite events, outboxes, bulk jobs, tenants, audit rows, and idempotency
+- filesystem roots under `data/mem/{tenant_id}`
+- KG node and edge properties plus every query template
+- Redis session keys
+- rate-limit buckets and quotas
+- Admin UI/API tenant operations
+
+The external `mem://` URI remains tenant-relative. The same `mem://` URI in
+two tenants maps to separate filesystem paths and separate KG records.
+
+## Workers And Recovery
+
+| Worker | Trigger | Responsibility |
 |---|---|---|
-| Ingest worker | On-demand (FastAPI `BackgroundTasks`) + reconciliation replay | Drive events through steps 2–7 |
-| Consolidation worker | Daemon thread, 10s poll | Regenerate overview.md / manifest / propagate / atomize / normalize / temporalize / integrate |
-| Reconciliation worker | Daemon thread, 60s interval + startup | Requeue stuck events; scan stale directory overviews |
-| Decay cron | On-demand via `engram decay` (schedule externally) | Recompute `retrieval_weight` for every ACTIVE node |
+| Durable ingest worker | FastAPI lifespan, SQLite poll | Claim and process `RECEIVED` events. |
+| Consolidation worker | FastAPI lifespan, queue poll | Run overview, manifest, propagation, atomization, normalization, temporalization, integration, and unmerge tasks. |
+| Reconciliation worker | FastAPI lifespan, interval poll | Requeue stuck event/outbox states and schedule stale directory work. |
+| Decay job | CLI or external scheduler | Recompute retrieval weights for active memories. |
 
-Workers are started by the FastAPI `lifespan` context manager
-(`engram/api/app.py`) and stopped cleanly on shutdown.
+Redis leases are available for singleton worker coordination in multi-replica
+deployments. If Redis is unavailable, development mode can fall back to
+in-process behavior.
 
-## Fault tolerance
+## Provider Architecture
 
-* **Event-sourced ingest with outbox** (§5.1): every ingest persists to the
-  Event Ledger synchronously before any downstream work begins. Every step
-  is idempotent so replay is safe.
-* **Filesystem-authoritative** (§2.3): Neo4j loss is recoverable via
-  `engram rebuild-kg`. Filesystem loss requires restoring from snapshot.
-* **Reconciliation worker** (§5.5): scans the Event Ledger and outboxes for
-  stuck states every 60 seconds and requeues them.
-* **Backpressure** (§7.5): ingest returns 503 with `Retry-After` when
-  `consolidation_tasks.queue_depth > max_backlog`.
+Core and Frontier providers are selected independently in config:
 
-## Security posture
+- `openai`
+- `openai_compat`
+- `ollama`
+- `ollama_cloud`
+- `local` for Core-only local-provider scaffolding
 
-* Bearer-token auth on every endpoint except `/api/v1/health` and `/metrics`.
-* Token-bucket rate limiting on `/api/v1/query` and `/api/v1/ingest`.
-* Cypher is whitelisted: the Core Model never emits raw Cypher; it picks a
-  parameterised template from `templates/cypher/`. Each template is bounded
-  (LIMIT, hops cap) and status-filtered by default.
-* Neo4j reader/writer role separation is a configuration swap on Enterprise
-  Edition; Community uses a single admin user (see `config.yaml`).
+`api_base` is part of both Core and Frontier config. The default config uses
+`ollama_cloud` at `https://ollama.com/api` and reads `OLLAMA_API_KEY`. Local
+`ollama` defaults to `http://localhost:11434/v1`.
 
-## Extensibility
+## Admin And Visualization
 
-* **Add a Core Model task**: drop a new Jinja template under
-  `engram/prompts/`, add a call site in the caller module, and register a
-  handler in the stub if you want tests to exercise it.
-* **Add a Cypher template**: drop a `.cypher` file under
-  `templates/cypher/`, register its required params in
-  `engram/retrieval/templates.py`. The orchestrator runs them under the
-  read-only timeout budget.
-* **Add an LLM provider**: implement `CoreModelProvider` /
-  `FrontierLLMProvider` and expose it through `build_core_provider` /
-  `build_frontier_provider`.
-* **Add a consolidation task type**: add a handler in
-  `engram/consolidation/tasks.py`, dispatch it from
-  `engram/consolidation/worker.py`, and whitelist the task_type in
-  `engram/api/routes/consolidation.py`.
+The Admin UI is served by the FastAPI app under `/admin/*` and uses the same
+tenant/admin boundaries as the API. It includes:
 
-See [DEV_GUIDE.md](DEV_GUIDE.md) for the concrete recipes.
+- login and dashboard status
+- ingest panel
+- bulk upload with dry-run and rejected-row reporting
+- sessions and memories views
+- chat with retrieval traces
+- KG graph visualization with type/status filters and hard result limits
+
+The KG visualization uses vendored JavaScript assets under
+`engram/admin/static/js/`; it does not depend on a CDN.
+
+## Operational Interfaces
+
+- Health: `/api/v1/health`, `/livez`, `/readyz`
+- Metrics: `/metrics`
+- Migrations: `python -m engram.cli migrate`
+- Schema/index init: `python -m engram.cli init`
+- Smoke test: `python -m engram.cli smoke`
+- KG rebuild: `python -m engram.cli rebuild-kg`
+- Decay: `python -m engram.cli decay`
+- Admin CLI: `python -m engram.cli admin ...`

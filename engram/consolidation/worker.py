@@ -10,15 +10,14 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
+from typing import Any
 
 from engram.config import EngramConfig
 from engram.consolidation import tasks as handlers
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
 
 log = logging.getLogger(__name__)
@@ -29,7 +28,7 @@ class ConsolidationContext:
     cfg: EngramConfig
     sqlite: SqliteStore
     fs: FilesystemStore
-    neo4j: Neo4jStore
+    neo4j: Any
     core: CoreModelProvider
     embed: EmbeddingService
     overview_cache: object | None = None
@@ -70,7 +69,7 @@ def process_one(ctx: ConsolidationContext) -> bool:
     try:
         _dispatch(ctx, task)
         _complete_task(ctx.sqlite, task["task_id"], "COMPLETE")
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:
         log.exception("consolidation task %s failed", task["task_id"])
         _complete_task(ctx.sqlite, task["task_id"], "FAILED", str(err))
     return True

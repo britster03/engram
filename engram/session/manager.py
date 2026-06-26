@@ -12,10 +12,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from engram import prompts
+from engram import frontmatter, prompts
+from engram import uri as uri_mod
 from engram.models.core import CoreModelProvider
+from engram.models.embeddings import EmbeddingService
+from engram.storage.filesystem import FilesystemStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
+from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.redis_cache import SessionCache
 from engram.storage.sqlite import SqliteStore
+from engram.tenancy import DEFAULT_TENANT_ID, current_tenant_id
 from engram.uri import pair_id as pair_id_fn
 
 log = logging.getLogger(__name__)
@@ -45,7 +51,7 @@ class SessionState:
         return d
 
     @classmethod
-    def from_payload(cls, data: dict[str, Any]) -> "SessionState":
+    def from_payload(cls, data: dict[str, Any]) -> SessionState:
         turns = [Turn(**t) for t in data.get("turns", [])]
         s = cls(
             session_id=data["session_id"],
@@ -147,6 +153,8 @@ def compact_session(
     state: SessionState,
     core: CoreModelProvider,
     sqlite: SqliteStore | None = None,
+    *,
+    tenant_id: str | None = None,
 ) -> SessionState:
     """Compact the oldest uncompacted turns via the Core Model.
 
@@ -193,13 +201,145 @@ def compact_session(
     # so the authoritative ingest pipeline sees the raw turns (not the lossy
     # compaction). Each pair_id is deterministic, so resubmits are idempotent.
     if sqlite is not None:
-        _reenqueue_for_ingest(sqlite, state.session_id, to_compact)
+        _reenqueue_for_ingest(sqlite, state.session_id, to_compact, tenant_id=tenant_id)
     return state
 
 
+def commit_session(
+    manager: SessionManager,
+    state: SessionState,
+    core: CoreModelProvider,
+    *,
+    sqlite: SqliteStore | None = None,
+    fs: FilesystemStore | None = None,
+    neo4j: Neo4jStore | InMemoryKnowledgeGraph | None = None,
+    embed: EmbeddingService | None = None,
+    tenant_id: str | None = None,
+) -> SessionState:
+    """Commit a session and write its durable SESSION_SUMMARY node.
+
+    The commit path is ledger-only for raw turns: it records deterministic
+    ingest events and lets the durable worker process them. The summary node
+    is a direct session lifecycle artifact, so it is written atomically to the
+    filesystem and indexed in the KG before the cache entry is removed.
+    """
+    tid = tenant_id or current_tenant_id() or DEFAULT_TENANT_ID
+    state.status = "COMMITTING"
+    manager._persist(state)
+
+    if sqlite is not None:
+        _reenqueue_for_ingest(sqlite, state.session_id, state.turns, tenant_id=tid)
+
+    summary, key_facts, key_entities = _summarize_for_commit(core, state)
+    if summary:
+        state.compacted = (
+            (state.compacted + "\n" + summary) if state.compacted else summary
+        )
+    state.key_facts = list(dict.fromkeys([*state.key_facts, *key_facts]))
+    state.key_entities = list(dict.fromkeys([*state.key_entities, *key_entities]))
+
+    if fs is not None and neo4j is not None and embed is not None:
+        _write_session_summary_node(
+            state=state,
+            fs=fs,
+            neo4j=neo4j,
+            embed=embed,
+            summary=state.compacted or summary or state.render(max_turns=50),
+            tenant_id=tid,
+        )
+
+    state.status = "COMMITTED"
+    manager._persist(state)
+    return state
+
+
+def _summarize_for_commit(
+    core: CoreModelProvider, state: SessionState,
+) -> tuple[str, list[str], list[str]]:
+    turn_history = [
+        {"role": t.role, "content": t.content, "turn_idx": t.turn_idx}
+        for t in state.turns
+    ]
+    if not turn_history:
+        return state.compacted or "", list(state.key_facts), list(state.key_entities)
+    prompt = prompts.render(
+        "session_compact",
+        turn_history=turn_history,
+        compaction_budget=3000,
+    )
+    try:
+        result = core.complete(
+            system_prompt=prompt,
+            user_prompt="Return the final session summary JSON.",
+        )
+        out = result.output if isinstance(result.output, dict) else {}
+        return (
+            str(out.get("compacted") or ""),
+            list(out.get("key_facts") or []),
+            list(out.get("key_entities") or []),
+        )
+    except Exception:
+        log.exception("session commit summary failed; falling back to raw render")
+        return state.render(max_turns=50), list(state.key_facts), list(state.key_entities)
+
+
+def _write_session_summary_node(
+    *,
+    state: SessionState,
+    fs: FilesystemStore,
+    neo4j: Neo4jStore | InMemoryKnowledgeGraph,
+    embed: EmbeddingService,
+    summary: str,
+    tenant_id: str,
+) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    uri = f"mem://user/session_summaries/{state.session_id}.md"
+    fm = {
+        "id": str(uuid.uuid4()),
+        "node_type": "SESSION_SUMMARY",
+        "status": "ACTIVE",
+        "created_at": now,
+        "source_session_id": state.session_id,
+        "schema_version": 1,
+        "provenance": {
+            "extractor": "session_commit",
+            "confidence": 0.9,
+        },
+    }
+    body = summary.strip() + "\n"
+    if state.key_facts:
+        body += "\nKey facts:\n" + "\n".join(f"- {fact}" for fact in state.key_facts) + "\n"
+    mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
+    fs.write_atomic(uri, mf.serialize())
+    neo4j.merge_node(
+        source_uri=uri,
+        parent_uri=uri_mod.parent_uri(uri),
+        tenant_id=tenant_id,
+        properties={
+            "id": fm["id"],
+            "node_type": "SESSION_SUMMARY",
+            "status": "ACTIVE",
+            "l0_abstract": summary[:500],
+            "l0_embedding": embed.embed(summary[:2000] or state.session_id),
+            "retrieval_weight": 1.0,
+            "created_at": now,
+            "last_accessed_at": now,
+            "access_count": 0,
+            "schema_version": 1,
+            "source_session_id": state.session_id,
+        },
+    )
+    return uri
+
+
 def _reenqueue_for_ingest(
-    sqlite: SqliteStore, session_id: str, turns: list[Turn]
+    sqlite: SqliteStore,
+    session_id: str,
+    turns: list[Turn],
+    *,
+    tenant_id: str | None = None,
 ) -> None:
+    tid = tenant_id or current_tenant_id() or DEFAULT_TENANT_ID
     # Group consecutive user→assistant pairs. Users/assistants always alternate
     # in an ACTIVE session so pairing by index is safe.
     pairs: list[tuple[Turn, Turn]] = []
@@ -224,4 +364,5 @@ def _reenqueue_for_ingest(
                     "assistant": {"content": assistant.content, "turn_idx": assistant.turn_idx},
                 },
             },
+            tenant_id=tid,
         )

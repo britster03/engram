@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from engram import uri as uri_mod
-from engram.tenancy import DEFAULT_TENANT_ID, current_tenant_id
+from engram.tenancy import current_tenant_id
 
 
 class FilesystemStore:

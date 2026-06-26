@@ -7,14 +7,14 @@ admin pages and the JSON APIs the UI needs, with canned responses.
 
 from __future__ import annotations
 
-import sys
 import json
-from datetime import datetime, timezone
+import sys
 from pathlib import Path
+from typing import Annotated
 
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -34,7 +34,7 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 def _load_locale_json(lang: str) -> str:
     safe = lang if lang in {"en", "ja", "ko", "zh", "zh-TW"} else "en"
     try:
-        with open(Path(I18N_DIR) / f"{safe}.json", "r", encoding="utf-8") as f:
+        with open(Path(I18N_DIR) / f"{safe}.json", encoding="utf-8") as f:
             return f.read()
     except Exception:
         return "{}"
@@ -59,6 +59,11 @@ async def admin_login(request: Request):
 @app.get("/admin/chat", response_class=HTMLResponse)
 async def admin_chat(request: Request):
     return templates.TemplateResponse(request, "chat.html", _build_context(request))
+
+
+@app.get("/admin/kg", response_class=HTMLResponse)
+async def admin_kg(request: Request):
+    return templates.TemplateResponse(request, "kg.html", _build_context(request))
 
 
 @app.get("/admin/dashboard", response_class=HTMLResponse)
@@ -152,9 +157,128 @@ def ingest():
     return JSONResponse({"event_id": "evt-qa-001", "pair_id": "pair-qa-001", "status": "RECEIVED"}, status_code=202)
 
 
+@app.post("/api/v1/ingest/bulk")
+async def ingest_bulk(
+    file: Annotated[UploadFile, File()],
+    dry_run: Annotated[bool, Form()] = False,
+    session_id: Annotated[str | None, Form()] = None,
+    file_format: Annotated[str | None, Form()] = None,
+):
+    raw = await file.read()
+    name = file.filename or "upload.jsonl"
+    inferred = file_format or ("csv" if name.endswith(".csv") else "zip" if name.endswith(".zip") else "jsonl")
+    rejected_rows = []
+    accepted_count = 1 if raw else 0
+    if not raw:
+        rejected_rows.append({"row_number": 1, "reason": "file is empty", "preview": name})
+    job = {
+        "job_id": "bulk-qa-001",
+        "status": "DRY_RUN" if dry_run else "QUEUED",
+        "dry_run": dry_run,
+        "total_count": accepted_count + len(rejected_rows),
+        "accepted_count": accepted_count,
+        "rejected_count": len(rejected_rows),
+        "rejected_rows": rejected_rows,
+        "event_ids": [] if dry_run else ["evt-bulk-qa-001"],
+        "source": f"bulk_{inferred}",
+        "filename": name,
+        "created_at": "2026-06-15T00:00:00Z",
+        "completed_at": "2026-06-15T00:00:00Z",
+    }
+    return JSONResponse(job, status_code=202)
+
+
+@app.get("/api/v1/ingest/bulk/{job_id}")
+def ingest_bulk_status(job_id: str):
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "QUEUED",
+        "dry_run": False,
+        "total_count": 1,
+        "accepted_count": 1,
+        "rejected_count": 0,
+        "rejected_rows": [],
+        "event_ids": ["evt-bulk-qa-001"],
+        "source": "bulk_jsonl",
+        "filename": "turns.jsonl",
+        "created_at": "2026-06-15T00:00:00Z",
+        "completed_at": "2026-06-15T00:00:00Z",
+    })
+
+
 @app.post("/api/v1/sessions")
 def create_session():
     return JSONResponse({"session_id": "sess-qa-new", "status": "ACTIVE"}, status_code=201)
+
+
+@app.get("/api/v1/kg/graph")
+def kg_graph(
+    root_uri: str | None = None,
+    depth: int = 1,
+    limit: int = 100,
+    type: str | None = None,
+):
+    nodes = [
+        {
+            "id": "mem://user/project-ideas",
+            "source_uri": "mem://user/project-ideas",
+            "label": "Project ideas",
+            "node_type": "DOCUMENT",
+            "status": "ACTIVE",
+            "l0_abstract": "Idea for a retrieval-augmented memory system.",
+        },
+        {
+            "id": "mem://user/entities/engram",
+            "source_uri": "mem://user/entities/engram",
+            "label": "Engram",
+            "node_type": "ENTITY",
+            "status": "ACTIVE",
+            "l0_abstract": "Engram QA fixture entity.",
+        },
+    ]
+    if type:
+        nodes = [node for node in nodes if node["node_type"] == type]
+    if root_uri:
+        nodes = [node for node in nodes if node["source_uri"] == root_uri] or nodes[:1]
+    nodes = nodes[: max(1, min(limit, 500))]
+    node_ids = {node["id"] for node in nodes}
+    edges = [
+        {
+            "source": "mem://user/project-ideas",
+            "target": "mem://user/entities/engram",
+            "type": "REFERENCES",
+            "label": "mentions",
+            "status": "ACTIVE",
+        }
+    ]
+    edges = [edge for edge in edges if edge["source"] in node_ids and edge["target"] in node_ids]
+    return JSONResponse({"nodes": nodes, "edges": edges, "limit": limit, "depth": depth})
+
+
+@app.post("/api/v1/chat/completions")
+async def chat_completions(request: Request):
+    body = await request.json()
+    session_id = body.get("session_id") or "sess-qa-new"
+    if body.get("stream"):
+        async def sse():
+            yield "event: metadata\ndata: {\"levels_visited\":[\"L1\"],\"latency_ms\":{\"l1_execute\":12},\"nodes_retrieved\":2,\"cascade_depth_reached\":\"L1\",\"reentries\":0}\n\n"
+            for chunk in ["Hello. ", "This is a simulated Engram chat response."]:
+                yield f"event: delta\ndata: {json.dumps({'text': chunk})}\n\n"
+            yield "event: done\ndata: {}\n\n"
+
+        return StreamingResponse(sse(), media_type="text/event-stream")
+    return JSONResponse({
+        "id": "chatcmpl-qa",
+        "object": "chat.completion",
+        "created": 1781481600,
+        "model": "qa",
+        "session_id": session_id,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello. This is a simulated Engram chat response."},
+            "finish_reason": "stop",
+        }],
+    })
 
 
 @app.post("/api/v1/query")
@@ -162,7 +286,6 @@ async def query_stream(request: Request):
     body = await request.json()
     is_stream = body.get("stream") or request.query_params.get("stream")
     if is_stream:
-        import asyncio
         async def sse():
             yield "event: metadata\ndata: {}\n\n"
             chunks = "Hello! " + "This is a simulated engram response. " + "It uses SSE streaming."

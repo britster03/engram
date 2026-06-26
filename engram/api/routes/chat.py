@@ -17,10 +17,10 @@ from starlette.responses import StreamingResponse
 
 from engram.api.auth import AuthDep
 from engram.api.schemas import ChatCompletionRequest, ChatCompletionResponse
-from engram.deps import AppState, get_state, make_ingest_context, make_orchestrator_context
-from engram.ingest.worker import process_event
+from engram.deps import AppState, get_state, make_orchestrator_context
 from engram.retrieval.orchestrator import run_query
 from engram.session.manager import SessionManager, SessionState, compact_session
+from engram.tenancy import Tenant, TenantQuotas, current_tenant_id, set_current_tenant
 from engram.uri import pair_id as pair_id_fn
 
 log = logging.getLogger(__name__)
@@ -39,39 +39,46 @@ def _manager(state: AppState) -> SessionManager:
     )
 
 
-def _drive_event(state: AppState, event_id: str) -> None:
-    try:
-        ctx = make_ingest_context(state)
-        process_event(ctx, event_id)
-    except Exception:
-        log.exception("session ingest worker failed for %s", event_id)
+def _bind_tenant(tenant_id: str) -> None:
+    set_current_tenant(
+        Tenant(
+            tenant_id=tenant_id,
+            display_name=tenant_id,
+            api_key_hashes=[],
+            quotas=TenantQuotas(),
+            status="ACTIVE",
+        )
+    )
 
 
-def _run_compaction(state: AppState, session_id: str) -> None:
+def _run_compaction(state: AppState, session_id: str, tenant_id: str) -> None:
     try:
+        _bind_tenant(tenant_id)
         mgr = _manager(state)
         sess = mgr.get(session_id)
         if sess is None:
             return
         if not mgr.needs_compaction(sess):
             return
-        compact_session(mgr, sess, state.core, sqlite=state.sqlite)
+        compact_session(mgr, sess, state.core, sqlite=state.sqlite, tenant_id=tenant_id)
     except Exception:
         log.exception("auto-compaction failed for session %s", session_id)
 
 
-def _append_turn_and_drive(
+def _append_turn_and_record(
     state: AppState,
     session_id: str,
     user_msg: str,
     assistant_msg: str,
+    tenant_id: str,
 ) -> None:
+    _bind_tenant(tenant_id)
     mgr = _manager(state)
     sess, needs_compaction = mgr.append_turn_pair(session_id, user_msg, assistant_msg)
     user_turn = sess.turns[-2]
     asst_turn = sess.turns[-1]
     pid = pair_id_fn(session_id, user_turn.turn_idx, asst_turn.turn_idx)
-    event_id, is_new = state.sqlite.record_event(
+    state.sqlite.record_event(
         pair_id=pid,
         session_id=session_id,
         source="session",
@@ -84,11 +91,12 @@ def _append_turn_and_drive(
             },
             "session_context": sess.render(max_turns=10),
         },
+        tenant_id=tenant_id,
     )
-    if is_new:
-        _drive_event(state, event_id)
-    if needs_compaction:
-        _run_compaction(state, session_id)
+    # The durable ingest worker is the only component that processes RECEIVED rows.
+    # Automatic compaction is intentionally left to /sessions/{id}/compact or
+    # session close so chat completion remains a ledger-only write path.
+    _ = needs_compaction
 
 
 def _sse_chat_stream_realtime(
@@ -97,6 +105,7 @@ def _sse_chat_stream_realtime(
     session: SessionState,
     state: AppState,
     result_box: list | None = None,
+    tenant_id: str | None = None,
 ) -> Any:
     """SSE generator that emits retrieval_step events in real-time as the
     cascade progresses, then streams the answer deltas.
@@ -110,6 +119,8 @@ def _sse_chat_stream_realtime(
         q.put(("retrieval_step", snapshot))
 
     def worker() -> None:
+        if tenant_id is not None:
+            _bind_tenant(tenant_id)
         try:
             result = run_query(
                 ctx,
@@ -183,6 +194,7 @@ def chat_completions(
     background: BackgroundTasks,
 ) -> ChatCompletionResponse | StreamingResponse:
     state = get_state()
+    tenant_id = current_tenant_id()
     mgr = _manager(state)
 
     if req.session_id:
@@ -214,7 +226,7 @@ def chat_completions(
             raise HTTPException(status_code=500, detail=f"query failed: {err}") from err
 
         background.add_task(
-            _append_turn_and_drive, state, session.session_id, query, result.answer
+            _append_turn_and_record, state, session.session_id, query, result.answer, tenant_id
         )
 
         return ChatCompletionResponse(
@@ -229,11 +241,12 @@ def chat_completions(
     _req = req
     _ctx = ctx
     _result_box: list = []
+    _tenant_id = tenant_id
 
     def _stream_and_ingest() -> Any:
         try:
             yield from _sse_chat_stream_realtime(
-                _ctx, _req, _session, _state, result_box=_result_box,
+                _ctx, _req, _session, _state, result_box=_result_box, tenant_id=_tenant_id,
             )
         except Exception:
             return
@@ -244,7 +257,13 @@ def chat_completions(
         if not _result_box:
             return
         try:
-            _append_turn_and_drive(_state, _session.session_id, _req.messages[-1].content, _result_box[0].answer)
+            _append_turn_and_record(
+                _state,
+                _session.session_id,
+                _req.messages[-1].content,
+                _result_box[0].answer,
+                _tenant_id,
+            )
         except Exception:
             log.exception("post-stream ingest failed for session %s", _session.session_id)
 

@@ -26,15 +26,15 @@ import secrets
 import sqlite3
 import threading
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_TENANT_ID = "_default"
 _TENANT_ID_RE = re.compile(r"^[a-z0-9_][a-z0-9\-_]{0,62}$")
 
-_current_tenant: contextvars.ContextVar["Tenant | None"] = contextvars.ContextVar(
+_current_tenant: contextvars.ContextVar[Tenant | None] = contextvars.ContextVar(
     "engram_current_tenant", default=None
 )
 
@@ -73,7 +73,7 @@ class Tenant:
         }
 
     @classmethod
-    def from_payload(cls, data: dict[str, Any]) -> "Tenant":
+    def from_payload(cls, data: dict[str, Any]) -> Tenant:
         quotas = TenantQuotas(**data.get("quotas", {}))
         return cls(
             tenant_id=data["tenant_id"],
@@ -321,13 +321,11 @@ class TenantRegistry:
         if t is None or t.status != "ACTIVE":
             return None
         # best-effort: update last_used_at
-        try:
+        with suppress(Exception):
             self._conn().execute(
                 "UPDATE api_keys SET last_used_at = datetime('now') WHERE key_hash = ?",
                 (digest,),
             )
-        except Exception:
-            pass
         return t
 
     # ------------------------------------------------------------------

@@ -15,11 +15,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from engram import frontmatter, prompts, uri as uri_mod
+from engram import frontmatter, prompts
+from engram import uri as uri_mod
 from engram.config import ConsolidationConfig
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
@@ -36,7 +38,7 @@ def handle_regenerate_manifest(
     *,
     node_id: str,
     fs: FilesystemStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Rebuild .manifest for a directory URI."""
     dir_uri = node_id
@@ -128,7 +130,7 @@ def handle_propagate_overview(
     *,
     node_id: str,
     sqlite: SqliteStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Enqueue CONSOLIDATE_OVERVIEW for each ancestor up to the root, deduped."""
     ancestor = uri_mod.parent_uri(node_id)
@@ -148,7 +150,7 @@ def handle_atomize(
     *,
     node_id: str,
     sqlite: SqliteStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Split compound objects/subjects in an extraction into independent triplets.
 
@@ -190,7 +192,7 @@ def handle_normalize(
     sqlite: SqliteStore,
     neo4j: Neo4jStore,
     embed: EmbeddingService,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Canonicalise entity names AND relation labels (§6.4.2).
 
@@ -236,7 +238,7 @@ def handle_temporalize(
     *,
     node_id: str,
     fs: FilesystemStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Attach temporal metadata to a memory file when a date is parseable from
     the body. Very conservative — only writes when a single unambiguous date
@@ -268,7 +270,7 @@ def handle_integrate(
     *,
     node_id: str,
     sqlite: SqliteStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Mark an event as re-runnable so the next reconciliation pass re-indexes.
 
@@ -293,7 +295,7 @@ def handle_unmerge(
     sqlite: SqliteStore,
     core: CoreModelProvider,
     embed: EmbeddingService,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Split a merged ENTITY back into its contributing sources (§8.6).
 
@@ -369,7 +371,7 @@ def _file_abstract(path: Path) -> str:
     try:
         text = path.read_text(encoding="utf-8")
         mf = frontmatter.parse(text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return path.name
     body = mf.body.strip()
     if not body:
@@ -398,7 +400,7 @@ def _collect_relations(neo4j: Neo4jStore, uris: list[str]) -> list[dict]:
                 {"uri": uri},
                 timeout_s=5,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             rows = []
         relations.extend(rows)
     return relations

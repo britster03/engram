@@ -63,10 +63,8 @@ spec:
               valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } }
             - name: ENGRAM_ADMIN_KEY
               valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_ADMIN_KEY } }
-            - name: CORE_MODEL_API_KEY
-              valueFrom: { secretKeyRef: { name: engram-secrets, key: CORE_MODEL_API_KEY } }
-            - name: FRONTIER_LLM_API_KEY
-              valueFrom: { secretKeyRef: { name: engram-secrets, key: FRONTIER_LLM_API_KEY } }
+            - name: OLLAMA_API_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: OLLAMA_API_KEY } }
             - name: NEO4J_ADMIN_PASSWORD
               valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } }
           volumeMounts:

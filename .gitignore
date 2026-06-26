@@ -9,6 +9,8 @@ dist/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 .envrc
 .ruff_cache/
 .mypy_cache/

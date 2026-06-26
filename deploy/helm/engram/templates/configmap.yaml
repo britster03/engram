@@ -17,13 +17,15 @@ data:
       classification_threshold: 0.3
       device: "cpu"
     core_model:
-      provider: "anthropic"
-      model_path: "claude-sonnet-4-6"
-      api_key: ${CORE_MODEL_API_KEY}
+      provider: "ollama_cloud"
+      model_path: "kimi-k2.7-code:cloud"
+      api_base: "https://ollama.com/api"
+      api_key: ${OLLAMA_API_KEY}
     frontier_llm:
-      provider: "anthropic"
-      model_path: "claude-sonnet-4-6"
-      api_key: ${FRONTIER_LLM_API_KEY}
+      provider: "ollama_cloud"
+      model_path: "kimi-k2.7-code:cloud"
+      api_base: "https://ollama.com/api"
+      api_key: ${OLLAMA_API_KEY}
     filesystem:
       data_dir: "/var/lib/engram/mem"
     knowledge_graph:

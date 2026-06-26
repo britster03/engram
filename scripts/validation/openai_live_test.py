@@ -1,15 +1,17 @@
-"""End-to-end live validation against OpenAI + real Neo4j + real Redis.
+"""End-to-end live validation against a remote model + real Neo4j + real Redis.
 
-Reproduces the run documented in `docs/VALIDATION.md#2026-04-22-openai-live-integration`.
+Defaults to Ollama Cloud, matching the runtime config.
 
 Prerequisites:
   1. Docker running; `docker compose up -d` has brought up Neo4j + Redis.
-  2. `.env` contains a real `CORE_MODEL_API_KEY` (OpenAI key).
+  2. `.env` contains a real `OLLAMA_API_KEY`.
   3. `./data/` is writable (or set `ENGRAM_DATA_DIR` to another location).
 
 Usage:
     python scripts/validation/openai_live_test.py
-    python scripts/validation/openai_live_test.py --model gpt-4o     # upgrade
+    python scripts/validation/openai_live_test.py --model kimi-k2.7-code:cloud
+    python scripts/validation/openai_live_test.py --provider openai \
+        --model gpt-4o-mini --api-key-env OPENAI_API_KEY
     python scripts/validation/openai_live_test.py --provider groq \
         --model llama-3.3-70b-versatile
 
@@ -19,7 +21,7 @@ resulting KG, then runs three queries through the L0→L2 cascade. Every
 latency is measured; the summary reports total runtime and a rough cost
 estimate.
 
-Cost: ≈ $0.02–0.05 per run with gpt-4o-mini. Free with Ollama / Groq.
+Cost depends on the selected remote provider and model.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ def _load_env(repo_root: Path) -> None:
     if not env_path.exists():
         raise SystemExit(
             "Missing .env. Copy `.env.example` to `.env` and fill in "
-            "CORE_MODEL_API_KEY / FRONTIER_LLM_API_KEY."
+            "OLLAMA_API_KEY."
         )
     for line in env_path.read_text().splitlines():
         line = line.strip()
@@ -61,7 +63,7 @@ def _require_real_key(name: str) -> None:
 # --- Corpus ---------------------------------------------------------------
 
 CORPUS = [
-    ("I just started a staff software engineer role at Anthropic on the alignment team.",
+    ("I just started a staff software engineer role on the Ollama Cloud team.",
      "That's exciting — when did you start?"),
     ("My first day was November 3rd, 2025.",
      "Welcome aboard."),
@@ -84,10 +86,12 @@ QUERIES = [
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--provider", default="openai",
-                        help="core_model.provider (openai | groq | gemini | ollama | anthropic)")
-    parser.add_argument("--model",   default="gpt-4o-mini",
+    parser.add_argument("--provider", default="ollama_cloud",
+                        help="core_model.provider (ollama_cloud | ollama | openai | groq | gemini)")
+    parser.add_argument("--model",   default="kimi-k2.7-code:cloud",
                         help="model identifier for both core + frontier")
+    parser.add_argument("--api-key-env", default=None,
+                        help="environment variable containing the provider API key")
     parser.add_argument("--max-depth", default="L2",
                         help="max cascade depth (L1, L2, L3, L4)")
     parser.add_argument("--data-dir", default="/tmp/engram_openai_test",
@@ -97,8 +101,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _load_env(_REPO_ROOT)
-    _require_real_key("CORE_MODEL_API_KEY")
-    _require_real_key("FRONTIER_LLM_API_KEY")
+    api_key_env = args.api_key_env or (
+        "OLLAMA_API_KEY" if args.provider == "ollama_cloud" else "OPENAI_API_KEY"
+    )
+    _require_real_key(api_key_env)
     _require_real_key("NEO4J_ADMIN_PASSWORD")
 
     os.environ["ENGRAM_LOG_FORMAT"] = "plain"
@@ -123,10 +129,10 @@ def main(argv: list[str] | None = None) -> int:
     cfg = EngramConfig.model_validate({
         "api":           {"api_key": os.environ["ENGRAM_API_KEY"]},
         "core_model":    {"provider": args.provider, "model_path": args.model,
-                          "api_key": os.environ["CORE_MODEL_API_KEY"],
+                          "api_key": os.environ[api_key_env],
                           "temperature": 0.1, "max_tokens": 1024},
         "frontier_llm":  {"provider": args.provider, "model_path": args.model,
-                          "api_key": os.environ["FRONTIER_LLM_API_KEY"],
+                          "api_key": os.environ[api_key_env],
                           "temperature": 0.3, "max_tokens": 1024},
         "filesystem":    {"data_dir": str(data_dir / "mem")},
         "event_ledger":  {"path": str(data_dir / "ev.db")},
@@ -215,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {len(node_rows)} nodes:  "
           + ", ".join(f"{v} {k}" for k, v in sorted(type_counts.items())))
     print(f"  {sum(e['c'] for e in edge_rows)} RELATES_TO edges:  "
-          + ", ".join(f"{e['rel']}×{e['c']}" for e in edge_rows))
+          + ", ".join(f"{e['rel']}x{e['c']}" for e in edge_rows))
 
     # --- Queries ---------------------------------------------------------
     print(f"\nQUERYING VIA {args.provider}/{args.model} CASCADE")

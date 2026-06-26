@@ -3,6 +3,8 @@
 Since admin UI pages (/admin/*) are NOT mounted in the app,
 these tests verify the REST API endpoints directly.
 """
+import os
+
 import pytest
 import requests
 
@@ -12,6 +14,9 @@ BASE_URL = "http://localhost:8000"
 
 
 def _api_key():
+    key = os.environ.get("ENGRAM_API_KEY")
+    if key:
+        return key
     key = None
     try:
         with open(".env") as f:
@@ -25,6 +30,9 @@ def _api_key():
 
 
 def _admin_key():
+    key = os.environ.get("ENGRAM_ADMIN_KEY")
+    if key:
+        return key
     key = None
     try:
         with open(".env") as f:

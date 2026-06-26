@@ -8,8 +8,7 @@ and monitoring Engram.
 ```bash
 # 1. Environment
 cp .env.example .env
-vim .env   # fill ENGRAM_API_KEY, CORE_MODEL_API_KEY, FRONTIER_LLM_API_KEY,
-           # NEO4J_ADMIN_PASSWORD
+vim .env   # fill ENGRAM_API_KEY, OLLAMA_API_KEY, NEO4J_ADMIN_PASSWORD
 
 # 2. Backing services
 docker compose up -d

@@ -19,29 +19,44 @@ Boot order:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from engram import metrics as metrics_mod
+from engram.admin import routes as admin_ui_routes
 from engram.api import schemas
 from engram.api.auth import AuthDep
 from engram.api.body_limit import BodySizeLimitMiddleware
 from engram.api.rate_limit import RateLimitMiddleware
 from engram.api.request_id import RequestIdMiddleware
-from engram.admin import routes as admin_ui_routes
 from engram.api.routes import (
     admin as admin_route,
+)
+from engram.api.routes import (
+    bulk_ingest as bulk_ingest_route,
+)
+from engram.api.routes import (
     chat as chat_route,
+)
+from engram.api.routes import (
     consolidation as consolidation_route,
+)
+from engram.api.routes import (
     events as events_route,
+)
+from engram.api.routes import (
+    kg as kg_route,
+)
+from engram.api.routes import (
     memories as memories_route,
+)
+from engram.api.routes import (
     sessions as sessions_route,
 )
 from engram.config import get_config
@@ -52,7 +67,6 @@ from engram.consolidation.worker import start_background as start_consolidation
 from engram.deps import (
     AppState,
     get_state,
-    make_ingest_context,
     make_orchestrator_context,
     reset_state,
 )
@@ -60,8 +74,8 @@ from engram.ingest.durable_worker import DurableIngestWorker
 from engram.ingest.durable_worker import start_background as start_durable_ingest
 from engram.logging_setup import configure_logging
 from engram.resilience import breaker_snapshot
+from engram.retrieval.orchestrator import run_query
 from engram.tracing import configure_tracing
-from engram.retrieval.orchestrator import _assemble_msc, run_query
 from engram.uri import pair_id as pair_id_fn
 
 log = logging.getLogger(__name__)
@@ -101,17 +115,8 @@ async def _lifespan(app: FastAPI):
         log.info("consolidation worker started (leased=%s)", bool(redis_url))
 
     if state.cfg.event_ledger.reconciliation_interval_seconds > 0:
-        def _drive_event_in_worker(event_id: str) -> None:
-            try:
-                ctx = make_ingest_context(state)
-                from engram.ingest.worker import process_event
-                process_event(ctx, event_id)
-            except Exception:
-                log.exception("reconciliation-driven ingest failed for %s", event_id)
-
         rec_ctx = ReconciliationContext(
-            cfg=state.cfg, sqlite=state.sqlite,
-            drive_event=_drive_event_in_worker, neo4j=state.neo4j,
+            cfg=state.cfg, sqlite=state.sqlite, neo4j=state.neo4j,
         )
         _recon_handle = start_reconciliation(rec_ctx, redis_url=redis_url)
         log.info("reconciliation worker started (leased=%s)", bool(redis_url))
@@ -171,6 +176,8 @@ _install_middleware()
 app.include_router(sessions_route.router)
 app.include_router(memories_route.router)
 app.include_router(events_route.router)
+app.include_router(bulk_ingest_route.router)
+app.include_router(kg_route.router)
 app.include_router(consolidation_route.router)
 app.include_router(admin_route.router)
 app.include_router(chat_route.router)
@@ -426,16 +433,8 @@ def _sse_query_stream(ctx, result, req):
     md = result.retrieval_metadata.to_dict()
     yield f"event: metadata\ndata: {_json.dumps(md)}\n\n"
 
-    # Re-run frontier as a streaming call so the client sees incremental tokens.
-    # If the provider's stream fails, fall back to sending the buffered answer.
+    # Stream the buffered answer so the response matches the verdict already produced.
     try:
-        msc = _assemble_msc(
-            session_context=req.session_context,
-            ltm_blocks=[],  # MSC already informed the buffered answer; use it as-is
-            user_query=req.query,
-        )
-        # Prefer streaming the buffered answer verbatim for correctness — the
-        # buffered call already committed to a specific verdict/answer.
         answer = result.answer or ""
         chunk = 200
         for i in range(0, len(answer), chunk):

@@ -12,7 +12,6 @@ Verifies:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,6 @@ from fastapi.testclient import TestClient
 
 from engram.api.body_limit import BodySizeLimitMiddleware
 from engram.api.request_id import RequestIdMiddleware
-
 
 # The production app binds to the global config and starts workers; for tests
 # we import the module and mount only a subset.
@@ -36,8 +34,7 @@ def client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Pre-set required env so any config load works in isolation
     monkeypatch.setenv("ENGRAM_API_KEY", "test-real-key")
     monkeypatch.setenv("NEO4J_ADMIN_PASSWORD", "x")
-    monkeypatch.setenv("CORE_MODEL_API_KEY", "real-sk")
-    monkeypatch.setenv("FRONTIER_LLM_API_KEY", "real-sk")
+    monkeypatch.setenv("OLLAMA_API_KEY", "real-ollama-key")
 
     def build(middleware=True):
         app = FastAPI()

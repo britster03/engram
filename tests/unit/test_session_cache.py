@@ -13,6 +13,13 @@ def _mem_cache() -> SessionCache:
     )
 
 
+def _redis_cache() -> SessionCache:
+    return SessionCache(
+        SessionCacheConfig(backend="redis", redis_url="redis://localhost:1"),
+        default_ttl_seconds=60,
+    )
+
+
 def _tenant(tid: str) -> Tenant:
     return Tenant(
         tenant_id=tid, display_name=tid, api_key_hashes=[],
@@ -53,3 +60,17 @@ def test_delete_respects_tenant_scope():
     cache.delete("s1", tenant_id="a")
     assert cache.get("s1", tenant_id="a") is None
     assert cache.get("s1", tenant_id="b") is not None
+
+
+def test_redis_backend_falls_back_to_memory_on_connection_error():
+    cache = _redis_cache()
+
+    class BrokenRedis:
+        def setex(self, *_args, **_kwargs):
+            raise RuntimeError("redis unavailable")
+
+    cache._client = BrokenRedis()  # type: ignore[assignment]
+    cache.set("s1", {"n": 1}, tenant_id="a")
+
+    assert cache.get("s1", tenant_id="a") == {"n": 1}
+    assert cache._client is None

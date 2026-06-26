@@ -7,7 +7,7 @@ from engram.retrieval.l0_gate import AlwaysClass0Classifier, run_l0_gate
 
 @dataclass
 class FakeEmbed:
-    def embed(self, text: str) -> list[float]:  # noqa: ARG002
+    def embed(self, text: str) -> list[float]:
         return [0.0] * 384
 
 

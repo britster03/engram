@@ -27,7 +27,7 @@ def _load_env_key(key_name):
 
 @pytest.fixture(scope="session")
 def base_url():
-    return BASE_URL
+    return os.environ.get("ENGRAM_BASE_URL", BASE_URL)
 
 
 @pytest.fixture(scope="session")

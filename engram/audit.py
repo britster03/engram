@@ -14,8 +14,8 @@ import json
 import logging
 import sqlite3
 import threading
-import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -106,10 +106,8 @@ class AuditLog:
         out: list[dict[str, Any]] = []
         for r in rows:
             d = dict(r)
-            try:
+            with suppress(Exception):
                 d["details"] = json.loads(d.get("details") or "{}")
-            except Exception:
-                pass
             out.append(d)
         return out
 

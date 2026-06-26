@@ -43,7 +43,7 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Egress to Anthropic API over HTTPS
+    # Egress to Ollama Cloud API over HTTPS
     - ports:
         - port: 443
           protocol: TCP

@@ -12,7 +12,6 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-
 DEFAULT_LIMIT = 128 * 1024           # 128 KiB default for any POST/PATCH body
 QUERY_LIMIT = 16 * 1024              # 16 KiB for /api/v1/query
 INGEST_LIMIT = 256 * 1024            # 256 KiB per single ingest

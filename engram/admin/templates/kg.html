@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}KG - Engram Admin{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ static('css/dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-white flex flex-col" x-data="kgGraph()" data-theme="light">
+  <nav class="w-full py-5 px-6 md:px-12 border-b border-neutral-100 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto flex items-center gap-4">
+      <a href="/admin/dashboard" class="flex items-center gap-2">
+        <img src="/admin/static/engram_logo.svg" alt="Engram" class="w-9 h-9">
+        <span class="font-bold tracking-tight text-xl leading-none">Engram</span>
+      </a>
+      <div class="flex items-center gap-3 ml-auto">
+        <a href="/admin/dashboard" class="flex items-center gap-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">
+          <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+          Dashboard
+        </a>
+        <a href="/admin/chat" class="flex items-center gap-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">
+          <i data-lucide="message-circle" class="w-4 h-4"></i>
+          Chat
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-grow relative overflow-hidden">
+    <div class="absolute inset-0 bg-grain pointer-events-none z-0"></div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10 relative z-10">
+      <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-6">
+        <div>
+          <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Knowledge Graph</h2>
+          <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Graph Visualization</h3>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2 w-full lg:w-auto">
+          <input x-model="rootUri" type="text" class="col-span-2 px-3 py-2 rounded-lg border border-neutral-200 bg-white text-sm" placeholder="mem:// root URI">
+          <select x-model="nodeType" @change="load()" class="px-3 py-2 rounded-lg border border-neutral-200 bg-white text-sm">
+            <option value="">All types</option>
+            <option value="ENTITY">Entity</option>
+            <option value="DOCUMENT">Document</option>
+            <option value="FACT">Fact</option>
+            <option value="SESSION_SUMMARY">Session</option>
+            <option value="DIRECTORY">Directory</option>
+          </select>
+          <select x-model="statusFilter" @change="draw()" class="px-3 py-2 rounded-lg border border-neutral-200 bg-white text-sm">
+            <option value="">All statuses</option>
+            <option value="ACTIVE">Active</option>
+            <option value="LOW_CONFIDENCE">Low confidence</option>
+            <option value="HISTORICAL">Historical</option>
+          </select>
+          <button @click="load()" class="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5">
+            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 kg-layout gap-5">
+        <section class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-neutral-100">
+            <span class="text-xs font-bold uppercase tracking-wider text-neutral-500" x-text="summary"></span>
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-neutral-500">Depth</label>
+              <input x-model.number="depth" type="number" min="0" max="4" class="w-16 px-2 py-1 rounded border border-neutral-200 text-sm">
+              <label class="text-xs text-neutral-500">Limit</label>
+              <input x-model.number="limit" type="number" min="1" max="500" class="w-20 px-2 py-1 rounded border border-neutral-200 text-sm">
+            </div>
+          </div>
+          <canvas id="kg-canvas" class="block w-full h-[620px]"></canvas>
+        </section>
+        <aside class="bg-white rounded-2xl border border-neutral-200 p-5">
+          <h4 class="text-xs font-bold uppercase tracking-wider text-neutral-500 mb-4">Selected Memory</h4>
+          <template x-if="selected">
+            <div class="space-y-3">
+              <p class="text-xs font-mono text-neutral-500 break-all" x-text="selected.source_uri"></p>
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded-full text-xs bg-neutral-100 text-neutral-700" x-text="selected.node_type || 'NODE'"></span>
+                <span class="px-2 py-0.5 rounded-full text-xs bg-neutral-100 text-neutral-700" x-text="selected.status || 'unknown'"></span>
+              </div>
+              <p class="text-sm text-neutral-700 leading-relaxed" x-text="selected.l0_abstract || 'No abstract available.'"></p>
+              <button @click="openMemory()" class="px-3 py-2 text-xs font-semibold border border-neutral-200 rounded-lg hover:bg-neutral-50 transition-all">Open details</button>
+            </div>
+          </template>
+          <div x-show="!selected" class="text-sm text-neutral-500">Select a node in the graph.</div>
+          <p x-show="error" x-text="error" class="mt-4 text-sm text-red-600"></p>
+        </aside>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="{{ static('js/graph-lite.js') }}"></script>
+<script src="{{ static('js/kg.js') }}"></script>
+{% endblock %}

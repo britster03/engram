@@ -25,14 +25,15 @@ from typing import Any
 
 from slugify import slugify
 
-from engram import frontmatter, metrics as metrics_mod, prompts, tracing, uri as uri_mod
+from engram import frontmatter, prompts, tracing
+from engram import metrics as metrics_mod
+from engram import uri as uri_mod
 from engram.config import EngramConfig
 from engram.ingest.conflict import apply_decision, classify
 from engram.ingest.entity_linker import resolve as entity_resolve
 from engram.models.core import CoreModelError, CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
 from engram.tenancy import (
     DEFAULT_TENANT_ID,
@@ -50,7 +51,7 @@ class IngestContext:
     cfg: EngramConfig
     sqlite: SqliteStore
     fs: FilesystemStore
-    neo4j: Neo4jStore
+    neo4j: Any
     core: CoreModelProvider
     embed: EmbeddingService
 
@@ -74,7 +75,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     turn_pair = _turn_pair(payload)
 
     # --- Step 2: Write-path gate -----------------------------------------
-    with _timed("gate"), tracing.span("ingest.gate", event_id=event_id):
+    with _Timed("gate"), tracing.span("ingest.gate", event_id=event_id):
         try:
             gate = _call_gate(ctx, turn_pair, session_summary=payload.get("session_summary"))
         except CoreModelError as err:
@@ -88,7 +89,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     ctx.sqlite.set_event_status(event_id, "GATED_STORE")
 
     # --- Step 3: S-R-O extraction + L0 abstract --------------------------
-    with _timed("extract"), tracing.span("ingest.extract", event_id=event_id):
+    with _Timed("extract"), tracing.span("ingest.extract", event_id=event_id):
         existing = ctx.sqlite.get_extraction(event_id)
         if existing is None:
             extraction = _call_extract(
@@ -107,11 +108,11 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
             extraction = existing
 
     # --- Step 4: Entity linking with disambiguation ----------------------
-    with _timed("entity_link"), tracing.span("ingest.entity_link", event_id=event_id):
+    with _Timed("entity_link"), tracing.span("ingest.entity_link", event_id=event_id):
         entities = _resolve_entities(ctx, extraction)
 
     # --- Step 5: Filesystem write (authoritative) ------------------------
-    with _timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
+    with _Timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
         episode_uri, _ = _write_episode(
             ctx, event_id, event["session_id"], extraction
         )
@@ -126,10 +127,12 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
             )
             entity_records.append((slug, display_name, ent_uri))
         ctx.sqlite.fs_outbox_write(event_id, episode_uri, tenant_id=event_tenant)
-        _record_linked_entities(ctx, event_id, extraction["triplets"], entity_records)
+        _record_linked_entities(
+            ctx, event_id, extraction["triplets"], entity_records, tenant_id=event_tenant,
+        )
 
     # --- Step 6: Validate metadata, then dedup/conflict + KG index ------
-    with _timed("kg_index"), tracing.span("ingest.kg_index", event_id=event_id):
+    with _Timed("kg_index"), tracing.span("ingest.kg_index", event_id=event_id):
         try:
             _validate_written_frontmatter(ctx, episode_uri, entity_records)
             _index_neo4j(ctx, event_id, episode_uri, extraction, entity_records)
@@ -141,7 +144,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     ctx.sqlite.set_event_status(event_id, "INDEXED")
 
     # --- Step 7: Consolidation enqueue -----------------------------------
-    with _timed("consolidation_enqueue"), tracing.span(
+    with _Timed("consolidation_enqueue"), tracing.span(
         "ingest.consolidation_enqueue", event_id=event_id,
     ):
         _enqueue_consolidation(ctx, episode_uri, [uri for _, _, uri in entity_records])
@@ -153,14 +156,14 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
 # Step helpers
 # ----------------------------------------------------------------------
 
-class _timed:
+class _Timed:
     """Small context manager that records stage latency to Prometheus."""
 
     def __init__(self, stage: str) -> None:
         self.stage = stage
         self._t0 = 0.0
 
-    def __enter__(self) -> "_timed":
+    def __enter__(self) -> _Timed:
         self._t0 = time.perf_counter()
         return self
 
@@ -331,22 +334,25 @@ def _record_linked_entities(
     event_id: str,
     triplets: list[dict[str, Any]],
     entity_records: list[tuple[str, str, str]],
+    *,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> None:
     """Persist linked_entities rows (§16.1.4) so replay can find resolved IDs."""
     slug_to_uri = {slug: uri for slug, _, uri in entity_records}
-    rows: list[tuple[str, int, str | None, str | None]] = []
+    rows: list[tuple[str, str, int, str | None, str | None]] = []
     for idx, trip in enumerate(triplets):
         s_slug = slugify(trip.get("subject", ""), separator="-", lowercase=True)
         o_slug = slugify(trip.get("object", ""), separator="-", lowercase=True)
         rows.append(
-            (event_id, idx, slug_to_uri.get(s_slug), slug_to_uri.get(o_slug))
+            (event_id, tenant_id, idx, slug_to_uri.get(s_slug), slug_to_uri.get(o_slug))
         )
     if not rows:
         return
     with ctx.sqlite.transaction() as conn:
         conn.executemany(
             "INSERT OR REPLACE INTO linked_entities "
-            "(event_id, triplet_idx, subject_node_id, object_node_id) VALUES (?, ?, ?, ?)",
+            "(event_id, tenant_id, triplet_idx, subject_node_id, object_node_id) "
+            "VALUES (?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -402,7 +408,7 @@ def _index_neo4j(
             )
             slug_to_uri[slug] = ent_uri
     # Semantic edges — run the conflict classifier per triplet
-    for trip in extraction.get("triplets", []):
+    for idx, trip in enumerate(extraction.get("triplets", [])):
         s_raw = trip.get("subject")
         o_raw = trip.get("object")
         rel = trip.get("relation")
@@ -414,6 +420,18 @@ def _index_neo4j(
         s_uri = slug_to_uri.get(s_slug)
         o_uri = slug_to_uri.get(o_slug)
         if not (s_uri and o_uri):
+            continue
+        if conf < 0.6:
+            _write_low_confidence_fact(
+                ctx=ctx,
+                event_id=event_id,
+                triplet_idx=idx,
+                triplet=trip,
+                subject_uri=s_uri,
+                object_uri=o_uri,
+                confidence=conf,
+                now=now,
+            )
             continue
         decision = classify(
             neo4j=ctx.neo4j,
@@ -445,6 +463,81 @@ def _index_neo4j(
             edge_type="REFERENCES",
             properties={"created_at": now, "ingest_event_id": event_id},
         )
+
+
+def _write_low_confidence_fact(
+    *,
+    ctx: IngestContext,
+    event_id: str,
+    triplet_idx: int,
+    triplet: dict[str, Any],
+    subject_uri: str,
+    object_uri: str,
+    confidence: float,
+    now: str,
+) -> str:
+    """Persist uncertain triplets as LOW_CONFIDENCE FACT nodes."""
+    event = ctx.sqlite.get_event(event_id) or {}
+    session_id = event.get("session_id")
+    rel = str(triplet.get("relation") or "related_to")
+    subject = str(triplet.get("subject") or "")
+    obj = str(triplet.get("object") or "")
+    rel_slug = slugify(rel, separator="-", lowercase=True)[:40] or "fact"
+    obj_slug = slugify(obj, separator="-", lowercase=True)[:40] or "object"
+    uri = f"mem://user/facts/{event_id}/{triplet_idx}_{rel_slug}_{obj_slug}.md"
+    sentence = f"{subject} {rel} {obj}".strip()
+    if not ctx.fs.exists(uri):
+        fm = {
+            "id": str(uuid.uuid4()),
+            "node_type": "FACT",
+            "status": "LOW_CONFIDENCE",
+            "created_at": now,
+            "source_session_id": session_id,
+            "schema_version": 1,
+            "provenance": {
+                "extractor": "core_model_v1",
+                "confidence": confidence,
+                "ingest_event_id": event_id,
+            },
+        }
+        body = f"{sentence}\n\nConfidence: {confidence:.2f}\n"
+        ctx.fs.write_atomic(uri, frontmatter.MemoryFile(frontmatter=fm, body=body).serialize())
+
+    abstract = f"Low-confidence fact: {sentence}"
+    ctx.neo4j.merge_node(
+        source_uri=uri,
+        parent_uri=uri_mod.parent_uri(uri),
+        properties={
+            "id": str(uuid.uuid4()),
+            "node_type": "FACT",
+            "status": "LOW_CONFIDENCE",
+            "l0_abstract": abstract,
+            "l0_embedding": ctx.embed.embed(abstract),
+            "retrieval_weight": 1.0,
+            "created_at": now,
+            "last_accessed_at": now,
+            "access_count": 0,
+            "schema_version": 1,
+            "confidence": confidence,
+            "source_session_id": session_id,
+            "provenance_ingest_event_id": event_id,
+        },
+    )
+    ctx.neo4j.merge_edge(
+        subject_uri=uri,
+        object_uri=subject_uri,
+        relation_label="subject",
+        edge_type="REFERENCES",
+        properties={"created_at": now, "ingest_event_id": event_id, "confidence": confidence},
+    )
+    ctx.neo4j.merge_edge(
+        subject_uri=uri,
+        object_uri=object_uri,
+        relation_label="object",
+        edge_type="REFERENCES",
+        properties={"created_at": now, "ingest_event_id": event_id, "confidence": confidence},
+    )
+    return uri
 
 
 def _validate_written_frontmatter(

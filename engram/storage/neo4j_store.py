@@ -9,13 +9,14 @@ cannot accidentally observe each other's data.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from neo4j import Driver, GraphDatabase
 
 from engram.config import KnowledgeGraphConfig
-from engram.tenancy import DEFAULT_TENANT_ID, current_tenant_id
+from engram.tenancy import current_tenant_id
 
 log = logging.getLogger(__name__)
 
@@ -207,7 +208,7 @@ class Neo4jStore:
     ) -> list[dict[str, Any]]:
         """Top-K tenant-scoped nodes by cosine similarity on l0_embedding.
 
-        Per §10.4, over-fetch by 1.5× then filter by retrieval_weight.
+        Per §10.4, over-fetch by 1.5x then filter by retrieval_weight.
         """
         tid = tenant_id or current_tenant_id()
         over_k = max(k + 5, int(k * 1.5))
@@ -223,7 +224,7 @@ class Neo4jStore:
             "RETURN node.source_uri AS source_uri, node.l0_abstract AS l0_abstract, "
             "score, node.id AS id, node.node_type AS node_type ORDER BY score DESC"
         )
-        params = {
+        params: dict[str, Any] = {
             "k": over_k, "vec": query_embedding, "floor": dormant_floor,
             "tenant_id": tid,
         }
@@ -269,3 +270,73 @@ class Neo4jStore:
             except Exception:
                 tx.rollback()
                 raise
+
+    def graph(
+        self,
+        *,
+        root_uri: str | None = None,
+        depth: int = 1,
+        limit: int = 100,
+        node_type: str | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return a bounded tenant-scoped graph view for admin visualization."""
+        tid = tenant_id or current_tenant_id()
+        depth = max(0, min(int(depth), 4))
+        limit = max(1, min(int(limit), 500))
+        params: dict[str, Any]
+        if root_uri:
+            cypher = (
+                f"MATCH p=(root:Node {{tenant_id: $tenant_id, source_uri: $root_uri}})"
+                f"-[*0..{depth}]-(n:Node) "
+                "WHERE n.tenant_id = $tenant_id "
+                "AND ($node_type IS NULL OR n.node_type = $node_type) "
+                "AND all(rel IN relationships(p) WHERE coalesce(rel.tenant_id, $tenant_id) = $tenant_id) "
+                "WITH collect(DISTINCT n)[0..$limit] AS nodes "
+                "UNWIND nodes AS n WITH collect(DISTINCT n) AS nodes "
+                "OPTIONAL MATCH (a)-[r]-(b) "
+                "WHERE a IN nodes AND b IN nodes "
+                "AND coalesce(r.tenant_id, $tenant_id) = $tenant_id "
+                "RETURN "
+                "[node IN nodes | {id: node.source_uri, label: node.source_uri, "
+                "source_uri: node.source_uri, node_type: node.node_type, "
+                "status: node.status, l0_abstract: node.l0_abstract}] AS nodes, "
+                "[rel IN collect(DISTINCT r) WHERE rel IS NOT NULL | "
+                "{source: startNode(rel).source_uri, target: endNode(rel).source_uri, "
+                "type: type(rel), label: coalesce(rel.relation_label, type(rel)), "
+                "status: rel.status}] AS edges"
+            )
+            params = {
+                "tenant_id": tid,
+                "root_uri": root_uri,
+                "node_type": node_type,
+                "limit": limit,
+            }
+        else:
+            cypher = (
+                "MATCH (n:Node) WHERE n.tenant_id = $tenant_id "
+                "AND ($node_type IS NULL OR n.node_type = $node_type) "
+                "WITH n ORDER BY coalesce(n.created_at, '') DESC LIMIT $limit "
+                "WITH collect(n) AS nodes "
+                "UNWIND nodes AS n WITH collect(DISTINCT n) AS nodes "
+                "OPTIONAL MATCH (a)-[r]-(b) "
+                "WHERE a IN nodes AND b IN nodes "
+                "AND coalesce(r.tenant_id, $tenant_id) = $tenant_id "
+                "RETURN "
+                "[node IN nodes | {id: node.source_uri, label: node.source_uri, "
+                "source_uri: node.source_uri, node_type: node.node_type, "
+                "status: node.status, l0_abstract: node.l0_abstract}] AS nodes, "
+                "[rel IN collect(DISTINCT r) WHERE rel IS NOT NULL | "
+                "{source: startNode(rel).source_uri, target: endNode(rel).source_uri, "
+                "type: type(rel), label: coalesce(rel.relation_label, type(rel)), "
+                "status: rel.status}] AS edges"
+            )
+            params = {"tenant_id": tid, "node_type": node_type, "limit": limit}
+        with self.reader().session() as session:
+            row = session.run(cypher, **params).single()
+        if not row:
+            return {"nodes": [], "edges": []}
+        return {
+            "nodes": [dict(n) for n in (row.get("nodes") or [])],
+            "edges": [dict(e) for e in (row.get("edges") or [])],
+        }

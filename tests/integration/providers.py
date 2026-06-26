@@ -5,9 +5,8 @@ FrontierLLMProvider, and EmbeddingService interfaces — not mocks. They
 produce output deterministically so tests can assert on pipeline behaviour
 without requiring live LLM APIs or GPU-accelerated embedders.
 
-If you need to test against real providers, swap these for the production
-Anthropic adapter and run against a sandbox account. See
-`tests/integration/test_live.py` for that pattern.
+If you need to test against real providers, use the Ollama Cloud live smoke
+test and run it only with a sandbox account.
 """
 
 from __future__ import annotations

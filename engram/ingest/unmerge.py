@@ -167,7 +167,6 @@ def _contributing_extractions(sqlite: SqliteStore, merged_uri: str) -> list[dict
     ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
-        extraction = None
         ext_row = conn.execute(
             "SELECT * FROM extractions WHERE event_id = ?", (r["event_id"],)
         ).fetchone()

@@ -15,7 +15,7 @@ from engram.resilience import (
 )
 
 
-class Boom(RuntimeError):
+class BoomError(RuntimeError):
     pass
 
 
@@ -41,11 +41,11 @@ def test_retries_then_succeeds():
     calls = {"n": 0}
 
     @resilient(breaker="flaky", failure_threshold=5, max_attempts=3,
-               initial_delay=0.01, max_delay=0.02, retry_on=Boom)
+               initial_delay=0.01, max_delay=0.02, retry_on=BoomError)
     def fn():
         calls["n"] += 1
         if calls["n"] < 3:
-            raise Boom("nope")
+            raise BoomError("nope")
         return "done"
 
     assert fn() == "done"
@@ -54,13 +54,13 @@ def test_retries_then_succeeds():
 
 def test_circuit_opens_after_threshold():
     @resilient(breaker="fail", failure_threshold=2, max_attempts=1,
-               cool_down=0.2, retry_on=Boom)
+               cool_down=0.2, retry_on=BoomError)
     def fn():
-        raise Boom("always")
+        raise BoomError("always")
 
-    with pytest.raises(Boom):
+    with pytest.raises(BoomError):
         fn()
-    with pytest.raises(Boom):
+    with pytest.raises(BoomError):
         fn()
     # Breaker is open now
     with pytest.raises(CircuitOpenError):
@@ -73,14 +73,14 @@ def test_circuit_closes_after_cooldown():
     calls = {"n": 0}
 
     @resilient(breaker="recover", failure_threshold=1, max_attempts=1,
-               cool_down=0.05, retry_on=Boom)
+               cool_down=0.05, retry_on=BoomError)
     def fn():
         calls["n"] += 1
         if calls["n"] == 1:
-            raise Boom("one-off")
+            raise BoomError("one-off")
         return "alive"
 
-    with pytest.raises(Boom):
+    with pytest.raises(BoomError):
         fn()
     # Circuit is open
     with pytest.raises(CircuitOpenError):
@@ -103,7 +103,7 @@ def test_with_timeout_raises_on_slow_call():
 def test_with_timeout_passes_through_normal_exception():
     @with_timeout(1.0)
     def bad():
-        raise Boom("kaboom")
+        raise BoomError("kaboom")
 
-    with pytest.raises(Boom):
+    with pytest.raises(BoomError):
         bad()

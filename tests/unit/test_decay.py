@@ -15,7 +15,7 @@ def test_fresh_node_scores_near_one():
         relates_to_degree=5,
         p95_relates_to_degree=5,
     )
-    # α + β + γ = 1.0 at full recency, saturated frequency and centrality.
+    # alpha + beta + gamma = 1.0 at full recency, saturated frequency and centrality.
     assert 0.99 <= w <= 1.001
 
 
@@ -50,6 +50,6 @@ def test_percentile_normalisation_caps_at_one():
 def test_half_life_matches_spec():
     """SDD §10.2 lists ~69 days for personal_conversation; verify order of magnitude."""
     preset = PRESETS["personal_conversation"]
-    # After one half-life, recency contribution should be ~0.5 × α
+    # After one half-life, recency contribution should be ~0.5 x alpha.
     half_life_days = math.log(2) / preset.half_life_lambda
     assert 60 < half_life_days < 80

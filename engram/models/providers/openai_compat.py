@@ -18,9 +18,8 @@ Structured output uses the native `response_format={"type": "json_object"}`
 when the backend supports it (OpenAI, Groq, Together), otherwise falls
 back to prompt-level JSON hinting (Ollama, some Gemini setups).
 
-Every call goes through the same `@resilient` decorator (3 attempts,
-exponential backoff, per-provider circuit breaker) as the Anthropic
-adapter — same failure semantics.
+Every call goes through the shared `@resilient` decorator (3 attempts,
+exponential backoff, per-provider circuit breaker).
 """
 
 from __future__ import annotations
@@ -28,7 +27,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 try:
     import openai
@@ -45,8 +45,7 @@ from engram.resilience import resilient
 log = logging.getLogger(__name__)
 
 
-# Transient errors from openai-python >= 1.x. These differ from anthropic's
-# but the conceptual mapping is identical.
+# Transient errors from openai-python >= 1.x.
 _RETRYABLE = (
     openai.APIConnectionError,
     openai.APITimeoutError,
@@ -91,9 +90,7 @@ def _supports_json_mode(api_base: str | None) -> bool:
     host = api_base.lower()
     if "ollama" in host or "localhost" in host or "127.0.0.1" in host:
         return False
-    if "generativelanguage.googleapis.com" in host:
-        return False
-    return True
+    return "generativelanguage.googleapis.com" not in host
 
 
 class OpenAICompatCoreProvider(CoreModelProvider):
@@ -110,7 +107,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
             max_retries=0,                 # we handle retries via @resilient
         )
         self._use_json_mode = _supports_json_mode(cfg.api_base)
-        # Per-provider breaker key so OpenAI outages don't open Anthropic's breaker.
+        # Per-provider breaker key so one backend outage does not open another.
         host = (cfg.api_base or "openai").split("//", 1)[-1].split("/", 1)[0]
         self._breaker_key = f"openai_compat_core_{host}"
 
@@ -164,7 +161,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
         try:
             output = self.extract_json(raw_text)
         except CoreModelError:
-            # One error-correcting retry (same pattern as Anthropic adapter)
+            # One error-correcting retry for malformed JSON.
             log.info("openai_compat_core: malformed JSON, retrying with correction")
             retry_user = (
                 f"{user_prompt}\n\nYour previous response was not valid JSON. "
@@ -238,10 +235,13 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
             system_text += (
                 "\n\nThis is the final call. You MUST emit ANSWER with a best-effort "
                 "answer even if context is incomplete."
-            )
+        )
         user_text = f"<msc>\n{msc}\n</msc>\n\n<user_query>\n{user_query}\n</user_query>"
         started = time.perf_counter()
-        resp = self._call_chat(system=system_text, user=user_text)
+        try:
+            resp = self._call_chat(system=system_text, user=user_text)
+        except openai.APIError as err:
+            raise CoreModelError(f"openai-compat frontier API error: {err}") from err
         latency_ms = (time.perf_counter() - started) * 1000
         raw_text = resp.choices[0].message.content or ""
 

@@ -45,8 +45,7 @@ env_check() {
 
 echo "[3] Setting secrets..."
 env_check "ENGRAM_API_KEY" "ENGRAM_API_KEY" "engram-dev-$(openssl rand -hex 16)"
-env_check "CORE_MODEL_API_KEY" "CORE_MODEL_API_KEY"
-env_check "FRONTIER_LLM_API_KEY" "FRONTIER_LLM_API_KEY"
+env_check "OLLAMA_API_KEY" "OLLAMA_API_KEY"
 env_check "NEO4J_ADMIN_PASSWORD" "Neo4j admin password" "engram-dev"
 
 # 4. Write .env if missing
@@ -54,11 +53,10 @@ if [ ! -f ".env" ]; then
     echo "[4] Writing .env..."
     cat > .env <<EOF
 ENGRAM_API_KEY=${ENGRAM_API_KEY}
-CORE_MODEL_API_KEY=${CORE_MODEL_API_KEY}
-FRONTIER_LLM_API_KEY=${FRONTIER_LLM_API_KEY}
+OLLAMA_API_KEY=${OLLAMA_API_KEY}
 NEO4J_ADMIN_PASSWORD=${NEO4J_ADMIN_PASSWORD}
-ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
 ENGRAM_ADMIN_KEY=${ENGRAM_API_KEY}
+ENGRAM_CONFIG_PATH=./config.yaml
 EOF
 else
     echo "[4] .env already exists — skipping"

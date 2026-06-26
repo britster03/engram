@@ -98,5 +98,5 @@ def configure_logging(level: int | str | None = None) -> None:
     root.addHandler(handler)
     root.setLevel(level)
     # Noisy third-party loggers
-    for name in ("urllib3", "httpx", "httpcore", "anthropic", "neo4j.notifications"):
+    for name in ("urllib3", "httpx", "httpcore", "neo4j.notifications"):
         logging.getLogger(name).setLevel(max(logging.WARNING, logging.getLogger().level))
