@@ -43,3 +43,6 @@ package-lock.json
 # Runtime artifacts
 chromedriver
 event_ledger.db
+
+# benchmark run outputs
+benchmarks/results/

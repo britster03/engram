@@ -58,11 +58,12 @@ class FilesystemStore:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, target)
-        parent_fd = os.open(str(target.parent), os.O_RDONLY)
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+        if os.name != 'nt':
+            parent_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
         return target
 
     def read(self, uri: str) -> str:

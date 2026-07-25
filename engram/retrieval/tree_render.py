@@ -38,7 +38,7 @@ def render_tree(
     Always renders at least depth 1-2. Emits ellipsis markers for truncated
     subtrees so the Core Model knows what is missing.
     """
-    root_path = fs.data_dir
+    root_path = fs.tenant_scope_path()
     if not root_path.exists():
         return "(filesystem is empty)"
     # Level-0 root
@@ -57,7 +57,7 @@ def render_tree(
             for child in items:
                 if child.name.startswith("."):
                     continue
-                uri = path_to_uri(child, fs.data_dir)
+                uri = path_to_uri(child, fs.tenant_scope_path())
                 node = _Node(
                     uri=uri,
                     path=child,

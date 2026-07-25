@@ -547,7 +547,7 @@ def _read_full_body(ctx: OrchestratorContext, source_uri: str) -> str | None:
         raw = ctx.fs.read(source_uri)
         mf = frontmatter.parse(raw)
         return mf.body
-    except (FileNotFoundError, FrontmatterError):
+    except (OSError, FrontmatterError):
         return None
 
 
@@ -559,7 +559,7 @@ def _status_for(ctx: OrchestratorContext, source_uri: str) -> tuple[str, Any]:
             str(mf.frontmatter.get("status", "ACTIVE")),
             mf.frontmatter.get("provenance", {}).get("confidence"),
         )
-    except (FileNotFoundError, FrontmatterError):
+    except (OSError, FrontmatterError):
         return ("ACTIVE", None)
 
 

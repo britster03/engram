@@ -35,8 +35,11 @@ def normalize_uri(uri: str) -> str:
 
 def uri_to_path(uri: str, data_dir: str | Path) -> Path:
     """Translate mem://user/entities/alice/overview.md → data_dir/user/entities/alice/overview.md."""
-    uri = normalize_uri(uri) if is_mem_uri(uri) else f"{MEM_SCHEME}{uri.lstrip('/')}"
-    body = uri[len(MEM_SCHEME):]
+    cleaned = uri.replace("mem:\\\\", "mem://").replace("mem:\\", "mem://")
+    while cleaned.startswith("mem://mem://"):
+        cleaned = cleaned[6:]
+    cleaned = normalize_uri(cleaned) if is_mem_uri(cleaned) else f"{MEM_SCHEME}{cleaned.lstrip('/')}"
+    body = cleaned[len(MEM_SCHEME):]
     return Path(data_dir) / body
 
 
