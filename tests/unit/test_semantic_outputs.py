@@ -7,6 +7,7 @@ import pytest
 from engram import metrics as metrics_mod
 from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
 from engram.models.semantic import (
+    ExtractedTriplet,
     GateWriteOutput,
     RetrievalCommand,
     complete_validated,
@@ -77,3 +78,20 @@ def test_retrieval_command_schema_rejects_unregistered_templates() -> None:
 
     template_schema = RetrievalCommand.model_json_schema()
     assert "t_cat" not in str(template_schema)
+
+
+def test_extraction_requires_boolean_explicit_correction_evidence() -> None:
+    base = {
+        "subject": "Alice",
+        "relation": "works_at",
+        "object": "Meta",
+        "confidence": 0.9,
+    }
+    assert ExtractedTriplet.model_validate(base).explicit_correction is False
+    assert (
+        ExtractedTriplet.model_validate({**base, "explicit_correction": True})
+        .explicit_correction
+        is True
+    )
+    with pytest.raises(ValueError):
+        ExtractedTriplet.model_validate({**base, "explicit_correction": "true"})

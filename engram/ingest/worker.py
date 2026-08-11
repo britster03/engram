@@ -349,6 +349,7 @@ def _prepare_extraction(
                 "object": obj,
                 "object_kind": object_kind,
                 "confidence": confidence,
+                "explicit_correction": raw.get("explicit_correction") is True,
             }
         )
         canonical = vocab.canonicalise(relation, ctx.embed)
@@ -822,6 +823,7 @@ def _index_neo4j(
             object_abstract=str(o_raw),
             core=ctx.core,
             incoming_confidence=conf,
+            allow_contradiction=trip.get("explicit_correction") is True,
         )
         apply_decision(
             neo4j=ctx.neo4j,
@@ -971,6 +973,7 @@ def _write_fact_file(
             "relation_review_required": bool(
                 triplet.get("relation_review_required")
             ),
+            "explicit_correction": triplet.get("explicit_correction") is True,
             "object": obj,
             "object_kind": str(triplet.get("object_kind") or "ENTITY"),
             "subject_uri": subject_uri,

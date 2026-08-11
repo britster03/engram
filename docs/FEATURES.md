@@ -87,8 +87,9 @@ Legend:
 ## Known Limits
 
 - BM25-assisted duplicate classification is not implemented in the current
-  conflict resolver. The shipped resolver uses exact URI/cosine/Core-model
-  conflict decisions.
+  conflict resolver. The shipped resolver scores all same-relation candidates
+  with exact URI/cosine/Core-model decisions and requires a source-derived
+  `explicit_correction` flag before it can retire an existing assertion.
 - Hard-delete of memories is not exposed; memory retirement is soft-delete.
 - Active/active multi-region replication is not shipped.
 - Postgres control-plane storage is not shipped.

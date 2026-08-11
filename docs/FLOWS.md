@@ -221,22 +221,29 @@ For each extracted triplet during Step 6:
 fetch active RELATES_TO edges from subject
      │
      ▼
-for each candidate edge where relation matches:
-   compute object cosine similarity
+score every candidate edge where relation matches
+and select the best object match
      ▲
      │
      ├── cosine > 0.95   →  DUPLICATE  (touch existing, no new edge)
      │
-     ├── cosine < 0.50   →  CONTRADICTION
-     │                       └── mark old HISTORICAL + SUPERSEDES edge
-     │                       └── if old object now orphan → HISTORICAL
+     ├── cosine < 0.50   →  different value
+     │                       ├── explicit_correction=true → CONTRADICTION
+     │                       │   └── old HISTORICAL + FACT SUPERSEDES edge
+     │                       └── otherwise → CO_EXISTENCE
      │
      ├── 0.50–0.95 band  →  ambiguous
      │                       └── core model (prompts/dedup.j2) decides
+     │                       └── contradiction requires explicit evidence
+     │                       └── unknown returned edge IDs are rejected
      │                       └── fallback → CO_EXISTENCE (safer)
      │
      └── no match         →  CO_EXISTENCE  (write new ACTIVE edge)
 ```
+
+The classifier evaluates all same-relation edges before deciding; an early
+dissimilar value cannot hide a later exact duplicate. Different objects alone
+do not imply contradiction because most relations permit plurality/history.
 
 ## 3. Consolidation worker loop
 

@@ -28,11 +28,14 @@ temporal metadata, subject URI, and optional object URI.
   derived `RELATES_TO` edge.
 - Duplicate source assertions are preserved and linked with `DUPLICATE_OF`;
   they do not create a duplicate derived edge.
-- Contradictions link the new FACT to the prior FACT with `SUPERSEDES` and
+- Explicit corrections link the new FACT to the prior FACT with `SUPERSEDES` and
   retire the old derived `RELATES_TO` edge. The immutable source FACT remains
   `ACTIVE`, but ordinary vector retrieval excludes FACTs with an incoming
   `SUPERSEDES` edge; history retrieval can still return them. Entity identity
   nodes are never marked historical merely because an assertion changed.
+- A different object is not enough to infer correction. The extraction must
+  persist `explicit_correction=true` from an explicit retraction/replacement in
+  the source; otherwise same-subject/relation values coexist.
 - Runtime indexing and KG rebuild use the same FACT identity and reconstruct
   the same provenance and history edges.
 

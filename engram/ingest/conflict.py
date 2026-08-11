@@ -4,12 +4,15 @@ Classifies a newly-extracted triplet against existing RELATES_TO edges from
 the same subject and applies the SUPERSEDES / no-op / add-new decisions.
 
 The default classifier is rule-based on cosine similarity (fast, zero LLM
-cost). When the rule-based tier is uncertain (0.5 < object cosine ≤ 0.95
+cost). When the rule-based tier is uncertain (0.5 ≤ object cosine ≤ 0.95
 against an existing edge with the same relation), the Core Model is asked
-to disambiguate via `prompts/dedup.j2`. If the Core Model is unavailable or
-fails, we default to CO_EXISTENCE (safer: co-existence can be cleaned up by
-NORMALIZE/ATOMIZE later; an incorrect DUPLICATE or CONTRADICTION is harder
-to reverse).
+to disambiguate via `prompts/dedup.j2`. A different object is not evidence
+of contradiction: relations such as likes, visited, works_at, and parent_of
+are multi-valued or historical. CONTRADICTION is therefore accepted only
+when the caller supplies independent explicit-correction evidence. If the
+Core Model is unavailable or fails, we default to CO_EXISTENCE (safer:
+co-existence can be cleaned up later; an incorrect DUPLICATE or
+CONTRADICTION suppresses valid retrieval evidence).
 """
 
 from __future__ import annotations
@@ -29,8 +32,8 @@ log = logging.getLogger(__name__)
 
 
 DUPLICATE_OBJECT_COS = 0.95
-CONTRADICTION_OBJECT_COS = 0.95
 DUPLICATE_RELATION_COS = 0.90
+MAX_CORE_CANDIDATES = 20
 
 
 @dataclass
@@ -51,15 +54,21 @@ def classify(
     object_abstract: str,
     core: CoreModelProvider | None = None,
     incoming_confidence: float = 0.9,
+    allow_contradiction: bool = False,
 ) -> ConflictDecision:
     """Return the appropriate conflict case for a new triplet.
 
     Two-tier decision:
       1. Rule-based classifier on cosine similarity (fast, zero LLM cost).
-      2. If the rule-based tier lands in the ambiguous band (0.5 < obj_cos
+      2. If the rule-based tier lands in the ambiguous band (0.5 ≤ obj_cos
          ≤ 0.95 under the same relation), call `core` to disambiguate using
-         prompts/dedup.j2. If `core` is None or the call fails, we default
-         to CO_EXISTENCE (safer than a wrong DUPLICATE / CONTRADICTION).
+         prompts/dedup.j2. A Core Model CONTRADICTION is honored only when
+         `allow_contradiction` confirms the caller observed an explicit
+         correction/retraction independently of object dissimilarity.
+
+    All matching edges are scored before deciding. Returning on the first
+    dissimilar edge can hide a later exact duplicate when a subject already
+    has several values for the same relation.
     """
     existing = _fetch_active_edges(neo4j, subject_uri)
     if not existing:
@@ -68,7 +77,7 @@ def classify(
     new_rel_vec = embed.embed(relation_label)
     new_obj_vec = embed.embed(object_abstract)
 
-    ambiguous_candidates: list[tuple[dict, float]] = []
+    matching_candidates: list[tuple[dict, float]] = []
     for edge in existing:
         rel_cos = _cos(new_rel_vec, embed.embed(edge.get("relation_label") or ""))
         same_relation = (
@@ -78,27 +87,48 @@ def classify(
             continue
         object_abs = edge.get("object_abstract") or edge.get("object_uri") or ""
         obj_cos = _cos(new_obj_vec, embed.embed(object_abs))
-        if obj_cos > DUPLICATE_OBJECT_COS:
-            return ConflictDecision(
-                "DUPLICATE", edge.get("edge_id"),
-                f"object cosine {obj_cos:.2f} > {DUPLICATE_OBJECT_COS}",
-                existing_assertion_uri=edge.get("assertion_uri"),
-            )
-        if obj_cos < 0.5:
-            return ConflictDecision(
-                "CONTRADICTION", edge.get("edge_id"),
-                f"object cosine {obj_cos:.2f} — different object",
-                existing_assertion_uri=edge.get("assertion_uri"),
-            )
-        # 0.5 ≤ obj_cos ≤ 0.95 — ambiguous
-        ambiguous_candidates.append((edge, obj_cos))
+        if edge.get("object_uri") == object_uri:
+            obj_cos = 1.0
+        matching_candidates.append((edge, obj_cos))
 
-    if not ambiguous_candidates:
+    if not matching_candidates:
         return ConflictDecision("CO_EXISTENCE", None, "no-matching-relation")
+
+    matching_candidates.sort(key=lambda item: item[1], reverse=True)
+    best_edge, best_score = matching_candidates[0]
+    if best_score > DUPLICATE_OBJECT_COS:
+        return ConflictDecision(
+            "DUPLICATE",
+            best_edge.get("edge_id"),
+            f"best object cosine {best_score:.2f} > {DUPLICATE_OBJECT_COS}",
+            existing_assertion_uri=best_edge.get("assertion_uri"),
+        )
+
+    # Dissimilarity means a different value, not a contradiction. Only ask
+    # the model about low-similarity candidates when the caller separately
+    # observed explicit correction/retraction evidence.
+    if best_score < 0.5:
+        if allow_contradiction:
+            return ConflictDecision(
+                "CONTRADICTION",
+                best_edge.get("edge_id"),
+                f"explicit correction with different object (cosine {best_score:.2f})",
+                existing_assertion_uri=best_edge.get("assertion_uri"),
+            )
+        return ConflictDecision(
+            "CO_EXISTENCE",
+            None,
+            f"different object (best cosine {best_score:.2f}); no explicit correction",
+        )
+
+    core_candidates = (
+        matching_candidates
+        if allow_contradiction
+        else [item for item in matching_candidates if item[1] >= 0.5]
+    )[:MAX_CORE_CANDIDATES]
 
     # Ambiguous — ask the Core Model when available. Otherwise co-existence.
     if core is None:
-        _best_edge, best_score = max(ambiguous_candidates, key=lambda p: p[1])
         return ConflictDecision(
             "CO_EXISTENCE", None,
             f"ambiguous cosine {best_score:.2f}; no core model available",
@@ -113,14 +143,16 @@ def classify(
                 "l0_abstract": object_abstract,
                 "confidence": incoming_confidence,
             },
+            allow_contradiction=allow_contradiction,
             existing_edges=[
                 {
                     "edge_id": e.get("edge_id"),
                     "relation_label": e.get("relation_label"),
                     "object_uri": e.get("object_uri"),
                     "object_abstract": e.get("object_abstract"),
+                    "object_cosine": score,
                 }
-                for e, _ in ambiguous_candidates
+                for e, score in core_candidates
             ],
         )
         validated, _result = complete_validated(
@@ -130,18 +162,36 @@ def classify(
             system_prompt=prompt,
             user_prompt="Return the dedup JSON.",
         )
+        if validated.case == "CO_EXISTENCE":
+            return ConflictDecision(
+                "CO_EXISTENCE", None, validated.reason or "core-model-dedup"
+            )
+        selected = next(
+            (
+                edge
+                for edge, _score in core_candidates
+                if str(edge.get("edge_id")) == str(validated.existing_edge_id)
+            ),
+            None,
+        )
+        if selected is None:
+            return ConflictDecision(
+                "CO_EXISTENCE", None, "core model selected an unknown existing edge"
+            )
+        if validated.case == "CONTRADICTION" and not allow_contradiction:
+            return ConflictDecision(
+                "CO_EXISTENCE",
+                None,
+                "core model proposed contradiction without explicit correction evidence",
+            )
         return ConflictDecision(
             validated.case,
-            validated.existing_edge_id,
+            selected.get("edge_id"),
             validated.reason or "core-model-dedup",
-            existing_assertion_uri=next(
-                (
-                    str(edge.get("assertion_uri"))
-                    for edge, _score in ambiguous_candidates
-                    if edge.get("edge_id") == validated.existing_edge_id
-                    and edge.get("assertion_uri")
-                ),
-                None,
+            existing_assertion_uri=(
+                str(selected["assertion_uri"])
+                if selected.get("assertion_uri")
+                else None
             ),
         )
     except Exception:

@@ -321,10 +321,17 @@ compares it against existing ACTIVE RELATES_TO edges from the same subject:
 
 | Case | Detection | Resolution |
 |---|---|---|
-| DUPLICATE | Same subject, equivalent relation (label match OR rel cosine > 0.9), object cosine > 0.95 | Touch existing edge (increment access_count, update last_accessed_at). Discard incoming. |
-| CONTRADICTION | Same subject, equivalent relation, object cosine < 0.5 | Mark old edge HISTORICAL (`status='HISTORICAL'`, `superseded_by=new_edge_id`). Write new ACTIVE edge + SUPERSEDES edge. If old object has no remaining ACTIVE edges, mark it HISTORICAL (orphan detection, §6.5.1). |
-| CO_EXISTENCE | Same subject, different relation — or same relation but object cosine 0.5–0.95 (plausible alternative) | Write new ACTIVE edge; no modification to existing edges. |
-| ambiguous (0.5 ≤ cos ≤ 0.95) | Rule-based classifier declines | Delegates to `prompts/dedup.j2` (Core Model); on core-model failure, default to CO_EXISTENCE (safer). |
+| DUPLICATE | Same subject, equivalent relation (label match OR rel cosine > 0.9), best object cosine > 0.95 | Touch the best existing edge and link the immutable incoming FACT with `DUPLICATE_OF`. |
+| CONTRADICTION | The extracted triplet carries `explicit_correction=true` and either the best prior object is clearly different or the Core Model selects a prior edge in the ambiguous band | Mark the old derived edge HISTORICAL. Write the new ACTIVE edge and FACT-to-FACT `SUPERSEDES` edge. |
+| CO_EXISTENCE | Different/additional value without explicit correction evidence, a different relation, or no safe match | Write a new ACTIVE edge; do not modify existing edges. |
+| ambiguous (0.5 ≤ cos ≤ 0.95) | Rule-based classifier declines after scoring all same-relation candidates | Delegate a bounded candidate list to `prompts/dedup.j2`; reject unknown edge IDs and contradiction without explicit evidence; on failure default to CO_EXISTENCE. |
+
+Object dissimilarity alone is never a contradiction signal. Most memory
+relations are multi-valued or historical (`likes`, `visited`, `works_at`,
+`parent_of`, and others). The extractor must set `explicit_correction=true`
+only when the source explicitly retracts or replaces an earlier value. The
+flag is persisted with the triplet/FACT so runtime indexing and rebuild apply
+the same deterministic history decision.
 
 ## 6. Soft memory decay (§10)
 

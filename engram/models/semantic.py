@@ -32,6 +32,7 @@ class ExtractedTriplet(SemanticModel):
     object: str = Field(min_length=1, max_length=2_000)
     confidence: float = Field(ge=0.0, le=1.0)
     object_kind: Literal["ENTITY", "LITERAL"] | None = None
+    explicit_correction: StrictBool = False
 
 
 class ExtractOutput(SemanticModel):

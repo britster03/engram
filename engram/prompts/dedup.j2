@@ -15,6 +15,11 @@ Rules:
   invalidate the old one (e.g. "works at Meta" and "works at Google" both
   could be true if the user has multiple roles; default to CO_EXISTENCE when
   the domain supports plurality).
+- Different objects alone are never proof of CONTRADICTION. Relations such as
+  likes, visited, interested_in, uses, owns, works_at, and parent_of commonly
+  have multiple simultaneous or historical values.
+- Explicit correction/retraction evidence available: {{ allow_contradiction }}.
+  When this is false, do not return CONTRADICTION.
 
 Incoming triplet:
   subject: {{ incoming.subject }}
@@ -29,6 +34,7 @@ Existing edges from the same subject:
   relation: {{ edge.relation_label }}
   object_uri: {{ edge.object_uri }}
   object_abstract: {{ edge.object_abstract }}
+  object_cosine: {{ "%.3f"|format(edge.object_cosine) }}
 {% endfor %}
 
 Output schema:

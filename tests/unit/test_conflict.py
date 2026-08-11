@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from engram.ingest.conflict import ConflictDecision, apply_decision, classify
+from engram.models.core import CompletionResult, CoreModelProvider
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from tests.integration.providers import DeterministicEmbeddingService
 
@@ -62,7 +63,7 @@ def test_duplicate_short_circuits():
     assert "$tenant_id" in neo.queries[0][0]
 
 
-def test_contradiction_triggers_supersession_plan():
+def test_different_objects_coexist_without_explicit_correction():
     edges = [
         {
             "edge_id": 42,
@@ -81,8 +82,110 @@ def test_contradiction_triggers_supersession_plan():
         object_uri="mem://user/entities/meta/meta.md",
         object_abstract="Meta",
     )
-    assert decision.case == "CONTRADICTION"
-    assert decision.existing_edge_id == 42
+    assert decision.case == "CO_EXISTENCE"
+    assert decision.existing_edge_id is None
+    assert "no explicit correction" in decision.reason
+
+    correction = classify(
+        neo4j=neo,  # type: ignore[arg-type]
+        embed=embed,  # type: ignore[arg-type]
+        subject_uri="mem://user/entities/alice/alice.md",
+        relation_label="works_at",
+        object_uri="mem://user/entities/meta/meta.md",
+        object_abstract="Meta",
+        allow_contradiction=True,
+    )
+    assert correction.case == "CONTRADICTION"
+    assert correction.existing_edge_id == 42
+
+
+def test_duplicate_searches_all_same_relation_edges():
+    edges = [
+        {
+            "edge_id": "different",
+            "relation_label": "works_at",
+            "object_uri": "mem://user/entities/google/google.md",
+            "object_abstract": "Google",
+        },
+        {
+            "edge_id": "duplicate",
+            "relation_label": "works_at",
+            "object_uri": "mem://user/entities/meta/meta.md",
+            "object_abstract": "Meta",
+            "assertion_uri": "mem://user/facts/event-a/0_works-at_meta.md",
+        },
+    ]
+    neo = StaticNeo(edges=edges)
+    decision = classify(
+        neo4j=neo,  # type: ignore[arg-type]
+        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+        subject_uri="mem://user/entities/alice/alice.md",
+        relation_label="works_at",
+        object_uri="mem://user/entities/meta/meta.md",
+        object_abstract="Meta",
+    )
+
+    assert decision.case == "DUPLICATE"
+    assert decision.existing_edge_id == "duplicate"
+    assert decision.existing_assertion_uri == "mem://user/facts/event-a/0_works-at_meta.md"
+
+
+class AmbiguousEmbedding:
+    def embed(self, text: str) -> list[float]:
+        if text in {"works_at", "Meta"}:
+            return [1.0, 0.0]
+        return [0.7, 0.7]
+
+
+class ContradictionCore(CoreModelProvider):
+    def complete(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema=None,
+        max_tokens=None,
+        temperature=None,
+    ) -> CompletionResult:
+        return CompletionResult(
+            output={
+                "case": "CONTRADICTION",
+                "existing_edge_id": "42",
+                "reason": "the user explicitly corrected the earlier value",
+            },
+            raw_text="",
+        )
+
+
+def test_core_contradiction_requires_explicit_correction_evidence():
+    edges = [
+        {
+            "edge_id": "42",
+            "relation_label": "works_at",
+            "object_uri": "mem://user/entities/google/google.md",
+            "object_abstract": "Google",
+            "assertion_uri": "mem://user/facts/old/0_works-at_google.md",
+        }
+    ]
+    neo = StaticNeo(edges=edges)
+    kwargs = {
+        "neo4j": neo,
+        "embed": AmbiguousEmbedding(),
+        "subject_uri": "mem://user/entities/alice/alice.md",
+        "relation_label": "works_at",
+        "object_uri": "mem://user/entities/meta/meta.md",
+        "object_abstract": "Meta",
+        "core": ContradictionCore(),
+    }
+
+    safe = classify(**kwargs)  # type: ignore[arg-type]
+    assert safe.case == "CO_EXISTENCE"
+    assert "without explicit correction" in safe.reason
+
+    correction = classify(**kwargs, allow_contradiction=True)  # type: ignore[arg-type]
+    assert correction.case == "CONTRADICTION"
+    assert correction.existing_edge_id == "42"
+    assert correction.existing_assertion_uri == "mem://user/facts/old/0_works-at_google.md"
 
 
 def test_apply_decision_for_duplicate_noop_and_contradiction_supersedes():

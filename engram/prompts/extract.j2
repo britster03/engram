@@ -59,6 +59,12 @@ Produce three outputs:
    referenced fact clearer, use it; otherwise keep the triplet minimal
    and the confidence honest. Discard any fact with confidence < 0.3.
 
+   Set `explicit_correction` to true only when the current source explicitly
+   retracts, corrects, or replaces an earlier value for the same subject and
+   relation (for example, "Correction: I work at Meta, not Google"). A new or
+   additional value is not a correction. Keep it false when this evidence is
+   absent or ambiguous.
+
    Triplets may include:
    - Facts about the user (preferences, role, relationships, events).
    - Facts about third parties and entities (people, orgs, projects).
@@ -97,7 +103,7 @@ Output schema:
   "triplets": [
     { "subject": "string", "relation": "snake_case_label",
       "object": "string", "object_kind": "ENTITY" | "LITERAL",
-      "confidence": 0.0-1.0 }
+      "confidence": 0.0-1.0, "explicit_correction": true | false }
   ],
   "l0_abstract": "one sentence"
 }

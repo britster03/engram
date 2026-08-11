@@ -253,6 +253,7 @@ def _rebuild_assertions(
                     object_abstract=str(trip.get("object") or ""),
                     core=None,
                     incoming_confidence=confidence,
+                    allow_contradiction=trip.get("explicit_correction") is True,
                 )
                 apply_decision(
                     neo4j=graph,

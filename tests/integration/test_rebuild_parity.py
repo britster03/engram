@@ -46,8 +46,9 @@ class LowConfidenceProvider(DeterministicCoreProvider):
 
 
 class AssertionProvider(DeterministicCoreProvider):
-    def __init__(self, obj: str) -> None:
+    def __init__(self, obj: str, *, explicit_correction: bool = False) -> None:
         self.obj = obj
+        self.explicit_correction = explicit_correction
 
     def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
         from engram.models.core import CompletionResult
@@ -66,6 +67,7 @@ class AssertionProvider(DeterministicCoreProvider):
                             "relation": "works_at",
                             "object": self.obj,
                             "confidence": 0.9,
+                            "explicit_correction": self.explicit_correction,
                         }
                     ],
                 },
@@ -219,11 +221,15 @@ def test_rebuild_refuses_implicit_or_unknown_scope(cfg: EngramConfig):
         rebuild(cfg, tenant_ids=["does-not-exist"], dry_run=True)
 
 
-def test_rebuild_matches_duplicate_contradiction_and_history(cfg: EngramConfig):
+def test_rebuild_matches_duplicate_explicit_correction_and_history(
+    cfg: EngramConfig,
+):
     sqlite = SqliteStore(cfg.event_ledger.path)
     fs = FilesystemStore(cfg.filesystem.data_dir)
     graph = InMemoryKnowledgeGraph()
-    for index, employer in enumerate(("Meta", "Meta", "Google")):
+    for index, (employer, correction) in enumerate(
+        (("Meta", False), ("Meta", False), ("Google", True))
+    ):
         _ingest(
             cfg=cfg,
             sqlite=sqlite,
@@ -231,7 +237,7 @@ def test_rebuild_matches_duplicate_contradiction_and_history(cfg: EngramConfig):
             graph=graph,
             tenant_id="history-tenant",
             index=index,
-            core=AssertionProvider(employer),
+            core=AssertionProvider(employer, explicit_correction=correction),
         )
     before = _snapshot(graph, "history-tenant")
     assert any(
@@ -240,7 +246,7 @@ def test_rebuild_matches_duplicate_contradiction_and_history(cfg: EngramConfig):
         if edge.get("tenant_id") == "history-tenant"
     )
     assert any(
-        edge.get("type") == "SUPERSEDES"
+        edge.get("type") == "DUPLICATE_OF"
         for edge in graph.edges
         if edge.get("tenant_id") == "history-tenant"
     )
@@ -250,6 +256,7 @@ def test_rebuild_matches_duplicate_contradiction_and_history(cfg: EngramConfig):
         if edge.get("tenant_id") == "history-tenant"
         and edge.get("type") == "SUPERSEDES"
     ]
+    assert len(supersedes) == 1
     assert all("/facts/" in edge["source"] and "/facts/" in edge["target"] for edge in supersedes)
     fact_nodes = {
         uri: node
