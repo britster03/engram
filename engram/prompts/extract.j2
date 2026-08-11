@@ -37,7 +37,8 @@ Produce three outputs:
    resides_in, visited, born_in, moved_to, related_to, married_to, partner_of,
    parent_of, child_of, sibling_of, friend_of, works_on, contributes_to, owns,
    maintains, uses, built_with, depends_on, references, mentions, contains,
-   created_by, received_on, reminds_of, started_on, ended_on, scheduled_for,
+   created_by, gifted_by, symbolizes, received_on, reminds_of, started_on,
+   ended_on, scheduled_for,
    happened_at, achieved, took_place_in, participated_in, attended, prefers,
    likes, dislikes, avoids, interested_in, motivated_by, makes_feel, helps_with,
    undergoing, has, is_a, knows_for, married_for, from_country, owns_pet_named,
@@ -83,6 +84,13 @@ Produce three outputs:
    `resolved_text`. Use a consistent possessive role label for an unnamed
    person (for example, "Melanie's husband") rather than alternating between
    "husband" and several aliases.
+
+   Relation direction is strict: `artifact created_by creator`, `artifact
+   gifted_by giver`, and `artifact symbolizes meaning`. A gift does not imply
+   that its giver created it. For example, "my necklace was a gift from my
+   grandma and stands for love, faith and strength" yields
+   `(necklace, gifted_by, grandma)` plus three `symbolizes` facts; it does not
+   yield `created_by`.
 
    Set `explicit_correction` to true only when the current source explicitly
    retracts, corrects, or replaces an earlier value for the same subject and

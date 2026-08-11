@@ -163,3 +163,95 @@ def test_prepare_extraction_keeps_spoken_ownership_with_a_caption() -> None:
     )
 
     assert [trip["object"] for trip in prepared["triplets"]] == ["hand-painted bowl"]
+
+
+def test_prepare_extraction_repairs_backward_caption_creation() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Melanie finds making pottery calming and shared a bowl.",
+            "l0_abstract": "Melanie makes pottery.",
+            "triplets": [
+                {
+                    "subject": "Melanie",
+                    "relation": "created_by",
+                    "object": "bowl with a black and white flower design",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.7,
+                }
+            ],
+        },
+        {
+            "turn_pair": {
+                "user": {"content": "What made you try pottery?", "speaker": "Caroline"},
+                "assistant": {
+                    "content": "Making it is calming. Look at this!",
+                    "speaker": "Melanie",
+                    "image_caption": "a bowl with a black and white flower design",
+                },
+            }
+        },
+    )
+
+    assert prepared["triplets"] == [
+        {
+            "subject": "bowl with a black and white flower design",
+            "relation": "created_by",
+            "object": "Melanie",
+            "object_kind": "ENTITY",
+            "confidence": 0.7,
+            "explicit_correction": False,
+            "relation_normalized": True,
+        }
+    ]
+
+
+def test_prepare_extraction_maps_gift_provenance_without_inventing_creation() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "The necklace was a gift from Caroline's grandma.",
+            "l0_abstract": "Caroline's grandma gave her a necklace.",
+            "triplets": [
+                {
+                    "subject": "necklace",
+                    "relation": "created_by",
+                    "object": "Caroline's grandma",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.7,
+                }
+            ],
+        },
+        {
+            "turn_pair": {
+                "user": {
+                    "content": "This necklace was a gift from my grandma.",
+                    "speaker": "Caroline",
+                },
+                "assistant": {"content": "That is special.", "speaker": "Melanie"},
+            }
+        },
+    )
+
+    assert prepared["triplets"][0]["relation"] == "gifted_by"
+
+
+def test_prepare_extraction_drops_unsupported_creation() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "A necklace was discussed.",
+            "l0_abstract": "A necklace was discussed.",
+            "triplets": [
+                {
+                    "subject": "necklace",
+                    "relation": "created_by",
+                    "object": "Caroline's grandma",
+                    "confidence": 0.7,
+                }
+            ],
+        },
+        {"turn_pair": {"user": {"content": "I like this necklace."}}},
+    )
+
+    assert prepared["triplets"] == []

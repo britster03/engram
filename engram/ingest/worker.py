@@ -84,6 +84,15 @@ _STAGE_ORDER = {
 
 _INLINE_IMAGE_CAPTION = re.compile(r"\[Image caption:\s*.*?\]", re.IGNORECASE | re.DOTALL)
 _OWNERSHIP_RELATIONS = frozenset({"drives", "has", "maintains", "owns"})
+_CREATED_BY_RELATIONS = frozenset({"created_by", "created by", "made_by", "made by"})
+_CREATION_CUE = re.compile(
+    r"\b(?:authored|built|crafted|created|designed|made|make|makes|making|painted|wrote)\b",
+    re.IGNORECASE,
+)
+_GIFT_CUE = re.compile(
+    r"\b(?:gave|gift|gifted|given|present|received)\b",
+    re.IGNORECASE,
+)
 
 
 def process_event(ctx: IngestContext, event_id: str) -> str:
@@ -333,13 +342,14 @@ def _prepare_extraction(
     asserted_at = _source_asserted_at(payload)
     normalized: list[dict[str, Any]] = []
     vocab = vocabulary()
-    candidate_triplets = atomize_triplets(
-        [
-            dict(raw)
-            for raw in raw_triplets
-            if isinstance(raw, dict) and not _caption_only_ownership(raw, payload)
-        ]
-    )
+    supported_triplets: list[dict[str, Any]] = []
+    for raw in raw_triplets:
+        if not isinstance(raw, dict) or _caption_only_ownership(raw, payload):
+            continue
+        repaired = _repair_created_by(raw, payload)
+        if repaired is not None:
+            supported_triplets.append(repaired)
+    candidate_triplets = atomize_triplets(supported_triplets)
     for raw in candidate_triplets:
         subject = str(raw.get("subject") or "").strip()
         relation = str(raw.get("relation") or "").strip()
@@ -420,6 +430,55 @@ def _caption_only_ownership(triplet: dict[str, Any], payload: dict[str, Any]) ->
     spoken_text = " ".join(" ".join(spoken).casefold().split())
     caption_text = " ".join(" ".join(captions).casefold().split())
     return obj in caption_text and obj not in spoken_text
+
+
+def _repair_created_by(
+    triplet: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Enforce the artifact→creator direction and require source support.
+
+    Hosted extraction was observed turning "a gift from my grandma" into
+    ``necklace created_by grandma`` and emitting ``speaker created_by artifact``
+    for a caption linked to pottery.  Both are dangerous because they look like
+    high-confidence graph facts.  Creation assertions now require an explicit
+    creation cue in the current spoken pair.  A gift cue is preserved with the
+    more accurate artifact→giver ``gifted_by`` relation instead.
+    """
+    relation = " ".join(str(triplet.get("relation") or "").casefold().split())
+    if relation not in _CREATED_BY_RELATIONS:
+        return dict(triplet)
+
+    spoken_parts: list[str] = []
+    speakers: set[str] = set()
+    for _role, turn in _source_turn_records(payload):
+        content = _INLINE_IMAGE_CAPTION.sub("", str(turn.get("content") or ""))
+        spoken_parts.append(content)
+        speaker = " ".join(str(turn.get("speaker") or "").casefold().split())
+        if speaker:
+            speakers.add(speaker)
+    spoken_text = " ".join(spoken_parts)
+    subject = " ".join(str(triplet.get("subject") or "").casefold().split())
+    obj = " ".join(str(triplet.get("object") or "").casefold().split())
+
+    repaired = dict(triplet)
+    if _CREATION_CUE.search(spoken_text):
+        # `created_by` is always artifact -> creator. A source speaker in the
+        # subject slot is a strong, deterministic indication that the model
+        # emitted the inverse direction.
+        if subject in speakers and obj not in speakers:
+            repaired["subject"], repaired["object"] = (
+                repaired.get("object"),
+                repaired.get("subject"),
+            )
+            repaired["object_kind"] = "ENTITY"
+        repaired["relation"] = "created_by"
+        return repaired
+
+    if _GIFT_CUE.search(spoken_text) and subject not in speakers:
+        repaired["relation"] = "gifted_by"
+        return repaired
+
+    return None
 
 
 def _source_asserted_at(payload: dict[str, Any]) -> str | None:

@@ -22,6 +22,7 @@ _MULTI_VALUE_RELATIONS = frozenset(
         "mentions",
         "prefers",
         "reads",
+        "symbolizes",
         "uses",
         "watches",
     }

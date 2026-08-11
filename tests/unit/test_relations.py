@@ -42,6 +42,7 @@ def test_benchmark_relations_are_controlled_without_embedding_guesswork() -> Non
         "attended",
         "contains",
         "created_by",
+        "gifted_by",
         "from_country",
         "helps_with",
         "is_a",
@@ -52,10 +53,13 @@ def test_benchmark_relations_are_controlled_without_embedding_guesswork() -> Non
         "participated_in",
         "received_on",
         "reminds_of",
+        "symbolizes",
         "undergoing",
     ):
         assert vocab.canonicalise(relation, embed) == relation
 
     assert vocab.canonicalise("took part in", embed) == "participated_in"
     assert vocab.canonicalise("gifted_on", embed) == "received_on"
+    assert vocab.canonicalise("given by", embed) == "gifted_by"
+    assert vocab.canonicalise("stands for", embed) == "symbolizes"
     assert vocab.canonicalise("reminder_of", embed) == "reminds_of"

@@ -4,7 +4,7 @@
 # labels that fail to match above 0.85 are preserved verbatim and flagged
 # for manual review via /api/v1/consolidation/status.
 
-version: 4
+version: 5
 relations:
   # Employment / organisational
   - works_at
@@ -50,6 +50,7 @@ relations:
   - mentions
   - contains
   - created_by
+  - gifted_by
   - helps_with
   - undergoing
 
@@ -73,6 +74,7 @@ relations:
   - motivated_by
   - makes_feel
   - reminds_of
+  - symbolizes
 
   # Ownership / attributes
   - has
@@ -115,5 +117,10 @@ aliases:
   took_part_in: participated_in
   "took part in": participated_in
   gifted_on: received_on
+  given_by: gifted_by
+  "given by": gifted_by
+  gift_from: gifted_by
+  stands_for: symbolizes
+  "stands for": symbolizes
   reminder_of: reminds_of
   reminded_of: reminds_of
