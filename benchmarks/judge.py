@@ -31,7 +31,7 @@ import httpx
 
 # Defaults mirror config.yaml so the judge lines up with Engram's own provider.
 DEFAULT_BASE = "https://ollama.com/api"
-DEFAULT_MODEL = "gpt-oss:20b"
+DEFAULT_MODEL = "gemma4:31b"
 
 
 @dataclass

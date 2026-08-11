@@ -18,13 +18,13 @@ data:
       device: "cpu"
     core_model:
       provider: "ollama_cloud"
-      model_path: "gpt-oss:20b"
+      model_path: "gemma4:31b"
       api_base: "https://ollama.com/api"
       api_key: ${OLLAMA_API_KEY}
       min_request_interval_seconds: 3.2
     frontier_llm:
       provider: "ollama_cloud"
-      model_path: "gpt-oss:20b"
+      model_path: "gemma4:31b"
       api_base: "https://ollama.com/api"
       api_key: ${OLLAMA_API_KEY}
       min_request_interval_seconds: 3.2

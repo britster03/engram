@@ -34,7 +34,6 @@ htmlcov/
 
 # Node modules (for clients/)
 node_modules/
-package-lock.json
 
 # Local screenshots / debug artifacts
 *.png

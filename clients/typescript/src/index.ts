@@ -22,12 +22,40 @@ export interface QueryResponse {
   answer: string;
   session_id: string | null;
   retrieval_metadata: RetrievalMetadata;
+  trace_id?: string | null;
+  retrieval_trace?: Record<string, unknown> | null;
 }
 
 export interface IngestResponse {
   event_id: string;
   pair_id: string;
   status: string;
+}
+
+export interface EventReadiness {
+  event_id: string;
+  pair_id: string;
+  status: string;
+  terminal: boolean;
+  memory_ready: boolean;
+  completed_stage?: string | null;
+  artifact_count: number;
+  filesystem_ready_count: number;
+  kg_ready_count: number;
+  artifact_error_count: number;
+  error?: string | null;
+}
+
+export interface EventStatusResponse {
+  requested_count: number;
+  found_count: number;
+  terminal_count: number;
+  ready_count: number;
+  failed_count: number;
+  memory_ready: boolean;
+  missing_ids: string[];
+  failures: EventReadiness[];
+  events: EventReadiness[];
 }
 
 export interface SessionState {
@@ -96,10 +124,12 @@ export class EngramClient {
     userTurnIdx?: number;
     assistantTurnIdx?: number;
     source?: string;
+    forceStore?: boolean;
   }): Promise<IngestResponse> {
     const body = {
       session_id: params.sessionId ?? null,
       source: params.source ?? 'client',
+      force_store: params.forceStore ?? false,
       turn_pair: {
         user: { content: params.user, turn_idx: params.userTurnIdx ?? 0 },
         assistant: {
@@ -116,6 +146,8 @@ export class EngramClient {
     sessionContext?: string | null;
     maxDepth?: string;
     maxReentries?: number;
+    includeTrace?: boolean;
+    forceRetrieval?: boolean;
   } = {}): Promise<QueryResponse> {
     const body = {
       session_id: opts.sessionId ?? null,
@@ -123,6 +155,8 @@ export class EngramClient {
       session_context: opts.sessionContext ?? null,
       max_depth: opts.maxDepth ?? null,
       max_reentries: opts.maxReentries ?? null,
+      include_trace: opts.includeTrace ?? false,
+      force_retrieval: opts.forceRetrieval ?? false,
     };
     return this.post<QueryResponse>('/api/v1/query', body);
   }
@@ -141,7 +175,7 @@ export class EngramClient {
       session_context: opts.sessionContext ?? null,
       stream: true,
     };
-    const r = await this.fetchImpl(this.url('/api/v1/query'), {
+    const r = await this.request('/api/v1/query', {
       method: 'POST',
       headers: this.authHeaders('application/json'),
       body: JSON.stringify(body),
@@ -228,7 +262,7 @@ export class EngramClient {
       max_reentries: params.maxReentries ?? null,
       stream: true,
     };
-    const r = await this.fetchImpl(this.url('/api/v1/chat/completions'), {
+    const r = await this.request('/api/v1/chat/completions', {
       method: 'POST',
       headers: this.authHeaders('application/json'),
       body: JSON.stringify(body),
@@ -293,7 +327,7 @@ export class EngramClient {
   // ---- Memories -----------------------------------------------------
 
   async getMemory(sourceUri: string): Promise<unknown> {
-    return this.get(`/api/v1/memories/${stripScheme(sourceUri)}`);
+    return this.get(`/api/v1/memories/${memoryPath(sourceUri)}`);
   }
 
   async listMemories(opts: {
@@ -308,11 +342,15 @@ export class EngramClient {
   }
 
   async retire(sourceUri: string): Promise<unknown> {
-    return this.post(`/api/v1/memories/${stripScheme(sourceUri)}/retire`, {});
+    return this.post(`/api/v1/memories/${memoryPath(sourceUri)}/retire`, {});
   }
 
   async unmerge(sourceUri: string): Promise<unknown> {
-    return this.post(`/api/v1/memories/${stripScheme(sourceUri)}/unmerge`, {});
+    return this.post(`/api/v1/memories/${memoryPath(sourceUri)}/unmerge`, {});
+  }
+
+  async eventStatus(eventIds: string[]): Promise<EventStatusResponse> {
+    return this.post<EventStatusResponse>('/api/v1/events/status', { event_ids: eventIds });
   }
 
   // ---- Admin --------------------------------------------------------
@@ -353,6 +391,13 @@ export class EngramClient {
     return h;
   }
 
+  private request(path: string, init: RequestInit): Promise<Response> {
+    return this.fetchImpl(this.url(path), {
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(this.timeoutMs),
+    });
+  }
+
   private async errFromResponse(r: Response): Promise<EngramError> {
     let detail: unknown = await r.text();
     try { detail = JSON.parse(detail as string); } catch { /* keep text */ }
@@ -374,7 +419,7 @@ export class EngramClient {
 
   private async get<T>(path: string): Promise<T> {
     const r = await this.retryable(() =>
-      this.fetchImpl(this.url(path), { method: 'GET', headers: this.authHeaders() }),
+      this.request(path, { method: 'GET', headers: this.authHeaders() }),
     );
     if (!r.ok) throw await this.errFromResponse(r);
     return r.json() as Promise<T>;
@@ -382,7 +427,7 @@ export class EngramClient {
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const r = await this.retryable(() =>
-      this.fetchImpl(this.url(path), {
+      this.request(path, {
         method: 'POST',
         headers: this.authHeaders('application/json'),
         body: JSON.stringify(body),
@@ -395,12 +440,13 @@ export class EngramClient {
 
   private async delete(path: string): Promise<void> {
     const r = await this.retryable(() =>
-      this.fetchImpl(this.url(path), { method: 'DELETE', headers: this.authHeaders() }),
+      this.request(path, { method: 'DELETE', headers: this.authHeaders() }),
     );
     if (!r.ok) throw await this.errFromResponse(r);
   }
 }
 
-function stripScheme(uri: string): string {
-  return uri.startsWith('mem://') ? uri.slice('mem://'.length) : uri;
+function memoryPath(uri: string): string {
+  const stripped = uri.startsWith('mem://') ? uri.slice('mem://'.length) : uri;
+  return stripped.split('/').map(encodeURIComponent).join('/');
 }

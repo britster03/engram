@@ -42,8 +42,8 @@ cascade / model settings.
 ```json
 {
   "retrieval": { "max_depth": "L4", "max_reentries": 2, ... },
-  "core_model": { "provider": "ollama_cloud", "model_path": "gpt-oss:20b" },
-  "frontier_llm": { "provider": "ollama_cloud", "model_path": "gpt-oss:20b" }
+  "core_model": { "provider": "ollama_cloud", "model_path": "gemma4:31b" },
+  "frontier_llm": { "provider": "ollama_cloud", "model_path": "gemma4:31b" }
 }
 ```
 

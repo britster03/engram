@@ -20,7 +20,7 @@ gating:
 
 core_model:
   provider: "ollama_cloud"                    # "ollama_cloud" for hosted Ollama inference
-  model_path: "gpt-oss:20b"
+  model_path: "gemma4:31b"
   api_base: "https://ollama.com/api"
   api_key: ${OLLAMA_API_KEY}
   temperature: 0.1
@@ -31,7 +31,7 @@ core_model:
 
 frontier_llm:
   provider: "ollama_cloud"
-  model_path: "gpt-oss:20b"
+  model_path: "gemma4:31b"
   api_base: "https://ollama.com/api"
   api_key: ${OLLAMA_API_KEY}
   temperature: 0.3
