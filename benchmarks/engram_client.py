@@ -377,6 +377,28 @@ class EngramClient:
 
             time.sleep(cfg.poll_interval_s)
 
+    def wait_for_overview_ready(self, cfg: DrainConfig | None = None) -> dict[str, Any]:
+        """Wait for tenant consolidation after exact events are memory-ready.
+
+        Unlike the legacy rise-then-settle drain, this is called only after
+        every requested event has committed its consolidation intent. A zero
+        queue is therefore authoritative and cannot be the premature-zero
+        race that exists immediately after submission.
+        """
+        cfg = cfg or DrainConfig()
+        started = time.monotonic()
+        while True:
+            elapsed = time.monotonic() - started
+            if elapsed > cfg.max_wait_s:
+                raise DrainTimeoutError(
+                    f"tenant {self.tenant_id}: overviews did not become ready "
+                    f"within {cfg.max_wait_s:.0f}s"
+                )
+            status = self.consolidation_status()
+            if not self._is_busy(status):
+                return {**status, "overview_ready": True, "waited_s": elapsed}
+            time.sleep(cfg.poll_interval_s)
+
     # -- query -------------------------------------------------------------
 
     def query(
@@ -432,6 +454,13 @@ class EngramClient:
         if resp.status_code != 200:
             raise EngramError(f"config failed: {resp.status_code} {resp.text}")
         return resp.json()
+
+    def metrics_text(self) -> str:
+        """Return the process metrics snapshot used for benchmark deltas."""
+        resp = self._http.get("/metrics")
+        if resp.status_code != 200:
+            raise EngramError(f"metrics failed: {resp.status_code} {resp.text}")
+        return resp.text
 
 
 def _turn(

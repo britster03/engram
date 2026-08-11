@@ -13,13 +13,17 @@ import base64
 import hashlib
 import json
 import random
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from loader import load_locomo
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from benchmarks.loader import load_locomo
 
 
 @dataclass

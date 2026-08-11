@@ -25,19 +25,22 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any, TextIO
 
-# Allow ``python benchmarks/run_locomo.py`` from the repository root.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prometheus_client.parser import text_string_to_metric_families
 
-from engram_client import (
+# Allow ``python benchmarks/run_locomo.py`` from the repository root while
+# retaining one canonical module namespace for type checking and tests.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from benchmarks.engram_client import (
     DrainConfig,
     DrainTimeoutError,
     EngramClient,
     EngramError,
     IngestFailedError,
 )
-from judge import OllamaJudge
-from loader import Conversation, Turn, load_locomo
-from metrics import (
+from benchmarks.judge import OllamaJudge
+from benchmarks.loader import Conversation, Turn, load_locomo
+from benchmarks.metrics import (
     MM_RELEVANCE_EVALUATOR_VERSION,
     SUMMARY_EVALUATOR_VERSION,
     evidence_recall_at_ks,
@@ -266,6 +269,73 @@ def _retrieved_turn_ids(trace: dict[str, Any] | None) -> list[str]:
     return ordered
 
 
+_BENCHMARK_METRIC_NAMES = {
+    "engram_core_model_calls_total",
+    "engram_core_model_tokens_total",
+    "engram_frontier_calls_total",
+    "engram_frontier_tokens_total",
+    "engram_overview_model_calls_total",
+    "engram_ingest_pipeline_stage_seconds_count",
+    "engram_ingest_pipeline_stage_seconds_sum",
+}
+
+
+def _metrics_snapshot(text: str) -> dict[tuple[str, tuple[tuple[str, str], ...]], float]:
+    """Parse the bounded process metrics needed for benchmark deltas."""
+    snapshot: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+    for family in text_string_to_metric_families(text):
+        for sample in family.samples:
+            if sample.name not in _BENCHMARK_METRIC_NAMES:
+                continue
+            labels = tuple(sorted((str(key), str(value)) for key, value in sample.labels.items()))
+            snapshot[(sample.name, labels)] = float(sample.value)
+    return snapshot
+
+
+def _metrics_delta(
+    before: dict[tuple[str, tuple[tuple[str, str], ...]], float],
+    after: dict[tuple[str, tuple[tuple[str, str], ...]], float],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key in sorted(set(before) | set(after)):
+        delta = after.get(key, 0.0) - before.get(key, 0.0)
+        if delta <= 0:
+            continue
+        name, labels = key
+        rows.append({"name": name, "labels": dict(labels), "delta": delta})
+    return rows
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def _event_latency_seconds(event: dict[str, Any]) -> float | None:
+    created = event.get("created_at")
+    processed = event.get("processed_at")
+    if not created or not processed:
+        return None
+    try:
+        start = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        finish = datetime.fromisoformat(str(processed).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if finish.tzinfo is None:
+        finish = finish.replace(tzinfo=timezone.utc)
+    return max(0.0, (finish - start).total_seconds())
+
+
 def _failure_rows(
     *,
     conv_idx: int,
@@ -383,6 +453,10 @@ def _make_manifest(
             },
         },
         "expected_work": expected,
+        "operational": {
+            "metrics_scope": "process-global delta; run on an exclusive benchmark stack",
+            "conversations": [],
+        },
     }
 
 
@@ -496,6 +570,7 @@ def run(args: argparse.Namespace) -> int:
                     if args.corpus_run_id:
                         print(f"  reusing memory-ready corpus from {args.corpus_run_id}")
                     else:
+                        metrics_before = _metrics_snapshot(client.metrics_text())
                         started = time.monotonic()
                         event_ids = ingest_conversation(
                             client,
@@ -504,9 +579,53 @@ def run(args: argparse.Namespace) -> int:
                             context_turns=args.context_turns,
                         )
                         readiness = client.wait_for_events(event_ids, drain_cfg)
+                        memory_ready_s = time.monotonic() - started
+                        overview = client.wait_for_overview_ready(drain_cfg)
+                        total_ready_s = time.monotonic() - started
+                        metrics_after = _metrics_snapshot(client.metrics_text())
+                        event_latencies = [
+                            latency
+                            for event in readiness["events"]
+                            if (latency := _event_latency_seconds(event)) is not None
+                        ]
+                        completed_tasks = int(
+                            (overview.get("by_status") or {}).get("COMPLETE", 0)
+                        )
+                        manifest["operational"]["conversations"].append({
+                            "sample_id": conv.sample_id,
+                            "tenant_id": tenant_id,
+                            "event_count": len(event_ids),
+                            "artifact_count": sum(
+                                int(event.get("artifact_count") or 0)
+                                for event in readiness["events"]
+                            ),
+                            "memory_ready_s": memory_ready_s,
+                            "overview_ready_s": total_ready_s,
+                            "event_ingest_latency_s": {
+                                "p50": _percentile(event_latencies, 0.50),
+                                "p95": _percentile(event_latencies, 0.95),
+                                "max": max(event_latencies) if event_latencies else None,
+                            },
+                            "terminal_status_counts": {
+                                status: sum(
+                                    event.get("status") == status
+                                    for event in readiness["events"]
+                                )
+                                for status in sorted({
+                                    str(event.get("status"))
+                                    for event in readiness["events"]
+                                })
+                            },
+                            "consolidation": overview,
+                            "task_amplification_per_pair": (
+                                completed_tasks / len(event_ids) if event_ids else 0.0
+                            ),
+                            "metrics_delta": _metrics_delta(metrics_before, metrics_after),
+                        })
+                        _write_json_atomic(manifest_path, manifest)
                         print(
                             f"  {len(event_ids)} pairs memory-ready in "
-                            f"{time.monotonic() - started:.1f}s "
+                            f"{memory_ready_s:.1f}s, overviews ready in {total_ready_s:.1f}s "
                             f"(gated_skip={sum(e['status'] == 'GATED_SKIP' for e in readiness['events'])})"
                         )
                 except (EngramError, IngestFailedError, DrainTimeoutError, ValueError) as error:
@@ -620,6 +739,7 @@ def run(args: argparse.Namespace) -> int:
     failed_rows = [row for row in rows if row.get("status") != "COMPLETE"]
     complete = not (duplicate_ids or missing_ids or unexpected_ids or failed_rows)
     summary = summarize(rows)
+    summary["operational"] = manifest["operational"]
     summary.update(
         {
             "run_id": run_id,
@@ -674,6 +794,49 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     judged = [row for row in rows if row.get("judged")]
+    completed = [row for row in rows if row.get("status") == "COMPLETE"]
+    query_latencies = [float(row["query_latency_s"]) for row in completed]
+    depth_counts: dict[str, int] = defaultdict(int)
+    model_usage: dict[str, dict[str, Any]] = {}
+    candidate_counts: list[float] = []
+    level_recalls: dict[str, list[float]] = defaultdict(list)
+    for row in completed:
+        metadata = row.get("retrieval_metadata") or {}
+        depth_counts[str(metadata.get("cascade_depth_reached") or "unknown")] += 1
+        trace = row.get("retrieval_trace") or {}
+        hits = trace.get("hits") or []
+        candidate_counts.append(float(len(hits)))
+        evidence = row.get("evidence") or []
+        ids_by_level: dict[str, list[str]] = defaultdict(list)
+        for hit in hits:
+            level = str(hit.get("retrieval_level") or "unknown").split("_", 1)[0]
+            ids_by_level[level].extend(str(value) for value in hit.get("source_turn_ids") or [])
+        for level, turn_ids in ids_by_level.items():
+            recall = evidence_recall_at_ks(turn_ids, evidence)["recall_at_25"]
+            level_recalls[level].append(recall)
+        for call in trace.get("model_calls") or []:
+            key = ":".join(
+                str(call.get(field) or "unknown")
+                for field in ("family", "task", "provider", "model")
+            )
+            usage = model_usage.setdefault(
+                key,
+                {
+                    "family": call.get("family"),
+                    "task": call.get("task"),
+                    "provider": call.get("provider"),
+                    "model": call.get("model"),
+                    "calls": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "calls_without_token_counts": 0,
+                },
+            )
+            usage["calls"] += int(call.get("provider_calls") or 1)
+            if call.get("tokens_in") is None or call.get("tokens_out") is None:
+                usage["calls_without_token_counts"] += int(call.get("provider_calls") or 1)
+            usage["tokens_in"] += int(call.get("tokens_in") or 0)
+            usage["tokens_out"] += int(call.get("tokens_out") or 0)
     return {
         "overall": metrics(rows),
         "by_category": {key: metrics(value) for key, value in sorted(by_category.items())},
@@ -688,6 +851,29 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "failures": sum(
                 row.get("judge_correct") is not None and not row.get("judged") for row in rows
             ),
+        },
+        "query_operations": {
+            "latency_s": {
+                "p50": _percentile(query_latencies, 0.50),
+                "p95": _percentile(query_latencies, 0.95),
+                "max": max(query_latencies) if query_latencies else None,
+            },
+            "reentry_rate": (
+                sum(int((row.get("retrieval_metadata") or {}).get("reentries") or 0) > 0
+                    for row in completed) / len(completed)
+                if completed
+                else 0.0
+            ),
+            "cascade_depth_distribution": dict(sorted(depth_counts.items())),
+            "retrieval_candidates": {
+                "mean": fmean(candidate_counts) if candidate_counts else 0.0,
+                "p50": _percentile(candidate_counts, 0.50),
+                "p95": _percentile(candidate_counts, 0.95),
+            },
+            "evidence_recall_at_25_by_hit_level": {
+                level: fmean(values) for level, values in sorted(level_recalls.items())
+            },
+            "model_usage": [model_usage[key] for key in sorted(model_usage)],
         },
     }
 

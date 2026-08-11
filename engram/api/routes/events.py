@@ -45,6 +45,8 @@ class EventReadiness(BaseModel):
     kg_ready_count: int = 0
     artifact_error_count: int = 0
     error: str | None = None
+    created_at: str | None = None
+    processed_at: str | None = None
 
 
 class EventStatusResponse(BaseModel):
@@ -105,6 +107,8 @@ def event_status(req: EventStatusRequest) -> EventStatusResponse:
                 kg_ready_count=kg_ready_count,
                 artifact_error_count=artifact_error_count,
                 error=row.get("error_message"),
+                created_at=row.get("created_at"),
+                processed_at=row.get("processed_at"),
             )
         )
     failures = [event for event in events if event.status == "FAILED"]

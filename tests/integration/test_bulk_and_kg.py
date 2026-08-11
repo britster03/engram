@@ -168,6 +168,8 @@ def test_exact_event_status_reports_ready_failed_and_missing(client):
     assert body["failed_count"] == 1
     assert body["missing_ids"] == ["evt-missing"]
     assert body["failures"][0]["error"] == "boom"
+    assert body["events"][0]["created_at"] is not None
+    assert body["events"][0]["processed_at"] is not None
 
 
 def test_memory_list_root_prefix_falls_back_to_filesystem(client):

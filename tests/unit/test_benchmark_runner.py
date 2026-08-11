@@ -7,6 +7,9 @@ import pytest
 from benchmarks.engram_client import DrainConfig, EngramClient, IngestFailedError
 from benchmarks.loader import Conversation, QAProbe, Turn
 from benchmarks.run_locomo import (
+    _event_latency_seconds,
+    _metrics_delta,
+    _metrics_snapshot,
     _retrieved_turn_ids,
     _selected_questions,
     ingest_conversation,
@@ -126,6 +129,60 @@ def test_summary_uses_official_metrics_as_primary() -> None:
     assert summary["overall"]["answer_f1"] == 0.5
     assert summary["overall"]["evidence_recall_at_10"] == 0.75
     assert summary["judge"]["accuracy"] is None
+
+
+def test_query_operational_summary_aggregates_redacted_trace_usage() -> None:
+    rows = [{
+        "status": "COMPLETE",
+        "category_name": "single_hop",
+        "answer_f1": 1.0,
+        "evidence": ["D1:1"],
+        "evidence_recall_at_5": 1.0,
+        "evidence_recall_at_10": 1.0,
+        "evidence_recall_at_25": 1.0,
+        "query_latency_s": 2.0,
+        "retrieval_metadata": {"cascade_depth_reached": "L2", "reentries": 1},
+        "retrieval_trace": {
+            "hits": [{"retrieval_level": "L1_cat", "source_turn_ids": ["D1:1"]}],
+            "model_calls": [{
+                "family": "core",
+                "task": "l1_plan",
+                "provider": "test",
+                "model": "model",
+                "provider_calls": 1,
+                "tokens_in": 10,
+                "tokens_out": 5,
+            }],
+        },
+        "judged": False,
+    }]
+
+    operations = summarize(rows)["query_operations"]
+    assert operations["latency_s"]["p95"] == 2.0
+    assert operations["reentry_rate"] == 1.0
+    assert operations["cascade_depth_distribution"] == {"L2": 1}
+    assert operations["evidence_recall_at_25_by_hit_level"] == {"L1": 1.0}
+    assert operations["model_usage"][0]["tokens_in"] == 10
+
+
+def test_metrics_delta_and_event_latency_are_deterministic() -> None:
+    before = _metrics_snapshot(
+        '# TYPE engram_core_model_calls_total counter\n'
+        'engram_core_model_calls_total{provider="test",task="extract"} 2\n'
+    )
+    after = _metrics_snapshot(
+        '# TYPE engram_core_model_calls_total counter\n'
+        'engram_core_model_calls_total{provider="test",task="extract"} 5\n'
+    )
+    assert _metrics_delta(before, after) == [{
+        "name": "engram_core_model_calls_total",
+        "labels": {"provider": "test", "task": "extract"},
+        "delta": 3.0,
+    }]
+    assert _event_latency_seconds({
+        "created_at": "2026-08-11 12:00:00",
+        "processed_at": "2026-08-11 12:00:03",
+    }) == 3.0
 
 
 def test_exact_event_wait_fails_closed_on_failed_event(monkeypatch) -> None:
