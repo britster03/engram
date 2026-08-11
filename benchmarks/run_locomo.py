@@ -51,6 +51,7 @@ _LOCOMO_LICENSE = "CC BY-NC 4.0"
 _LOCOMO_UPSTREAM = "https://github.com/snap-research/locomo"
 _MIN_AUTO_DRAIN_TIMEOUT_S = 600.0
 _AUTO_DRAIN_SECONDS_PER_PAIR = 30.0
+_RETRIEVAL_MODES = ("adaptive", "forced", "no_memory", "vector_only")
 
 
 def _effective_drain_timeout(requested_s: float | None, event_count: int) -> float:
@@ -428,12 +429,13 @@ def _make_manifest(
             or os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000"),
             "max_depth": args.max_depth,
             "max_reentries": args.max_reentries,
+            "retrieval_mode": args.retrieval_mode,
             "drain_timeout_s": args.drain_timeout,
             "drain_timeout_policy": (
                 "explicit" if args.drain_timeout is not None
                 else "auto=max(600,pairs*30)"
             ),
-            "retrieval_forced": True,
+            "retrieval_forced": args.retrieval_mode == "forced",
             "ingest_force_store": True,
             "corpus_run_id": args.corpus_run_id or run_id,
             "corpus_reused": bool(args.corpus_run_id),
@@ -586,7 +588,9 @@ def run(args: argparse.Namespace) -> int:
                         manifest["runner"]["effective_l0_skip"] = bool(
                             (runtime_config.get("retrieval") or {}).get("l0_skip")
                         )
-                        manifest["runner"]["query_force_retrieval"] = True
+                        manifest["runner"]["query_force_retrieval"] = (
+                            args.retrieval_mode == "forced"
+                        )
                         _write_json_atomic(manifest_path, manifest)
                         runtime_config_recorded = True
                     if args.corpus_run_id:
@@ -688,7 +692,8 @@ def run(args: argparse.Namespace) -> int:
                             max_depth=args.max_depth,
                             max_reentries=args.max_reentries,
                             include_trace=True,
-                            force_retrieval=True,
+                            force_retrieval=False,
+                            retrieval_mode=args.retrieval_mode,
                         )
                         answer = str(response.get("answer", ""))
                         metadata = response.get("retrieval_metadata") or {}
@@ -940,6 +945,15 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-depth", default="L4")
     parser.add_argument("--max-reentries", type=int, default=1)
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=_RETRIEVAL_MODES,
+        default="forced",
+        help=(
+            "adaptive uses normal L0 routing; forced always enters the cascade; "
+            "no_memory uses only the frontier; vector_only runs one raw-query vector search"
+        ),
+    )
     parser.add_argument(
         "--drain-timeout",
         type=float,

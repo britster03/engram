@@ -410,6 +410,7 @@ class EngramClient:
         session_context: str | None = None,
         include_trace: bool = True,
         force_retrieval: bool = True,
+        retrieval_mode: str = "adaptive",
     ) -> dict[str, Any]:
         """POST a question. Returns {answer, retrieval_metadata, ...}.
 
@@ -425,7 +426,11 @@ class EngramClient:
         if session_context is not None:
             body["session_context"] = session_context
         body["include_trace"] = include_trace
-        body["force_retrieval"] = force_retrieval
+        body["retrieval_mode"] = retrieval_mode
+        # Avoid an ambiguous payload for explicit ablation modes. The legacy
+        # flag remains useful for older servers when the adaptive mode is used.
+        if retrieval_mode == "adaptive":
+            body["force_retrieval"] = force_retrieval
         # Longer per-request timeout than the client default: a query drives the
         # full cascade + several LLM calls. A transport error (incl. timeout) is
         # wrapped as EngramError so callers catch it uniformly and one slow query

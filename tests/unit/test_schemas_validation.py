@@ -31,6 +31,16 @@ def test_query_max_reentries_bounds():
         schemas.QueryRequest(query="hi", max_reentries=-1)
 
 
+def test_query_retrieval_mode_is_bounded():
+    assert schemas.QueryRequest(query="hi").retrieval_mode == "adaptive"
+    assert (
+        schemas.QueryRequest(query="hi", retrieval_mode="vector_only").retrieval_mode
+        == "vector_only"
+    )
+    with pytest.raises(ValidationError):
+        schemas.QueryRequest(query="hi", retrieval_mode="raw_cypher")
+
+
 def test_ingest_rejects_session_id_with_whitespace():
     with pytest.raises(ValidationError):
         schemas.IngestRequest(

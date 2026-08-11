@@ -123,9 +123,19 @@ independently; response is 202 with a list of per-item results.
   "session_context": "...",        // optional explicit override
   "max_depth": "L4",               // optional, default from config
   "max_reentries": 2,              // optional, default from config
-  "include_trace": true            // optional, default false
+  "include_trace": true,           // optional, default false
+  "retrieval_mode": "adaptive",    // adaptive | forced | no_memory | vector_only
+  "force_retrieval": false         // legacy additive override
 }
 ```
+
+`adaptive` preserves normal L0 routing. `forced` always enters the configured
+cascade. `no_memory` calls the frontier without L0, planners, vectors, or graph
+memory. `vector_only` performs exactly one raw-query vector search and does not
+run a semantic planner, graph command, deeper cascade, or retrieval re-entry.
+The latter two modes are diagnostic benchmark ablations, not recommended
+product defaults. An explicit `retrieval_mode` takes precedence over the legacy
+`force_retrieval` boolean.
 
 Response — 200 OK:
 
@@ -134,6 +144,7 @@ Response — 200 OK:
   "answer": "Alice is working on Project Atlas, a distributed ML pipeline.",
   "session_id": "sess-abc-123",
   "retrieval_metadata": {
+    "retrieval_mode": "adaptive",
     "cascade_depth_reached": "L2",
     "levels_visited": ["L0", "L1", "L2"],
     "predicted_depth": "L2",
@@ -155,6 +166,7 @@ Response — 200 OK:
   },
   "trace_id": "trace-...",
   "retrieval_trace": {
+    "retrieval_mode": "adaptive",
     "vector_queries": ["What project is Alice working on?"],
     "commands": [],
     "hits": [

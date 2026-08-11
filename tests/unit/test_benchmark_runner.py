@@ -27,6 +27,23 @@ class CapturingClient:
         return {"event_id": f"evt-{len(self.calls)}"}
 
 
+class _QueryResponse:
+    status_code = 200
+    text = ""
+
+    def json(self) -> dict[str, Any]:
+        return {"answer": "ok", "retrieval_metadata": {}}
+
+
+class _CapturingHttp:
+    def __init__(self) -> None:
+        self.body: dict[str, Any] | None = None
+
+    def post(self, _path: str, *, json: dict[str, Any], timeout: float):
+        self.body = json
+        return _QueryResponse()
+
+
 def _turn(index: int, *, caption: str | None = None) -> Turn:
     return Turn(
         speaker="A" if index % 2 else "B",
@@ -74,6 +91,19 @@ def test_retrieved_turn_ids_are_unique_and_rank_preserving() -> None:
         ]
     }
     assert _retrieved_turn_ids(trace) == ["D1:2", "D1:1", "D1:3"]
+
+
+def test_benchmark_client_sends_one_unambiguous_retrieval_mode() -> None:
+    client = EngramClient(base_url="http://example.test", api_key="test")
+    client._http.close()
+    capture = _CapturingHttp()
+    client._http = capture  # type: ignore[assignment]
+
+    client.query("question", retrieval_mode="vector_only")
+
+    assert capture.body is not None
+    assert capture.body["retrieval_mode"] == "vector_only"
+    assert "force_retrieval" not in capture.body
 
 
 def test_canary_question_selection_is_seeded_and_category_balanced() -> None:

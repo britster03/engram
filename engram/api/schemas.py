@@ -104,7 +104,13 @@ class QueryRequest(BaseModel):
     max_reentries: int | None = Field(default=None, ge=0, le=5)
     stream: bool = False
     include_trace: bool = False
+    # Explicit diagnostic/benchmark strategy. ``adaptive`` preserves normal
+    # product routing; the other modes make ablations reproducible.
+    retrieval_mode: Literal[
+        "adaptive", "forced", "no_memory", "vector_only"
+    ] = "adaptive"
     # Benchmark/diagnostic override. It can only add retrieval, never suppress it.
+    # Retained for clients created before ``retrieval_mode`` was introduced.
     force_retrieval: bool = False
 
 

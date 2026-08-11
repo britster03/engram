@@ -85,6 +85,11 @@ class LiteralFactCoreProvider(DeterministicCoreProvider):
         return super().complete(**kwargs)
 
 
+class UnexpectedPlannerProvider(DeterministicCoreProvider):
+    def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        raise AssertionError("semantic planner must not run in this ablation")
+
+
 @pytest.fixture
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EngramConfig:
     monkeypatch.setenv("ENGRAM_API_KEY", "test-key")
@@ -228,6 +233,41 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     assert "token_allocation" in trace
     assert {call["family"] for call in trace["model_calls"]} == {"core", "frontier"}
     assert all("provider_calls" in call for call in trace["model_calls"])
+
+    # Frozen ablations must be materially distinct. Neither mode may invoke
+    # the Core planner, and no-memory must not touch any stored memory.
+    orch_ctx.core = UnexpectedPlannerProvider()
+    no_memory = run_query(
+        orch_ctx,
+        session_id=None,
+        query="Where does the user work?",
+        include_trace=True,
+        retrieval_mode="no_memory",
+    )
+    no_memory_md = no_memory.retrieval_metadata
+    assert no_memory_md.retrieval_mode == "no_memory"
+    assert no_memory_md.cascade_depth_reached == "NO_MEMORY"
+    assert no_memory_md.nodes_retrieved == 0
+    assert no_memory_md.l0_decision == "NOT_RUN"
+    assert no_memory_md.trace is not None
+    assert no_memory_md.trace["retrieval_mode"] == "no_memory"
+    assert {call["family"] for call in no_memory_md.trace["model_calls"]} == {"frontier"}
+
+    vector_only = run_query(
+        orch_ctx,
+        session_id=None,
+        query="Where does the user work?",
+        include_trace=True,
+        retrieval_mode="vector_only",
+    )
+    vector_md = vector_only.retrieval_metadata
+    assert vector_md.retrieval_mode == "vector_only"
+    assert vector_md.cascade_depth_reached == "L1"
+    assert vector_md.nodes_retrieved >= 1
+    assert vector_md.l0_decision == "NOT_RUN"
+    assert vector_md.trace is not None
+    assert vector_md.trace["retrieval_mode"] == "vector_only"
+    assert {call["family"] for call in vector_md.trace["model_calls"]} == {"frontier"}
 
 
 def test_low_confidence_triplet_writes_fact_node(cfg: EngramConfig):

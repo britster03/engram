@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from engram import frontmatter, prompts, tracing
 from engram import metrics as metrics_mod
@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 
 
 _DEPTH_ORDER = ["SESSION", "L0", "L1", "L2", "L3", "L4"]
+RetrievalMode = Literal["adaptive", "forced", "no_memory", "vector_only"]
 
 
 def _depth_rank(depth: str) -> int:
@@ -57,6 +58,7 @@ def _notify_step(
 
 @dataclass
 class RetrievalMetadata:
+    retrieval_mode: str = "adaptive"
     cascade_depth_reached: str = "L0"
     levels_visited: list[str] = field(default_factory=list)
     predicted_depth: str | None = None
@@ -71,6 +73,7 @@ class RetrievalMetadata:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "retrieval_mode": self.retrieval_mode,
             "cascade_depth_reached": self.cascade_depth_reached,
             "levels_visited": self.levels_visited,
             "predicted_depth": self.predicted_depth,
@@ -115,12 +118,18 @@ def run_query(
     max_reentries: int | None = None,
     include_trace: bool = False,
     force_retrieval: bool = False,
+    retrieval_mode: RetrievalMode = "adaptive",
     on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResult:
-    md = RetrievalMetadata()
+    # Keep the legacy boolean compatible while giving benchmark runs one
+    # explicit, manifestable strategy name.
+    if force_retrieval and retrieval_mode == "adaptive":
+        retrieval_mode = "forced"
+    md = RetrievalMetadata(retrieval_mode=retrieval_mode)
     if include_trace:
         md.trace_id = f"trace-{uuid.uuid4().hex}"
         md.trace = {
+            "retrieval_mode": retrieval_mode,
             "vector_queries": [],
             "commands": [],
             "sufficiency_decisions": [],
@@ -133,6 +142,23 @@ def run_query(
         }
     max_depth = max_depth or ctx.cfg.retrieval.max_depth
     max_reentries = max_reentries if max_reentries is not None else ctx.cfg.retrieval.max_reentries
+
+    if retrieval_mode == "no_memory":
+        return _run_no_memory_ablation(
+            ctx,
+            md,
+            session_context=session_context,
+            query=query,
+            on_step=on_step,
+        )
+    if retrieval_mode == "vector_only":
+        return _run_vector_only_ablation(
+            ctx,
+            md,
+            session_context=session_context,
+            query=query,
+            on_step=on_step,
+        )
 
     # --- L0 ------------------------------------------------------------------
     md.levels_visited.append("L0")
@@ -147,7 +173,7 @@ def run_query(
                 neo4j=ctx.neo4j,
                 threshold=ctx.cfg.gating.classification_threshold,
                 memory_hit_threshold=ctx.cfg.gating.memory_hit_threshold,
-                skip=ctx.cfg.retrieval.l0_skip or force_retrieval,
+                skip=ctx.cfg.retrieval.l0_skip or retrieval_mode == "forced",
                 skip_reason=(
                     "retrieval.l0_skip=true"
                     if ctx.cfg.retrieval.l0_skip
@@ -283,6 +309,101 @@ def run_query(
         max_reentries,
         max_depth=max_depth,
         accumulated_hits=current_results,
+        on_step=on_step,
+    )
+
+
+def _mark_l0_not_run(md: RetrievalMetadata, reason: str) -> None:
+    md.l0_decision = "NOT_RUN"
+    md.l0_reason = reason
+    if md.trace is not None:
+        md.trace["l0_gate"] = {
+            "decision": "NOT_RUN",
+            "reason": reason,
+            "classifier_mode": None,
+            "classifier_probability": None,
+            "classifier_status": None,
+        }
+
+
+def _run_no_memory_ablation(
+    ctx: OrchestratorContext,
+    md: RetrievalMetadata,
+    *,
+    session_context: str | None,
+    query: str,
+    on_step: Callable[[dict[str, Any]], None] | None,
+) -> QueryResult:
+    """Answer with the frontier only, without gate, planner, graph, or vectors."""
+    md.levels_visited.append("FRONTIER")
+    md.cascade_depth_reached = "NO_MEMORY"
+    md.predicted_depth = "NO_MEMORY"
+    _mark_l0_not_run(md, "retrieval_mode=no_memory")
+    msc = _assemble_msc(
+        session_context=session_context,
+        ltm_blocks=[],
+        user_query=query,
+    )
+    md.total_context_tokens = _est_tokens(msc)
+    _trace_token_allocation(md, session_context, [], query)
+    _notify_step(on_step, md, "no_memory")
+    return _answer_loop(
+        ctx,
+        md,
+        session_context,
+        query,
+        msc,
+        0,
+        max_depth="SESSION",
+        accumulated_hits=[],
+        on_step=on_step,
+    )
+
+
+def _run_vector_only_ablation(
+    ctx: OrchestratorContext,
+    md: RetrievalMetadata,
+    *,
+    session_context: str | None,
+    query: str,
+    on_step: Callable[[dict[str, Any]], None] | None,
+) -> QueryResult:
+    """Run one raw-query vector search with no semantic planner or cascade."""
+    md.levels_visited.append("L1")
+    md.cascade_depth_reached = "L1"
+    md.predicted_depth = "L1"
+    _mark_l0_not_run(md, "retrieval_mode=vector_only")
+    plan = {
+        "predicted_depth": "L1",
+        "mode": "VECTOR_ONLY",
+        "vector_queries": [query],
+        "entry_points": [],
+        "commands": [],
+    }
+    _trace_plan(md, "L1", plan)
+    started = time.perf_counter()
+    hits = _execute_l1(ctx, plan, query)
+    md.latency_ms["l1_execute"] = (time.perf_counter() - started) * 1000
+    md.nodes_retrieved = len(hits)
+    _trace_hits(ctx, md, hits)
+    blocks = _format_ltm_blocks(ctx, hits, "L1", trace=md.trace)
+    msc = _assemble_msc(
+        session_context=session_context,
+        ltm_blocks=blocks,
+        user_query=query,
+    )
+    md.total_context_tokens = _est_tokens(msc)
+    _trace_token_allocation(md, session_context, blocks, query)
+    _notify_step(on_step, md, "vector_only")
+    return _answer_loop(
+        ctx,
+        md,
+        session_context,
+        query,
+        msc,
+        0,
+        max_depth="L1",
+        accumulated_hits=hits,
         on_step=on_step,
     )
 

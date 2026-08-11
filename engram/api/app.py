@@ -474,6 +474,7 @@ def query(req: schemas.QueryRequest):
             max_reentries=req.max_reentries,
             include_trace=req.include_trace,
             force_retrieval=req.force_retrieval,
+            retrieval_mode=req.retrieval_mode,
         )
     except Exception as err:
         log.exception("query failed")
