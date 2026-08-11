@@ -11,7 +11,7 @@ from pathlib import Path
 
 from engram import frontmatter as fm_mod
 from engram.frontmatter import FrontmatterError
-from engram.storage.filesystem import FilesystemStore
+from engram.storage.filesystem import FilesystemStore, is_generated_memory_path
 from engram.uri import path_to_uri
 
 MIN_NODE_TOKENS = 20
@@ -55,7 +55,7 @@ def render_tree(
             except FileNotFoundError:
                 continue
             for child in items:
-                if child.name.startswith("."):
+                if child.name.startswith(".") or is_generated_memory_path(child):
                     continue
                 uri = path_to_uri(child, fs.tenant_scope_path())
                 node = _Node(

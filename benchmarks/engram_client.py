@@ -42,8 +42,12 @@ class EngramError(RuntimeError):
     """Raised when Engram returns an unexpected HTTP status."""
 
 
-class DrainTimeout(RuntimeError):
+class DrainTimeoutError(RuntimeError):
     """Raised when ingest does not finish within the allotted time."""
+
+
+class IngestFailedError(RuntimeError):
+    """Raised when one or more exact event IDs reach FAILED."""
 
 
 @dataclass
@@ -160,6 +164,19 @@ class EngramClient:
         assistant_timestamp: str | None = None,
         user_turn_idx: int | None = None,
         assistant_turn_idx: int | None = None,
+        user_external_id: str | None = None,
+        assistant_external_id: str | None = None,
+        user_speaker: str | None = None,
+        assistant_speaker: str | None = None,
+        source_conversation_id: str | None = None,
+        source_session_id: str | None = None,
+        user_image_caption: str | None = None,
+        assistant_image_caption: str | None = None,
+        user_image_urls: list[str] | None = None,
+        assistant_image_urls: list[str] | None = None,
+        user_image_query: str | None = None,
+        assistant_image_query: str | None = None,
+        session_context: str | None = None,
         source: str = "locomo",
     ) -> dict[str, Any]:
         """POST one user/assistant turn pair. Returns the 202 body (event_id...).
@@ -168,12 +185,34 @@ class EngramClient:
         the API, which we surface rather than silently truncate.
         """
         turn_pair: dict[str, Any] = {
-            "user": _turn(user_content, user_timestamp, user_turn_idx),
+            "user": _turn(
+                user_content,
+                user_timestamp,
+                user_turn_idx,
+                external_id=user_external_id,
+                speaker=user_speaker,
+                source_conversation_id=source_conversation_id,
+                source_session_id=source_session_id,
+                image_caption=user_image_caption,
+                image_urls=user_image_urls,
+                image_query=user_image_query,
+            ),
             "assistant": _turn(
-                assistant_content, assistant_timestamp, assistant_turn_idx
+                assistant_content,
+                assistant_timestamp,
+                assistant_turn_idx,
+                external_id=assistant_external_id,
+                speaker=assistant_speaker,
+                source_conversation_id=source_conversation_id,
+                source_session_id=source_session_id,
+                image_caption=assistant_image_caption,
+                image_urls=assistant_image_urls,
+                image_query=assistant_image_query,
             ),
         }
         body = {"session_id": session_id, "turn_pair": turn_pair, "source": source}
+        if session_context is not None:
+            body["session_context"] = session_context
         resp = self._http.post("/api/v1/ingest", json=body)
         if resp.status_code != 202:
             raise EngramError(f"ingest failed: {resp.status_code} {resp.text}")
@@ -186,6 +225,46 @@ class EngramClient:
         if resp.status_code != 200:
             raise EngramError(f"status failed: {resp.status_code} {resp.text}")
         return resp.json()
+
+    def event_status(self, event_ids: list[str]) -> dict[str, Any]:
+        """Return exact tenant-scoped readiness for a bounded event-ID set."""
+        resp = self._http.post("/api/v1/events/status", json={"event_ids": event_ids})
+        if resp.status_code != 200:
+            raise EngramError(f"event status failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def wait_for_events(
+        self,
+        event_ids: list[str],
+        cfg: DrainConfig | None = None,
+    ) -> dict[str, Any]:
+        """Wait until the submitted events are memory-ready or fail closed."""
+        if not event_ids:
+            raise ValueError("event_ids must not be empty")
+        cfg = cfg or DrainConfig()
+        start = time.monotonic()
+        last: dict[str, Any] = {}
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed > cfg.max_wait_s:
+                raise DrainTimeoutError(
+                    f"tenant {self.tenant_id}: {len(event_ids)} exact events did not "
+                    f"become memory-ready within {cfg.max_wait_s:.0f}s; last={last}"
+                )
+            last = self.event_status(event_ids)
+            if last.get("missing_ids"):
+                raise EngramError(
+                    f"event status omitted submitted IDs: {last['missing_ids']}"
+                )
+            if int(last.get("failed_count", 0)):
+                failures = [
+                    f"{row.get('event_id')}:{row.get('error') or row.get('status')}"
+                    for row in last.get("failures", [])
+                ]
+                raise IngestFailedError("; ".join(failures))
+            if bool(last.get("memory_ready")):
+                return {**last, "waited_s": elapsed}
+            time.sleep(cfg.poll_interval_s)
 
     def _is_busy(self, status: dict[str, Any]) -> bool:
         """True while the tenant still has consolidation work outstanding."""
@@ -221,7 +300,7 @@ class EngramClient:
             now = time.monotonic()
             elapsed = now - start
             if elapsed > cfg.max_wait_s:
-                raise DrainTimeout(
+                raise DrainTimeoutError(
                     f"tenant {self.tenant_id}: ingest did not drain within "
                     f"{cfg.max_wait_s:.0f}s (seen_activity={seen_activity})"
                 )
@@ -261,6 +340,7 @@ class EngramClient:
         max_depth: str | None = None,
         max_reentries: int | None = None,
         session_context: str | None = None,
+        include_trace: bool = True,
     ) -> dict[str, Any]:
         """POST a question. Returns {answer, retrieval_metadata, ...}.
 
@@ -275,6 +355,7 @@ class EngramClient:
             body["max_reentries"] = max_reentries
         if session_context is not None:
             body["session_context"] = session_context
+        body["include_trace"] = include_trace
         # Longer per-request timeout than the client default: a query drives the
         # full cascade + several LLM calls. A transport error (incl. timeout) is
         # wrapped as EngramError so callers catch it uniformly and one slow query
@@ -299,13 +380,34 @@ class EngramClient:
 
 
 def _turn(
-    content: str, timestamp: str | None, turn_idx: int | None
+    content: str,
+    timestamp: str | None,
+    turn_idx: int | None,
+    *,
+    external_id: str | None = None,
+    speaker: str | None = None,
+    source_conversation_id: str | None = None,
+    source_session_id: str | None = None,
+    image_caption: str | None = None,
+    image_urls: list[str] | None = None,
+    image_query: str | None = None,
 ) -> dict[str, Any]:
     turn: dict[str, Any] = {"content": content}
     if timestamp is not None:
         turn["timestamp"] = timestamp
     if turn_idx is not None:
         turn["turn_idx"] = turn_idx
+    optional = {
+        "external_id": external_id,
+        "speaker": speaker,
+        "source_conversation_id": source_conversation_id,
+        "source_session_id": source_session_id,
+        "source_task": "locomo",
+        "image_caption": image_caption,
+        "image_urls": image_urls,
+        "image_query": image_query,
+    }
+    turn.update({key: value for key, value in optional.items() if value is not None})
     return turn
 
 

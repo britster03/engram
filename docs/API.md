@@ -56,7 +56,12 @@ cascade / model settings.
   "session_id": "sess-abc-123",                       // optional
   "turn_pair": {
     "user": { "content": "I just started a new job at Meta.",
-              "timestamp": "2026-04-12T10:28:00Z", "turn_idx": 14 },
+              "timestamp": "2026-04-12T10:28:00Z", "turn_idx": 14,
+              "external_id": "D1:14", "speaker": "Alice",
+              "source_conversation_id": "sample-1",
+              "source_session_id": "session_1",
+              "source_task": "locomo",
+              "image_caption": null, "image_urls": null, "image_query": null },
     "assistant": { "content": "Congratulations! What team are you on?",
                    "timestamp": "2026-04-12T10:28:05Z", "turn_idx": 15 }
   },
@@ -99,6 +104,8 @@ For tool-using agents, submit a `turn_group` instead of a `turn_pair`:
 
 The pair fed to the gate/extract pipeline is `user` + `assistant`.
 Intermediate turns are preserved in the event payload for provenance.
+Source-native turn IDs and optional multimodal metadata are also persisted into
+memory frontmatter and KG provenance; they are returned in opt-in retrieval traces.
 
 ### `POST /api/v1/ingest/batch`
 
@@ -115,7 +122,8 @@ independently; response is 202 with a list of per-item results.
   "query": "What project is Alice working on?",
   "session_context": "...",        // optional explicit override
   "max_depth": "L4",               // optional, default from config
-  "max_reentries": 2               // optional, default from config
+  "max_reentries": 2,              // optional, default from config
+  "include_trace": true            // optional, default false
 }
 ```
 
@@ -144,8 +152,27 @@ Response — 200 OK:
       "frontier_answer_0": 2430,
       "total": 4671
     }
+  },
+  "trace_id": "trace-...",
+  "retrieval_trace": {
+    "vector_queries": ["What project is Alice working on?"],
+    "commands": [],
+    "hits": [
+      {
+        "source_uri": "mem://user/episodes/evt-....md",
+        "score": 0.87,
+        "retrieval_level": "L1",
+        "source_turn_ids": ["D1:14", "D1:15"]
+      }
+    ],
+    "selected_sources": [],
+    "token_allocation": {},
+    "reentry_requests": []
   }
 }
+```
+
+Trace payloads are bounded and omit prompts, API keys, and memory bodies.
 
 ## Chat Completions
 
@@ -413,6 +440,23 @@ split becomes a new ACTIVE ENTITY node; the original is HISTORICAL with
 Follows SUPERSEDES chains — returns HISTORICAL nodes on purpose.
 
 ## Events
+
+### `POST /api/v1/events/status`
+
+Accepts 1–500 unique event IDs and reports exact tenant-scoped memory readiness.
+This is the supported drain signal for benchmarks; consolidation/overview
+readiness remains separate.
+
+```json
+{
+  "event_ids": ["evt-a", "evt-b"]
+}
+```
+
+The response includes per-event status/outbox state, `missing_ids`, `failures`,
+terminal/ready counts, and aggregate `memory_ready`. A stored event is ready
+when its required filesystem/KG work is indexed; a gate skip is terminal with
+no required artifacts.
 
 ### `POST /api/v1/events/{event_id}/retry`
 

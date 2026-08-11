@@ -19,6 +19,13 @@ from pathlib import Path
 from engram import uri as uri_mod
 from engram.tenancy import current_tenant_id
 
+GENERATED_MEMORY_FILENAMES = {"overview.md", ".manifest"}
+
+
+def is_generated_memory_path(path: Path) -> bool:
+    """Return whether a path is derived directory metadata, not source memory."""
+    return path.name in GENERATED_MEMORY_FILENAMES or path.name.startswith(".manifest.")
+
 
 class FilesystemStore:
     def __init__(
@@ -79,8 +86,8 @@ class FilesystemStore:
             return []
         out = []
         for child in sorted(base.iterdir()):
-            if child.name.startswith("."):
-                continue  # hide .manifest from default listings
+            if child.name.startswith(".") or is_generated_memory_path(child):
+                continue
             child_uri = uri_mod.path_to_uri(child, self._tenant_root())
             out.append(child_uri)
         return out

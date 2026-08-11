@@ -6,11 +6,13 @@ without requiring Docker or an API key.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from engram.config import EngramConfig
+from engram.frontmatter import parse
 from engram.ingest.worker import IngestContext, process_event
 from engram.retrieval.orchestrator import OrchestratorContext, run_query
 from engram.storage.filesystem import FilesystemStore
@@ -136,7 +138,42 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
                 },
             },
         )
+        event = sqlite.get_event(event_id)
+        assert event is not None
+        event["payload"]["turn_pair"]["user"].update(
+            {
+                "external_id": f"D1:{idx * 2 + 1}",
+                "speaker": "Caroline",
+                "source_conversation_id": "sample-1",
+                "source_session_id": "session_1",
+                "source_task": "locomo",
+            }
+        )
+        event["payload"]["turn_pair"]["assistant"].update(
+            {
+                "external_id": f"D1:{idx * 2 + 2}",
+                "speaker": "Melanie",
+                "source_conversation_id": "sample-1",
+                "source_session_id": "session_1",
+                "source_task": "locomo",
+            }
+        )
+        with sqlite.transaction() as conn:
+            conn.execute(
+                "UPDATE events SET payload = ? WHERE event_id = ?",
+                (json.dumps(event["payload"]), event_id),
+            )
         assert process_event(ingest_ctx, event_id) == "COMPLETE"
+
+        episode_uri = f"mem://user/episodes/{event_id}.md"
+        memory = parse(ingest_ctx.fs.read(episode_uri))
+        assert memory.frontmatter["source_turn_ids"] == [
+            f"D1:{idx * 2 + 1}",
+            f"D1:{idx * 2 + 2}",
+        ]
+        kg_episode = neo.nodes[episode_uri]
+        assert kg_episode["id"] == memory.frontmatter["id"]
+        assert kg_episode["source_turn_ids"] == memory.frontmatter["source_turn_ids"]
 
     # KG should have episode nodes and some entity nodes.
     episode_count = sum(1 for n in neo.nodes.values() if n.get("node_type") == "DOCUMENT")
@@ -145,7 +182,12 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     assert entity_count >= 3
 
     # Query it — the stub frontier echoes retrieved sentences; we just check the pipeline runs.
-    result = run_query(orch_ctx, session_id=None, query="Where does the user work?")
+    result = run_query(
+        orch_ctx,
+        session_id=None,
+        query="Where does the user work?",
+        include_trace=True,
+    )
     md = result.retrieval_metadata.to_dict()
     # Stub LN-plan returns terminate_cascade=true so L2 is visited then the
     # cascade stops. L0 is visited first (skip=True → CONTINUE, still logged).
@@ -153,6 +195,12 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     assert "L1" in md["levels_visited"]
     assert md["nodes_retrieved"] >= 1
     assert result.answer  # non-empty
+    assert result.retrieval_metadata.trace_id
+    trace = result.retrieval_metadata.trace
+    assert trace is not None
+    assert trace["hits"]
+    assert any(hit["source_turn_ids"] for hit in trace["hits"])
+    assert "token_allocation" in trace
 
 
 def test_low_confidence_triplet_writes_fact_node(cfg: EngramConfig):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from engram.api.auth import AuthDep
 from engram.deps import get_state
@@ -16,6 +16,86 @@ class EventResponse(BaseModel):
     event_id: str
     status: str
     retry_count: int
+
+
+class EventStatusRequest(BaseModel):
+    event_ids: list[str] = Field(..., min_length=1, max_length=500)
+
+    @field_validator("event_ids")
+    @classmethod
+    def _unique_ids(cls, value: list[str]) -> list[str]:
+        if any(not event_id or len(event_id) > 128 for event_id in value):
+            raise ValueError("event IDs must contain 1 to 128 characters")
+        if len(set(value)) != len(value):
+            raise ValueError("event_ids must be unique")
+        return value
+
+
+class EventReadiness(BaseModel):
+    event_id: str
+    pair_id: str
+    status: str
+    terminal: bool
+    memory_ready: bool
+    outbox_state: str | None = None
+    source_uri: str | None = None
+    error: str | None = None
+
+
+class EventStatusResponse(BaseModel):
+    requested_count: int
+    found_count: int
+    terminal_count: int
+    ready_count: int
+    failed_count: int
+    memory_ready: bool
+    missing_ids: list[str]
+    failures: list[EventReadiness]
+    events: list[EventReadiness]
+
+
+_TERMINAL_STATUSES = {"COMPLETE", "GATED_SKIP", "FAILED"}
+
+
+@router.post("/status", response_model=EventStatusResponse)
+def event_status(req: EventStatusRequest) -> EventStatusResponse:
+    """Report exact event readiness without relying on queue-level heuristics."""
+    state = get_state()
+    tenant_id = current_tenant_id()
+    rows = state.sqlite.get_event_readiness(req.event_ids, tenant_id=tenant_id)
+    found = {row["event_id"] for row in rows}
+    events: list[EventReadiness] = []
+    for row in rows:
+        status = str(row["status"])
+        memory_ready = status == "GATED_SKIP" or (
+            status in {"INDEXED", "COMPLETE"} and row.get("outbox_state") == "INDEXED"
+        )
+        events.append(
+            EventReadiness(
+                event_id=row["event_id"],
+                pair_id=row["pair_id"],
+                status=status,
+                terminal=status in _TERMINAL_STATUSES,
+                memory_ready=memory_ready,
+                outbox_state=row.get("outbox_state"),
+                source_uri=row.get("source_uri"),
+                error=row.get("error_message"),
+            )
+        )
+    failures = [event for event in events if event.status == "FAILED"]
+    missing = [event_id for event_id in req.event_ids if event_id not in found]
+    ready_count = sum(event.memory_ready for event in events)
+    return EventStatusResponse(
+        requested_count=len(req.event_ids),
+        found_count=len(events),
+        terminal_count=sum(event.terminal for event in events),
+        ready_count=ready_count,
+        failed_count=len(failures),
+        memory_ready=ready_count == len(req.event_ids) and not missing and not failures,
+        missing_ids=missing,
+        failures=failures,
+        events=events,
+    )
 
 
 @router.post("/{event_id}/retry", response_model=EventResponse)

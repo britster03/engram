@@ -17,7 +17,7 @@ from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.sqlite import SqliteStore
 
-from .providers import DeterministicCoreProvider
+from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
 
 
 @pytest.fixture
@@ -57,6 +57,22 @@ def test_regenerate_manifest_lists_children(cfg: EngramConfig):
     assert "alice_works_at_meta.md" in manifest
 
 
+def test_generated_overview_is_not_a_source_child(cfg: EngramConfig):
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    _seed(fs)
+    fs.write_atomic("mem://user/entities/alice/overview.md", "# stale overview\n")
+    assert "mem://user/entities/alice/overview.md" not in fs.list_children(
+        "mem://user/entities/alice"
+    )
+    handle_regenerate_manifest(
+        node_id="mem://user/entities/alice",
+        fs=fs,
+        cfg=cfg.consolidation,
+    )
+    manifest = fs.read_manifest("mem://user/entities/alice")
+    assert manifest is not None and "overview.md" not in manifest
+
+
 def test_consolidate_overview_writes_file(cfg: EngramConfig):
     fs = FilesystemStore(cfg.filesystem.data_dir)
     _seed(fs)
@@ -72,6 +88,28 @@ def test_consolidate_overview_writes_file(cfg: EngramConfig):
     assert overview_path.exists()
     body = overview_path.read_text()
     assert "Overview" in body
+
+
+def test_single_child_overview_does_not_call_model(cfg: EngramConfig):
+    class FailIfCalled(DeterministicCoreProvider):
+        def complete(self, **_kwargs):
+            raise AssertionError("single-child overview must be deterministic")
+
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    fs.write_atomic(
+        "mem://user/entities/alice/alice.md",
+        "---\nid: 1\nnode_type: ENTITY\nstatus: ACTIVE\n"
+        "created_at: 2026-04-01T00:00:00Z\nschema_version: 1\n---\nAlice.\n",
+    )
+    handle_consolidate_overview(
+        node_id="mem://user/entities/alice",
+        fs=fs,
+        neo4j=InMemoryKnowledgeGraph(),  # type: ignore[arg-type]
+        core=FailIfCalled(),
+        cfg=cfg.consolidation,
+    )
+    overview = fs.read_overview("mem://user/entities/alice")
+    assert overview is not None and "alice.md" in overview
 
 
 def test_propagate_overview_enqueues_ancestors(cfg: EngramConfig):
@@ -97,7 +135,6 @@ def test_worker_drains_queue(cfg: EngramConfig):
     _seed(fs)
     sqlite = SqliteStore(cfg.event_ledger.path)
     sqlite.enqueue_task(node_id="mem://user/entities/alice", task_type="REGENERATE_MANIFEST")
-    from .providers import DeterministicEmbeddingService
     ctx = ConsolidationContext(
         cfg=cfg,
         sqlite=sqlite,
@@ -110,3 +147,28 @@ def test_worker_drains_queue(cfg: EngramConfig):
     assert sqlite.queue_depth() == 0
     # Re-running when queue is empty returns False
     assert process_one(ctx) is False
+
+
+def test_worker_binds_task_tenant_and_restores_context(cfg: EngramConfig):
+    from engram.tenancy import current_tenant_id
+
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    tenant_fs = FilesystemStore(cfg.filesystem.data_dir, tenant_id="tenant-a")
+    _seed(tenant_fs)
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    sqlite.enqueue_task(
+        node_id="mem://user/entities/alice",
+        task_type="REGENERATE_MANIFEST",
+        tenant_id="tenant-a",
+    )
+    ctx = ConsolidationContext(
+        cfg=cfg,
+        sqlite=sqlite,
+        fs=fs,
+        neo4j=InMemoryKnowledgeGraph(),  # type: ignore[arg-type]
+        core=DeterministicCoreProvider(),
+        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+    )
+    assert process_one(ctx) is True
+    assert tenant_fs.read_manifest("mem://user/entities/alice") is not None
+    assert current_tenant_id() == "_default"

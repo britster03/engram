@@ -23,7 +23,7 @@ from engram import frontmatter
 from engram import uri as uri_mod
 from engram.config import EngramConfig
 from engram.models.embeddings import EmbeddingService
-from engram.storage.filesystem import FilesystemStore
+from engram.storage.filesystem import FilesystemStore, is_generated_memory_path
 from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
 from engram.tenancy import DEFAULT_TENANT_ID
@@ -46,6 +46,8 @@ def rebuild(cfg: EngramConfig) -> dict[str, int]:
     # Pass 1: nodes + CONTAINS, walking each tenant under its own URI scope.
     for tenant_id, tenant_root in _tenant_roots(fs, sqlite):
         for path in sorted(tenant_root.rglob("*.md")):
+            if is_generated_memory_path(path):
+                continue
             try:
                 text = path.read_text(encoding="utf-8")
                 mf = frontmatter.parse(text)

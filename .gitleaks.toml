@@ -1,0 +1,16 @@
+title = "Engram secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Explicit placeholder values in examples and tests"
+paths = [
+  '''\.env\.example$''',
+  '''tests/.*''',
+]
+regexes = [
+  '''change-me(?:-[a-z0-9-]+)?''',
+  '''your-[a-z0-9-]+''',
+  '''test(?:-[a-z0-9-]+)?''',
+]

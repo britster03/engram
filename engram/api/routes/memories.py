@@ -12,6 +12,7 @@ from engram import frontmatter
 from engram.api.auth import AuthDep
 from engram.deps import get_state
 from engram.frontmatter import FrontmatterError
+from engram.storage.filesystem import is_generated_memory_path
 from engram.tenancy import current_tenant_id
 
 log = logging.getLogger(__name__)
@@ -220,6 +221,8 @@ def _walk_fs(state, prefix: str, limit: int, cursor: str | None) -> list[dict[st
         return []
     items: list[dict[str, Any]] = []
     for path in sorted(start_path.rglob("*.md")):
+        if is_generated_memory_path(path):
+            continue
         u = uri_mod.path_to_uri(path, tenant_root)
         if cursor and u <= cursor:
             continue

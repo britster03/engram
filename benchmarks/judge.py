@@ -159,9 +159,12 @@ class OllamaJudge:
                 obj = json.loads(raw[start : end + 1])
             except json.JSONDecodeError:
                 return None
-        if not isinstance(obj, dict) or "correct" not in obj:
+        if not isinstance(obj, dict) or not isinstance(obj.get("correct"), bool):
             return None
-        return bool(obj["correct"]), str(obj.get("reason", ""))
+        reason = obj.get("reason", "")
+        if not isinstance(reason, str):
+            return None
+        return obj["correct"], reason
 
     def judge(
         self,

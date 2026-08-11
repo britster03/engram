@@ -122,3 +122,32 @@ def test_gated_store_without_extraction_requeues(cfg: EngramConfig):
     refreshed = sqlite.get_event(eid)
     assert refreshed is not None
     assert refreshed["status"] == "RECEIVED"
+
+
+def test_indexed_event_resumes_only_consolidation(cfg: EngramConfig):
+    ingest, sqlite, _neo, _fs = _ctx(cfg)
+    eid = _enqueue_event(sqlite, "s5", "I moved to Berlin.", "Noted.", 0)
+    assert process_event(ingest, eid) == "COMPLETE"
+    with sqlite.transaction() as conn:
+        conn.execute("DELETE FROM consolidation_tasks")
+        conn.execute("UPDATE events SET status = 'INDEXED' WHERE event_id = ?", (eid,))
+
+    assert process_event(ingest, eid) == "COMPLETE"
+    event = sqlite.get_event(eid)
+    assert event is not None and event["status"] == "COMPLETE"
+    assert sqlite.queue_depth() > 0
+
+
+def test_reconciliation_requeues_indexed_crash_window(cfg: EngramConfig):
+    _ingest, sqlite, _neo, _fs = _ctx(cfg)
+    eid = _enqueue_event(sqlite, "s6", "I moved to Rome.", "Noted.", 0)
+    with sqlite.transaction() as conn:
+        conn.execute(
+            "UPDATE events SET status = 'INDEXED', processed_at = datetime('now', '-5 minutes') "
+            "WHERE event_id = ?",
+            (eid,),
+        )
+    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
+    assert counts["indexed_without_consolidation"] == 1
+    event = sqlite.get_event(eid)
+    assert event is not None and event["status"] == "RECEIVED"

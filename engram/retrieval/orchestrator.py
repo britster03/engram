@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -62,6 +63,8 @@ class RetrievalMetadata:
     latency_ms: dict[str, float] = field(default_factory=dict)
     l0_decision: str | None = None
     l0_reason: str | None = None
+    trace_id: str | None = None
+    trace: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,9 +109,21 @@ def run_query(
     session_context: str | None = None,
     max_depth: str | None = None,
     max_reentries: int | None = None,
+    include_trace: bool = False,
     on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResult:
     md = RetrievalMetadata()
+    if include_trace:
+        md.trace_id = f"trace-{uuid.uuid4().hex}"
+        md.trace = {
+            "vector_queries": [],
+            "commands": [],
+            "sufficiency_decisions": [],
+            "hits": [],
+            "selected_sources": [],
+            "token_allocation": {},
+            "reentry_requests": [],
+        }
     max_depth = max_depth or ctx.cfg.retrieval.max_depth
     max_reentries = max_reentries if max_reentries is not None else ctx.cfg.retrieval.max_reentries
 
@@ -156,6 +171,7 @@ def run_query(
     md.levels_visited.append("L1")
     md.cascade_depth_reached = "L1"
     md.predicted_depth = plan.get("predicted_depth", "L4")
+    _trace_plan(md, "L1", plan)
     _notify_step(on_step, md, "l1_plan")
 
     if plan.get("session_sufficient") and plan.get("session_answer_context"):
@@ -173,6 +189,7 @@ def run_query(
     md.latency_ms["l1_execute"] = (time.perf_counter() - t) * 1000
     md.nodes_retrieved = len(accumulated)
     current_results = accumulated
+    _trace_hits(ctx, md, accumulated)
     _notify_step(on_step, md, "l1_execute")
 
     predicted_depth = plan.get("predicted_depth", "L4")
@@ -198,6 +215,7 @@ def run_query(
         md.latency_ms[f"{level_name.lower()}_plan"] = (time.perf_counter() - t) * 1000
         md.levels_visited.append(level_name)
         md.cascade_depth_reached = level_name
+        _trace_plan(md, level_name, ln_plan)
         _notify_step(on_step, md, f"{level_name.lower()}_plan")
         if ln_plan.get("terminate_cascade"):
             break
@@ -209,15 +227,19 @@ def run_query(
             )
         md.latency_ms[f"{level_name.lower()}_execute"] = (time.perf_counter() - t) * 1000
         md.nodes_retrieved = len(current_results)
+        _trace_hits(ctx, md, current_results)
         _notify_step(on_step, md, f"{level_name.lower()}_execute")
         prev_level = level_name
 
     # --- MSC assembly --------------------------------------------------------
     t = time.perf_counter()
-    ltm_blocks = _format_ltm_blocks(ctx, current_results, md.cascade_depth_reached)
+    ltm_blocks = _format_ltm_blocks(
+        ctx, current_results, md.cascade_depth_reached, trace=md.trace
+    )
     md.latency_ms["msc_assembly"] = (time.perf_counter() - t) * 1000
     msc = _assemble_msc(session_context=session_context, ltm_blocks=ltm_blocks, user_query=query)
     md.total_context_tokens = _est_tokens(msc)
+    _trace_token_allocation(md, session_context, ltm_blocks, query)
     _notify_step(on_step, md, "msc_assembly")
 
     return _answer_loop(
@@ -356,6 +378,17 @@ def _execute_l1(
         seen.add(uri)
         hits.append({"source_uri": uri, "score": None, "retrieval_level": "L1_entry"})
     hits.sort(key=lambda r: r.get("score") or 0.0, reverse=True)
+    hits = hits[: ctx.cfg.retrieval.max_l1_vector_results]
+    # L1 prompts advertise typed AGFS/KG/HYBRID commands. Execute them through
+    # the same whitelist used by deeper levels instead of silently ignoring
+    # the model's plan.
+    if plan.get("commands"):
+        hits = _execute_commands(
+            ctx,
+            plan["commands"][:20],
+            level="L1",
+            existing=hits,
+        )
     return hits[: ctx.cfg.retrieval.max_l1_vector_results]
 
 
@@ -418,7 +451,7 @@ def _execute_commands(
         # --- Vector search ----------------------------------------------
         if template in ("find", "t_top_k_vector"):
             query_text = params.get("query")
-            k = int(params.get("k", 10))
+            k = max(1, min(int(params.get("k", 10)), ctx.cfg.retrieval.max_l1_vector_results))
             scope = params.get("scope") or params.get("prefix")
             if query_text:
                 try:
@@ -505,7 +538,11 @@ def _summarise_results(results: list[dict[str, Any]], *, limit: int) -> str:
 
 
 def _format_ltm_blocks(
-    ctx: OrchestratorContext, results: list[dict[str, Any]], cascade_depth: str
+    ctx: OrchestratorContext,
+    results: list[dict[str, Any]],
+    cascade_depth: str,
+    *,
+    trace: dict[str, Any] | None = None,
 ) -> list[str]:
     """Build LTM context blocks. At deeper levels we load richer content."""
     budget = (
@@ -538,6 +575,14 @@ def _format_ltm_blocks(
             continue
         annotation = _annotate(status, confidence, source_uri, level=level)
         blocks.append(f"{annotation}\n{body.strip()}")
+        if trace is not None and len(trace["selected_sources"]) < 100:
+            trace["selected_sources"].append(
+                {
+                    "source_uri": source_uri,
+                    "retrieval_level": level,
+                    "source_turn_ids": _source_turn_ids_for(ctx, r),
+                }
+            )
         spent += tokens
     return blocks
 
@@ -697,6 +742,14 @@ def _answer_loop(
         reentries += 1
         md.reentries = reentries
         followups = verdict.suggested_queries or [query]
+        if md.trace is not None:
+            md.trace["reentry_requests"].append(
+                {
+                    "index": reentries,
+                    "suggested_depth": verdict.suggested_depth,
+                    "queries": [str(value)[:500] for value in followups[:3]],
+                }
+            )
         for q in followups[:3]:
             try:
                 emb = ctx.embed.embed(q)
@@ -713,6 +766,7 @@ def _answer_loop(
                     continue
                 r["retrieval_level"] = "L1_reentry"
                 hits.append(r)
+        _trace_hits(ctx, md, hits)
         suggested_depth = verdict.suggested_depth or md.predicted_depth or max_depth
         hits = _run_reentry_cascade(
             ctx,
@@ -725,7 +779,9 @@ def _answer_loop(
             reentry_idx=reentries,
             on_step=on_step,
         )
-        ltm_blocks = _format_ltm_blocks(ctx, hits, md.cascade_depth_reached)
+        ltm_blocks = _format_ltm_blocks(
+            ctx, hits, md.cascade_depth_reached, trace=md.trace
+        )
         current_msc = _assemble_msc(
             session_context=session_context,
             ltm_blocks=ltm_blocks,
@@ -733,6 +789,7 @@ def _answer_loop(
         )
         md.nodes_retrieved = len(hits)
         md.total_context_tokens = _est_tokens(current_msc)
+        _trace_token_allocation(md, session_context, ltm_blocks, query)
         _notify_step(on_step, md, f"reentry_{reentries}")
 
 
@@ -781,6 +838,7 @@ def _run_reentry_cascade(
         ) * 1000
         md.levels_visited.append(level_name)
         md.cascade_depth_reached = level_name
+        _trace_plan(md, f"{level_name}_reentry_{reentry_idx}", ln_plan)
         _notify_step(on_step, md, f"{level_name.lower()}_reentry_plan")
         if ln_plan.get("terminate_cascade"):
             break
@@ -796,6 +854,115 @@ def _run_reentry_cascade(
             time.perf_counter() - t
         ) * 1000
         md.nodes_retrieved = len(current_results)
+        _trace_hits(ctx, md, current_results)
         _notify_step(on_step, md, f"{level_name.lower()}_reentry_execute")
         previous_level = level_name
     return current_results
+
+
+def _trace_plan(md: RetrievalMetadata, level: str, plan: dict[str, Any]) -> None:
+    if md.trace is None:
+        return
+    if level == "L1":
+        md.trace["vector_queries"] = [
+            str(value)[:500] for value in (plan.get("vector_queries") or [])[:3]
+        ]
+    md.trace["sufficiency_decisions"].append(
+        {
+            "level": level,
+            "previous_level_sufficient": plan.get("previous_level_sufficient"),
+            "session_sufficient": plan.get("session_sufficient"),
+            "terminate_cascade": plan.get("terminate_cascade"),
+            "predicted_depth": plan.get("predicted_depth"),
+        }
+    )
+    for command in (plan.get("commands") or [])[:20]:
+        if not isinstance(command, dict):
+            continue
+        name = command.get("template") or command.get("command")
+        params = command.get("params") or {
+            key: value
+            for key, value in command.items()
+            if key not in {"template", "command"}
+        }
+        md.trace["commands"].append(
+            {
+                "level": level,
+                "name": str(name)[:100],
+                "params": _bounded_trace_value(params),
+            }
+        )
+
+
+def _trace_hits(
+    ctx: OrchestratorContext,
+    md: RetrievalMetadata,
+    hits: list[dict[str, Any]],
+) -> None:
+    if md.trace is None:
+        return
+    existing = {row["source_uri"] for row in md.trace["hits"]}
+    for hit in hits:
+        uri = hit.get("source_uri")
+        if not uri or uri in existing or len(md.trace["hits"]) >= 100:
+            continue
+        existing.add(uri)
+        md.trace["hits"].append(
+            {
+                "source_uri": str(uri),
+                "score": hit.get("score"),
+                "retrieval_level": hit.get("retrieval_level"),
+                "source_turn_ids": _source_turn_ids_for(ctx, hit),
+            }
+        )
+
+
+def _source_turn_ids_for(
+    ctx: OrchestratorContext,
+    hit: dict[str, Any],
+) -> list[str]:
+    supplied = hit.get("source_turn_ids") or []
+    if supplied:
+        return [str(value) for value in supplied if value]
+    uri = hit.get("source_uri")
+    if not uri:
+        return []
+    try:
+        fm = frontmatter.parse(ctx.fs.read(str(uri))).frontmatter
+    except (OSError, FrontmatterError):
+        return []
+    values = fm.get("source_turn_ids") or fm.get("provenance", {}).get(
+        "source_turn_ids", []
+    )
+    return [str(value) for value in values if value]
+
+
+def _trace_token_allocation(
+    md: RetrievalMetadata,
+    session_context: str | None,
+    ltm_blocks: list[str],
+    query: str,
+) -> None:
+    if md.trace is None:
+        return
+    md.trace["token_allocation"] = {
+        "session_context": _est_tokens(session_context or ""),
+        "retrieved_memory": sum(_est_tokens(block) for block in ltm_blocks),
+        "user_query": _est_tokens(query),
+        "total_context": md.total_context_tokens,
+    }
+
+
+def _bounded_trace_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key)[:100]: _bounded_trace_value(item)
+            for key, item in list(value.items())[:20]
+        }
+    if isinstance(value, list):
+        return [_bounded_trace_value(item) for item in value[:20]]
+    if isinstance(value, str):
+        return value[:500]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:500]

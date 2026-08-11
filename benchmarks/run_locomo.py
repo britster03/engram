@@ -1,116 +1,287 @@
-"""LoCoMo baseline runner — the conductor.
+"""Trustworthy LoCoMo QA baseline runner for Engram.
 
-Ties loader + engram_client + judge together into one benchmark pass:
-
-    for each conversation:
-        create a fresh isolated tenant            (Issue C: no cross-convo bleed)
-        ingest every turn pair
-        wait_for_drain()                          (Issue A: no async race)
-        for each question:
-            query Engram, judge the answer, record the FULL trace
-
-Every question row keeps Engram's retrieval_metadata (l0 decision, cascade
-depth, nodes retrieved, latency), not just right/wrong -- that trace is what
-powers the later failure analysis without having to re-run the benchmark.
-
-Usage (smoke first, then full):
-
-    # smoke: 1 conversation, 10 questions
-    python benchmarks/run_locomo.py --limit-convs 1 --limit-questions 10
-
-    # full baseline
-    python benchmarks/run_locomo.py
-
-Env:
-    ENGRAM_BASE_URL   default http://127.0.0.1:8000
-    ENGRAM_ADMIN_KEY  required (used to create per-conversation tenants)
-    OLLAMA_API_KEY    required (judge model)
+The runner builds the expected-work manifest before any API calls, preserves
+LoCoMo provenance and rolling prior-turn context during ingest, waits on exact
+event IDs, stores redacted retrieval traces, and makes deterministic answer F1
+and evidence Recall@k the primary metrics.  The LLM judge is opt-in and
+diagnostic only.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
+import subprocess
 import sys
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import fmean
+from typing import Any, TextIO
 
-# Allow running as `python benchmarks/run_locomo.py` from the repo root.
+# Allow ``python benchmarks/run_locomo.py`` from the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engram_client import DrainConfig, DrainTimeout, EngramClient, EngramError  # noqa: E402
-from judge import OllamaJudge  # noqa: E402
-from loader import Conversation, load_locomo  # noqa: E402
+from engram_client import (
+    DrainConfig,
+    DrainTimeoutError,
+    EngramClient,
+    EngramError,
+    IngestFailedError,
+)
+from judge import OllamaJudge
+from loader import Conversation, Turn, load_locomo
+from metrics import evidence_recall_at_ks, qa_score
+
+_LOCOMO_LICENSE = "CC BY-NC 4.0"
+_LOCOMO_UPSTREAM = "https://github.com/snap-research/locomo"
 
 
 def _session_pairs(conv: Conversation):
-    """Yield (session_id, user_turn, assistant_turn_or_None) grouped per session.
-
-    Pairs are formed WITHIN a session so the session_id and timestamp on each
-    pair stay consistent and turns never pair across a session boundary. LoCoMo
-    speakers alternate, so consecutive turns are a natural user/assistant pair;
-    speaker identity is preserved inside the text via Turn.attributed(), so which
-    slot a speaker lands in does not matter. A session with an odd turn count
-    leaves a trailing turn paired with None (the caller pads it).
-    """
-    by_session: dict[int, list] = defaultdict(list)
-    for t in conv.turns:
-        by_session[t.session_idx].append(t)
-    for sidx in sorted(by_session):
-        turns = by_session[sidx]
-        session_id = f"s{sidx}"
-        for i in range(0, len(turns), 2):
-            user = turns[i]
-            asst = turns[i + 1] if i + 1 < len(turns) else None
-            yield session_id, user, asst
+    """Yield pairs within source sessions; never cross a session boundary."""
+    by_session: dict[int, list[Turn]] = defaultdict(list)
+    for turn in conv.turns:
+        by_session[turn.session_idx].append(turn)
+    for session_idx in sorted(by_session):
+        turns = by_session[session_idx]
+        for offset in range(0, len(turns), 2):
+            yield (
+                f"s{session_idx}",
+                f"session_{session_idx}",
+                turns[offset],
+                turns[offset + 1] if offset + 1 < len(turns) else None,
+            )
 
 
-def _dated(turn) -> str:
-    """Turn text with an absolute date anchor prepended.
-
-    LoCoMo utterances use relative time ("yesterday", "last year") and the real
-    date lives only in the session timestamp. Without an absolute date IN the
-    memory text, Engram anchors temporal facts to the ingest date (e.g. 2026)
-    instead of the conversation date (e.g. 2023), which breaks every temporal
-    question. Prefixing the date -- mirroring how LoCoMo's own eval presents
-    dated sessions -- gives the extractor something to anchor to.
-    """
+def _dated(turn: Turn) -> str:
+    """Include the source session date so relative dates can be normalized."""
     if turn.timestamp:
         return f"[{turn.timestamp}] {turn.attributed()}"
     return turn.attributed()
 
 
-def ingest_conversation(
-    client: EngramClient, conv: Conversation, *, limit_pairs: int = 0
-) -> int:
-    """Ingest every pair of one conversation. Returns the pair count.
+def _rolling_context(prior_turns: list[Turn], *, max_turns: int) -> str | None:
+    selected = prior_turns[-max_turns:] if max_turns else []
+    if not selected:
+        return None
+    # The API cap is 64k characters. Preserve the most recent context on overflow.
+    rendered = "\n".join(_dated(turn) for turn in selected)
+    return rendered[-64_000:]
 
-    `limit_pairs` (>0) caps ingest for cheap plumbing smoke tests; the baseline
-    run leaves it at 0 (all pairs) so memory is complete.
-    """
-    n = 0
-    for idx, (session_id, user, asst) in enumerate(_session_pairs(conv)):
-        if limit_pairs and idx >= limit_pairs:
+
+def ingest_conversation(
+    client: EngramClient,
+    conv: Conversation,
+    *,
+    limit_pairs: int = 0,
+    context_turns: int = 12,
+) -> list[str]:
+    """Ingest a conversation and return every exact event ID submitted."""
+    event_ids: list[str] = []
+    prior_turns: list[Turn] = []
+    for pair_idx, (session_id, source_session_id, user, assistant) in enumerate(
+        _session_pairs(conv)
+    ):
+        if limit_pairs and pair_idx >= limit_pairs:
             break
-        # Trailing lone turn -> empty assistant content (nothing extra to
-        # extract), which keeps the user utterance in the record.
-        asst_content = _dated(asst) if asst is not None else ""
-        asst_ts = asst.timestamp if asst is not None else user.timestamp
-        client.ingest_pair(
+        assistant_content = _dated(assistant) if assistant is not None else ""
+        assistant_timestamp = assistant.timestamp if assistant is not None else user.timestamp
+        response = client.ingest_pair(
             session_id=session_id,
             user_content=_dated(user),
-            assistant_content=asst_content,
+            assistant_content=assistant_content,
             user_timestamp=user.timestamp,
-            assistant_timestamp=asst_ts,
-            user_turn_idx=2 * idx,
-            assistant_turn_idx=2 * idx + 1,
+            assistant_timestamp=assistant_timestamp,
+            user_turn_idx=2 * pair_idx,
+            assistant_turn_idx=2 * pair_idx + 1,
+            user_external_id=user.dia_id,
+            assistant_external_id=assistant.dia_id if assistant is not None else None,
+            user_speaker=user.speaker,
+            assistant_speaker=assistant.speaker if assistant is not None else None,
+            source_conversation_id=conv.sample_id,
+            source_session_id=source_session_id,
+            user_image_caption=user.blip_caption,
+            assistant_image_caption=assistant.blip_caption if assistant is not None else None,
+            user_image_urls=user.image_urls,
+            assistant_image_urls=assistant.image_urls if assistant is not None else None,
+            user_image_query=user.image_query,
+            assistant_image_query=assistant.image_query if assistant is not None else None,
+            session_context=_rolling_context(prior_turns, max_turns=context_turns),
             source="locomo",
         )
-        n += 1
-    return n
+        event_ids.append(str(response["event_id"]))
+        prior_turns.append(user)
+        if assistant is not None:
+            prior_turns.append(assistant)
+    return event_ids
+
+
+def _selected_questions(conv: Conversation, limit: int) -> list[tuple[int, Any]]:
+    indexed = list(enumerate(conv.qa))
+    return indexed[:limit] if limit else indexed
+
+
+def _expected_manifest(conversations: list[Conversation], args: argparse.Namespace) -> dict:
+    questions = [
+        {
+            "result_id": f"{conv.sample_id}:q{question_idx}",
+            "sample_id": conv.sample_id,
+            "question_index": question_idx,
+            "category": probe.category,
+        }
+        for conv in conversations
+        for question_idx, probe in _selected_questions(conv, args.limit_questions)
+    ]
+    return {
+        "conversations": [conv.sample_id for conv in conversations],
+        "questions": questions,
+        "expected_question_count": len(questions),
+    }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_metadata() -> dict[str, Any]:
+    def run(*command: str) -> str:
+        try:
+            return subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return "unknown"
+
+    status = run("git", "status", "--porcelain")
+    return {
+        "commit": run("git", "rev-parse", "HEAD"),
+        "branch": run("git", "branch", "--show-current"),
+        "dirty": bool(status and status != "unknown"),
+    }
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def _append_partial(handle: TextIO, row: dict[str, Any]) -> None:
+    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+
+
+def _retrieved_turn_ids(trace: dict[str, Any] | None) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for hit in (trace or {}).get("hits", []):
+        for value in hit.get("source_turn_ids") or []:
+            turn_id = str(value)
+            if turn_id and turn_id not in seen:
+                seen.add(turn_id)
+                ordered.append(turn_id)
+    return ordered
+
+
+def _failure_rows(
+    *,
+    conv_idx: int,
+    conv: Conversation,
+    tenant_id: str,
+    args: argparse.Namespace,
+    status: str,
+    error: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "result_id": f"{conv.sample_id}:q{question_idx}",
+            "conv_idx": conv_idx,
+            "sample_id": conv.sample_id,
+            "tenant_id": tenant_id,
+            "q_idx": question_idx,
+            "question": probe.question,
+            "category": probe.category,
+            "category_name": probe.category_name,
+            "is_adversarial": probe.is_adversarial,
+            "gold": probe.answer,
+            "evidence": probe.evidence,
+            "predicted": "",
+            "status": status,
+            "error": error[:2_000],
+            "answer_f1": 0.0,
+            "evidence_recall_at_5": 0.0 if probe.evidence else 1.0,
+            "evidence_recall_at_10": 0.0 if probe.evidence else 1.0,
+            "evidence_recall_at_25": 0.0 if probe.evidence else 1.0,
+            "judge_correct": None,
+            "judged": False,
+        }
+        for question_idx, probe in _selected_questions(conv, args.limit_questions)
+    ]
+
+
+def _make_manifest(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    data_path: Path,
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "status": "RUNNING",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "engram": _git_metadata(),
+        "dataset": {
+            "path": str(data_path.resolve()),
+            "sha256": _sha256(data_path),
+            "upstream": _LOCOMO_UPSTREAM,
+            "upstream_commit": args.dataset_commit,
+            "license": _LOCOMO_LICENSE,
+            "noncommercial_research_only": True,
+        },
+        "runner": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "argv": sys.argv,
+            "base_url": args.base_url
+            or os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000"),
+            "max_depth": args.max_depth,
+            "max_reentries": args.max_reentries,
+            "retrieval_forced": True,
+            "context_policy": {
+                "name": "prior_turn_tail",
+                "version": 1,
+                "max_turns": args.context_turns,
+                "max_chars": 64_000,
+                "future_turns": False,
+            },
+            "judge": {
+                "enabled": args.judge,
+                "provider": "ollama_cloud" if args.judge else None,
+                "model": args.judge_model if args.judge else None,
+            },
+        },
+        "expected_work": expected,
+    }
 
 
 def run(args: argparse.Namespace) -> int:
@@ -119,73 +290,153 @@ def run(args: argparse.Namespace) -> int:
     if not admin_key:
         print("error: set ENGRAM_ADMIN_KEY (needed to create tenants)", file=sys.stderr)
         return 2
-    if not os.environ.get("OLLAMA_API_KEY"):
-        print("error: set OLLAMA_API_KEY (needed for the judge)", file=sys.stderr)
+    if args.judge and not os.environ.get("OLLAMA_API_KEY"):
+        print("error: --judge requires OLLAMA_API_KEY", file=sys.stderr)
         return 2
 
-    conversations = load_locomo(args.data)
+    data_path = Path(args.data)
+    conversations = load_locomo(data_path)
     if args.limit_convs:
         conversations = conversations[: args.limit_convs]
-
-    run_id = datetime.now().strftime("%m%d%H%M%S")
+    expected = _expected_manifest(conversations, args)
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     out_dir = Path(args.out) / f"locomo-{run_id}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=args.resume)
     rows_path = out_dir / "rows.jsonl"
+    partial_path = out_dir / "rows.partial.jsonl"
     summary_path = out_dir / "summary.json"
+    manifest_path = out_dir / "manifest.json"
+    manifest = _make_manifest(args=args, run_id=run_id, data_path=data_path, expected=expected)
+    _write_json_atomic(manifest_path, manifest)
+
+    rows: list[dict[str, Any]] = []
+    completed_ids: set[str] = set()
+    if args.resume and partial_path.exists():
+        for line in partial_path.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            result_id = str(row["result_id"])
+            if result_id in completed_ids:
+                raise RuntimeError(f"duplicate partial result ID: {result_id}")
+            completed_ids.add(result_id)
+            rows.append(row)
 
     drain_cfg = DrainConfig(max_wait_s=args.drain_timeout)
     print(f"run {run_id}: {len(conversations)} conversation(s) -> {out_dir}")
-
-    rows: list[dict] = []
-    with OllamaJudge() as judge, open(rows_path, "w", encoding="utf-8") as rows_fh:
-        for cidx, conv in enumerate(conversations):
-            tenant_id = f"{args.tenant_prefix}-{run_id}-c{cidx}"
-            print(f"\n[conv {cidx}] {conv.sample_id} tenant={tenant_id}")
+    judge_context = (
+        OllamaJudge(model=args.judge_model) if args.judge else nullcontext(None)
+    )
+    with judge_context as judge, partial_path.open("a", encoding="utf-8") as partial:
+        for conv_idx, conv in enumerate(conversations):
+            tenant_id = f"{args.tenant_prefix}-{run_id}-c{conv_idx}"
+            expected_for_conv = {
+                f"{conv.sample_id}:q{question_idx}"
+                for question_idx, _ in _selected_questions(conv, args.limit_questions)
+            }
+            if expected_for_conv and expected_for_conv.issubset(completed_ids):
+                continue
+            print(f"\n[conv {conv_idx}] {conv.sample_id} tenant={tenant_id}")
             try:
                 client = EngramClient.create_tenant(
-                    base_url=base_url, admin_key=admin_key,
-                    tenant_id=tenant_id, display_name=conv.sample_id,
+                    base_url=base_url,
+                    admin_key=admin_key,
+                    tenant_id=tenant_id,
+                    display_name=conv.sample_id,
                     query_timeout_s=args.query_timeout,
                 )
-            except EngramError as err:
-                print(f"  ! tenant setup failed, skipping conv: {err}")
+            except EngramError as error:
+                failed = _failure_rows(
+                    conv_idx=conv_idx,
+                    conv=conv,
+                    tenant_id=tenant_id,
+                    args=args,
+                    status="TENANT_SETUP_FAILED",
+                    error=str(error),
+                )
+                for row in failed:
+                    if row["result_id"] not in completed_ids:
+                        rows.append(row)
+                        completed_ids.add(row["result_id"])
+                        _append_partial(partial, row)
                 continue
 
             with client:
-                t0 = time.monotonic()
-                n_pairs = ingest_conversation(client, conv, limit_pairs=args.limit_pairs)
-                print(f"  ingested {n_pairs} pairs in {time.monotonic()-t0:.1f}s; draining...")
                 try:
-                    drain = client.wait_for_drain(drain_cfg)
-                    print(f"  drained in {drain['waited_s']:.1f}s "
-                          f"(saw_activity={bool(drain['saw_activity'])})")
-                except DrainTimeout as err:
-                    print(f"  ! drain timeout, querying anyway: {err}")
+                    started = time.monotonic()
+                    event_ids = ingest_conversation(
+                        client,
+                        conv,
+                        limit_pairs=args.limit_pairs,
+                        context_turns=args.context_turns,
+                    )
+                    readiness = client.wait_for_events(event_ids, drain_cfg)
+                    print(
+                        f"  {len(event_ids)} pairs memory-ready in "
+                        f"{time.monotonic() - started:.1f}s "
+                        f"(gated_skip={sum(e['status'] == 'GATED_SKIP' for e in readiness['events'])})"
+                    )
+                except (EngramError, IngestFailedError, DrainTimeoutError, ValueError) as error:
+                    failed = _failure_rows(
+                        conv_idx=conv_idx,
+                        conv=conv,
+                        tenant_id=tenant_id,
+                        args=args,
+                        status="INGEST_FAILED",
+                        error=str(error),
+                    )
+                    for row in failed:
+                        if row["result_id"] not in completed_ids:
+                            rows.append(row)
+                            completed_ids.add(row["result_id"])
+                            _append_partial(partial, row)
+                    continue
 
-                questions = conv.qa[: args.limit_questions] if args.limit_questions else conv.qa
-                for qidx, probe in enumerate(questions):
+                for question_idx, probe in _selected_questions(conv, args.limit_questions):
+                    result_id = f"{conv.sample_id}:q{question_idx}"
+                    if result_id in completed_ids:
+                        continue
+                    query_started = time.monotonic()
                     try:
-                        res = client.query(
+                        response = client.query(
                             probe.question,
                             max_depth=args.max_depth,
                             max_reentries=args.max_reentries,
+                            include_trace=True,
                         )
-                        answer = res.get("answer", "")
-                        meta = res.get("retrieval_metadata", {}) or {}
-                    except EngramError as err:
-                        answer, meta = f"(query-error: {err})", {}
+                        answer = str(response.get("answer", ""))
+                        metadata = response.get("retrieval_metadata") or {}
+                        trace = response.get("retrieval_trace") or {}
+                        retrieved_ids = _retrieved_turn_ids(trace)
+                        recalls = evidence_recall_at_ks(retrieved_ids, probe.evidence)
+                        answer_f1 = qa_score(answer, probe.answer, category=probe.category)
+                        status = "COMPLETE"
+                        error_text = None
+                    except EngramError as error:
+                        answer, metadata, trace, retrieved_ids = "", {}, {}, []
+                        recalls = evidence_recall_at_ks([], probe.evidence)
+                        answer_f1 = 0.0
+                        status = "QUERY_FAILED"
+                        error_text = str(error)
+                    except Exception as error:
+                        answer, metadata, trace, retrieved_ids = "", {}, {}, []
+                        recalls = evidence_recall_at_ks([], probe.evidence)
+                        answer_f1 = 0.0
+                        status = "EVALUATOR_FAILED"
+                        error_text = str(error)
 
-                    jr = judge.judge(
-                        question=probe.question,
-                        gold_answer=probe.answer,
-                        predicted_answer=answer,
-                        is_adversarial=probe.is_adversarial,
-                    )
+                    judge_result = None
+                    if judge is not None and status == "COMPLETE":
+                        judge_result = judge.judge(
+                            question=probe.question,
+                            gold_answer=probe.answer,
+                            predicted_answer=answer,
+                            is_adversarial=probe.is_adversarial,
+                        )
                     row = {
-                        "conv_idx": cidx,
+                        "result_id": result_id,
+                        "conv_idx": conv_idx,
                         "sample_id": conv.sample_id,
                         "tenant_id": tenant_id,
-                        "q_idx": qidx,
+                        "q_idx": question_idx,
                         "question": probe.question,
                         "category": probe.category,
                         "category_name": probe.category_name,
@@ -193,104 +444,158 @@ def run(args: argparse.Namespace) -> int:
                         "gold": probe.answer,
                         "evidence": probe.evidence,
                         "predicted": answer,
-                        "correct": jr.correct,
-                        "judged": jr.judged,
-                        "judge_reason": jr.reason,
-                        # raw judge text kept only when it failed, for debugging
-                        "judge_raw": jr.raw if not jr.judged else "",
-                        # --- retrieval trace (for failure analysis) ---
-                        "l0_decision": meta.get("l0_decision"),
-                        "l0_reason": meta.get("l0_reason"),
-                        "predicted_depth": meta.get("predicted_depth"),
-                        "cascade_depth_reached": meta.get("cascade_depth_reached"),
-                        "levels_visited": meta.get("levels_visited"),
-                        "nodes_retrieved": meta.get("nodes_retrieved"),
-                        "reentries": meta.get("reentries"),
-                        "total_context_tokens": meta.get("total_context_tokens"),
-                        "latency_ms": meta.get("latency_ms"),
+                        "status": status,
+                        "error": error_text,
+                        "answer_f1": answer_f1,
+                        "evidence_recall_at_5": recalls["recall_at_5"],
+                        "evidence_recall_at_10": recalls["recall_at_10"],
+                        "evidence_recall_at_25": recalls["recall_at_25"],
+                        "retrieved_turn_ids": retrieved_ids,
+                        "trace_id": response.get("trace_id") if status == "COMPLETE" else None,
+                        "retrieval_trace": trace,
+                        "retrieval_metadata": metadata,
+                        "query_latency_s": time.monotonic() - query_started,
+                        "judge_correct": judge_result.correct if judge_result else None,
+                        "judged": judge_result.judged if judge_result else False,
+                        "judge_reason": judge_result.reason if judge_result else None,
+                        "judge_raw": (
+                            judge_result.raw if judge_result and not judge_result.judged else ""
+                        ),
                     }
                     rows.append(row)
-                    rows_fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-                    rows_fh.flush()
+                    completed_ids.add(result_id)
+                    _append_partial(partial, row)
+                    if question_idx % 10 == 0 or answer_f1 < 1.0:
+                        print(
+                            f"    [F1 {answer_f1:.2f}] q{question_idx} "
+                            f"{probe.category_name:>11} :: {probe.question[:60]}"
+                        )
 
-                    mark = "OK " if jr.correct else "XX "
-                    if qidx % 10 == 0 or not jr.correct:
-                        print(f"    [{mark}] q{qidx} {probe.category_name:>11} "
-                              f"l0={row['l0_decision']} depth={row['cascade_depth_reached']}"
-                              f" :: {probe.question[:60]}")
-
+    expected_ids = {item["result_id"] for item in expected["questions"]}
+    actual_ids = [str(row["result_id"]) for row in rows]
+    duplicate_ids = sorted({value for value in actual_ids if actual_ids.count(value) > 1})
+    missing_ids = sorted(expected_ids - set(actual_ids))
+    unexpected_ids = sorted(set(actual_ids) - expected_ids)
+    failed_rows = [row for row in rows if row.get("status") != "COMPLETE"]
+    complete = not (duplicate_ids or missing_ids or unexpected_ids or failed_rows)
     summary = summarize(rows)
-    summary["run_id"] = run_id
-    summary["base_url"] = base_url
-    summary["generated_at"] = datetime.now(timezone.utc).isoformat()
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    print_summary(summary, rows_path, summary_path)
-    return 0
+    summary.update(
+        {
+            "run_id": run_id,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "complete": complete,
+            "headline_metrics_valid": complete,
+            "expected_count": len(expected_ids),
+            "actual_count": len(actual_ids),
+            "missing_result_ids": missing_ids,
+            "unexpected_result_ids": unexpected_ids,
+            "duplicate_result_ids": duplicate_ids,
+            "failed_result_count": len(failed_rows),
+        }
+    )
+    manifest["status"] = "COMPLETE" if complete else "INCOMPLETE"
+    manifest["completed_at"] = summary["generated_at"]
+    manifest["completeness"] = {
+        key: summary[key]
+        for key in (
+            "complete",
+            "expected_count",
+            "actual_count",
+            "missing_result_ids",
+            "unexpected_result_ids",
+            "duplicate_result_ids",
+            "failed_result_count",
+        )
+    }
+    _write_jsonl_atomic(rows_path, rows)
+    _write_json_atomic(summary_path, summary)
+    _write_json_atomic(manifest_path, manifest)
+    print_summary(summary, rows_path, summary_path, manifest_path)
+    return 0 if complete else 1
 
 
-def _acc(rows: list[dict]) -> dict:
-    n = len(rows)
-    c = sum(r["correct"] for r in rows)
-    return {"n": n, "correct": c, "accuracy": (c / n if n else 0.0)}
+def _mean(rows: list[dict[str, Any]], key: str) -> float:
+    return fmean(float(row.get(key, 0.0)) for row in rows) if rows else 0.0
 
 
-def summarize(rows: list[dict]) -> dict:
-    by_category: dict[str, list] = defaultdict(list)
-    by_l0: dict[str, list] = defaultdict(list)
-    by_depth: dict[str, list] = defaultdict(list)
-    for r in rows:
-        by_category[r["category_name"]].append(r)
-        by_l0[str(r["l0_decision"])].append(r)
-        by_depth[str(r["cascade_depth_reached"])].append(r)
+def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_category[str(row["category_name"])].append(row)
 
+    def metrics(group: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "n": len(group),
+            "answer_f1": _mean(group, "answer_f1"),
+            "evidence_recall_at_5": _mean(group, "evidence_recall_at_5"),
+            "evidence_recall_at_10": _mean(group, "evidence_recall_at_10"),
+            "evidence_recall_at_25": _mean(group, "evidence_recall_at_25"),
+        }
+
+    judged = [row for row in rows if row.get("judged")]
     return {
-        "overall": _acc(rows),
-        "by_category": {k: _acc(v) for k, v in sorted(by_category.items())},
-        "by_l0_decision": {k: _acc(v) for k, v in sorted(by_l0.items())},
-        "by_cascade_depth": {k: _acc(v) for k, v in sorted(by_depth.items())},
-        "judge_failures": sum(1 for r in rows if not r["judged"]),
+        "overall": metrics(rows),
+        "by_category": {key: metrics(value) for key, value in sorted(by_category.items())},
+        "adversarial_abstention_f1": _mean(by_category.get("adversarial", []), "answer_f1"),
+        "judge": {
+            "n": len(judged),
+            "accuracy": (
+                sum(bool(row.get("judge_correct")) for row in judged) / len(judged)
+                if judged
+                else None
+            ),
+            "failures": sum(
+                row.get("judge_correct") is not None and not row.get("judged") for row in rows
+            ),
+        },
     }
 
 
-def print_summary(summary: dict, rows_path: Path, summary_path: Path) -> None:
-    o = summary["overall"]
-    print("\n" + "=" * 60)
-    print(f"BASELINE  accuracy = {o['accuracy']:.1%}  ({o['correct']}/{o['n']})")
-    print("=" * 60)
-
-    def _block(title: str, d: dict) -> None:
-        print(f"\n{title}")
-        for k, v in d.items():
-            print(f"  {k:>14}: {v['accuracy']:.1%}  ({v['correct']}/{v['n']})")
-
-    _block("by question category", summary["by_category"])
-    _block("by L0 decision  (BYPASS vs CONTINUE)", summary["by_l0_decision"])
-    _block("by cascade depth reached", summary["by_cascade_depth"])
-    if summary["judge_failures"]:
-        print(f"\n  ! {summary['judge_failures']} judge failure(s) — flagged for re-judging")
-    print(f"\nrows:    {rows_path}")
-    print(f"summary: {summary_path}")
+def print_summary(
+    summary: dict[str, Any],
+    rows_path: Path,
+    summary_path: Path,
+    manifest_path: Path,
+) -> None:
+    overall = summary["overall"]
+    verdict = "COMPLETE" if summary["complete"] else "INCOMPLETE"
+    print("\n" + "=" * 68)
+    print(
+        f"{verdict}  answer F1={overall['answer_f1']:.3f}  "
+        f"R@5={overall['evidence_recall_at_5']:.3f}  "
+        f"R@10={overall['evidence_recall_at_10']:.3f}  "
+        f"R@25={overall['evidence_recall_at_25']:.3f}"
+    )
+    print("=" * 68)
+    print(f"rows:     {rows_path}")
+    print(f"summary:  {summary_path}")
+    print(f"manifest: {manifest_path}")
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Run the LoCoMo baseline against Engram.")
-    p.add_argument("--data", default="benchmarks/data/locomo10.json")
-    p.add_argument("--base-url", default=None)
-    p.add_argument("--admin-key", default=None)
-    p.add_argument("--limit-convs", type=int, default=0, help="0 = all")
-    p.add_argument("--limit-questions", type=int, default=0, help="0 = all per conv")
-    p.add_argument("--limit-pairs", type=int, default=0,
-                   help="0 = all; cap ingested pairs for a cheap plumbing smoke test")
-    p.add_argument("--max-depth", default=None, help="cap cascade depth, e.g. L2")
-    p.add_argument("--max-reentries", type=int, default=None)
-    p.add_argument("--drain-timeout", type=float, default=240.0,
-                   help="max wait for consolidation to settle; core memory is "
-                        "ready well before this, so we proceed on timeout")
-    p.add_argument("--query-timeout", type=float, default=300.0,
-                   help="per-query HTTP timeout (s); queries drive several LLM calls")
-    p.add_argument("--tenant-prefix", default="locomo")
-    p.add_argument("--out", default="benchmarks/results")
-    return run(p.parse_args())
+    parser = argparse.ArgumentParser(description="Run a fail-closed LoCoMo QA baseline.")
+    parser.add_argument("--data", default="benchmarks/data/locomo10.json")
+    parser.add_argument("--dataset-commit", default="unrecorded")
+    parser.add_argument("--base-url", default=None)
+    parser.add_argument("--admin-key", default=None)
+    parser.add_argument("--limit-convs", type=int, default=0, help="0 = all")
+    parser.add_argument("--limit-questions", type=int, default=0, help="0 = all per conv")
+    parser.add_argument("--limit-pairs", type=int, default=0, help="0 = all")
+    parser.add_argument("--context-turns", type=int, default=12)
+    parser.add_argument("--max-depth", default="L4")
+    parser.add_argument("--max-reentries", type=int, default=1)
+    parser.add_argument("--drain-timeout", type=float, default=600.0)
+    parser.add_argument("--query-timeout", type=float, default=300.0)
+    parser.add_argument("--tenant-prefix", default="locomo")
+    parser.add_argument("--out", default="benchmarks/results")
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--judge", action="store_true", help="enable secondary LLM judge")
+    parser.add_argument("--judge-model", default="kimi-k2.7-code:cloud")
+    args = parser.parse_args()
+    if args.context_turns < 0:
+        parser.error("--context-turns must be non-negative")
+    return run(args)
 
 
 if __name__ == "__main__":

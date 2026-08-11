@@ -16,6 +16,7 @@ crashed state without data corruption.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
@@ -61,7 +62,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     event = ctx.sqlite.get_event(event_id)
     if event is None:
         raise RuntimeError(f"unknown event_id: {event_id}")
-    if event["status"] in {"INDEXED", "COMPLETE", "GATED_SKIP"}:
+    if event["status"] in {"COMPLETE", "GATED_SKIP"}:
         return event["status"]
 
     # Pin the ambient tenant context for every downstream call.
@@ -70,6 +71,18 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
         Tenant(tenant_id=event_tenant, display_name=event_tenant,
                api_key_hashes=[], quotas=TenantQuotas(), status="ACTIVE")
     )
+
+    # A crash after KG commit but before consolidation intent used to strand
+    # the event forever because INDEXED was treated as terminal.  The indexed
+    # outbox row is the durable proof that only step 7 remains.
+    outbox = ctx.sqlite.get_fs_outbox(event_id)
+    if event["status"] == "INDEXED" or (outbox and outbox["state"] == "INDEXED"):
+        if outbox is None or not outbox.get("source_uri"):
+            raise RuntimeError(f"indexed event {event_id} has no filesystem outbox row")
+        entity_uris = ctx.sqlite.get_linked_entity_uris(event_id, tenant_id=event_tenant)
+        _enqueue_consolidation(ctx, str(outbox["source_uri"]), entity_uris)
+        ctx.sqlite.set_event_status(event_id, "COMPLETE", tenant_id=event_tenant)
+        return "COMPLETE"
 
     payload = event["payload"]
     turn_pair = _turn_pair(payload)
@@ -113,9 +126,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
 
     # --- Step 5: Filesystem write (authoritative) ------------------------
     with _Timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
-        episode_uri, _ = _write_episode(
-            ctx, event_id, event["session_id"], extraction
-        )
+        episode_uri, _ = _write_episode(ctx, event, extraction)
         entity_records: list[tuple[str, str, str]] = []
         for slug, display_name, matched_uri in entities:
             if matched_uri:
@@ -123,7 +134,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 continue
             ent_uri = _write_entity(
                 ctx, event_id, event["session_id"], slug, display_name,
-                extraction["l0_abstract"],
+                payload,
             )
             entity_records.append((slug, display_name, ent_uri))
         ctx.sqlite.fs_outbox_write(event_id, episode_uri, tenant_id=event_tenant)
@@ -135,7 +146,9 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     with _Timed("kg_index"), tracing.span("ingest.kg_index", event_id=event_id):
         try:
             _validate_written_frontmatter(ctx, episode_uri, entity_records)
-            _index_neo4j(ctx, event_id, episode_uri, extraction, entity_records)
+            _index_neo4j(
+                ctx, event_id, episode_uri, extraction, entity_records, payload
+            )
         except Exception as err:
             log.exception("KG index failed for event %s", event_id)
             ctx.sqlite.fs_outbox_mark(event_id, "INDEX_FAILED", error=str(err))
@@ -270,28 +283,40 @@ def _resolve_entities(
 
 def _write_episode(
     ctx: IngestContext,
-    event_id: str,
-    session_id: str | None,
+    event: dict[str, Any],
     extraction: dict[str, Any],
 ) -> tuple[str, str]:
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    summary_slug = slugify(extraction["l0_abstract"], separator="-", lowercase=True)[:60]
-    filename = f"{date_str}_{summary_slug or 'episode'}.md"
-    uri = f"mem://user/episodes/{filename}"
+    event_id = str(event["event_id"])
+    uri = f"mem://user/episodes/{event_id}.md"
+    if ctx.fs.exists(uri):
+        return uri, str(ctx.fs.path_for(uri))
+    payload = event.get("payload") or {}
+    provenance = _source_provenance(payload)
+    created_at = str(event.get("created_at") or datetime.now(timezone.utc).isoformat())
+    body = f"{extraction['l0_abstract']}\n\n{extraction['resolved_text']}\n"
     fm = {
-        "id": str(uuid.uuid4()),
+        "id": _stable_id(uri),
+        "tenant_id": current_tenant_id(),
         "node_type": "DOCUMENT",
         "status": "ACTIVE",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_session_id": session_id,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "content_hash": _content_hash(body),
+        "source_session_id": event.get("session_id"),
+        "source_turn_ids": provenance["source_turn_ids"],
+        "source_conversation_id": provenance["source_conversation_id"],
+        "source_session_ids": provenance["source_session_ids"],
+        "source_speakers": provenance["source_speakers"],
         "schema_version": 1,
         "provenance": {
             "extractor": "core_model_v1",
             "confidence": 0.9,
             "ingest_event_id": event_id,
+            "source_turn_ids": provenance["source_turn_ids"],
+            "source_task": provenance["source_task"],
+            "multimodal_turn_ids": provenance["multimodal_turn_ids"],
         },
     }
-    body = f"{extraction['l0_abstract']}\n\n{extraction['resolved_text']}\n"
     mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
     path = ctx.fs.write_atomic(uri, mf.serialize())
     return uri, str(path)
@@ -303,27 +328,34 @@ def _write_entity(
     session_id: str | None,
     slug: str,
     display_name: str,
-    l0_abstract: str,
+    payload: dict[str, Any],
 ) -> str:
     filename = f"{slug}.md"
     uri = f"mem://user/entities/{slug}/{filename}"
     if ctx.fs.exists(uri):
         return uri  # idempotent — existing entity node is authoritative
+    created_at = datetime.now(timezone.utc).isoformat()
+    provenance = _source_provenance(payload)
+    body = f"{display_name} (entity).\n"
     fm = {
-        "id": str(uuid.uuid4()),
+        "id": _stable_id(uri),
+        "tenant_id": current_tenant_id(),
         "node_type": "ENTITY",
         "status": "ACTIVE",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": created_at,
+        "updated_at": created_at,
+        "content_hash": _content_hash(body),
         "source_session_id": session_id,
+        "source_turn_ids": provenance["source_turn_ids"],
         "schema_version": 1,
         "normalize": {"canonical_name": display_name, "aliases": [display_name]},
         "provenance": {
             "extractor": "core_model_v1",
             "confidence": 0.9,
             "ingest_event_id": event_id,
+            "source_turn_ids": provenance["source_turn_ids"],
         },
     }
-    body = f"{display_name} (entity).\n\n{l0_abstract}\n"
     mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
     ctx.fs.write_atomic(uri, mf.serialize())
     return uri
@@ -363,25 +395,34 @@ def _index_neo4j(
     episode_uri: str,
     extraction: dict[str, Any],
     entity_records: list[tuple[str, str, str]],
+    payload: dict[str, Any],
 ) -> None:
     """Merge episode + entity nodes and apply conflict-resolved RELATES_TO edges."""
     now = datetime.now(timezone.utc).isoformat()
     # Episode node
+    source = _source_provenance(payload)
+    episode_fm = frontmatter.parse(ctx.fs.read(episode_uri)).frontmatter
     episode_emb = ctx.embed.embed(extraction["l0_abstract"])
     ctx.neo4j.merge_node(
         source_uri=episode_uri,
         parent_uri="mem://user/episodes",
         properties={
-            "id": str(uuid.uuid4()),
+            "id": episode_fm["id"],
             "node_type": "DOCUMENT",
             "status": "ACTIVE",
             "l0_abstract": extraction["l0_abstract"],
             "l0_embedding": episode_emb,
             "retrieval_weight": 1.0,
-            "created_at": now,
+            "created_at": episode_fm["created_at"],
             "last_accessed_at": now,
             "access_count": 0,
             "schema_version": 1,
+            "content_hash": episode_fm.get("content_hash"),
+            "source_session_id": episode_fm.get("source_session_id"),
+            "source_turn_ids": source["source_turn_ids"],
+            "source_conversation_id": source["source_conversation_id"],
+            "source_session_ids": source["source_session_ids"],
+            "source_speakers": source["source_speakers"],
             "provenance_ingest_event_id": event_id,
         },
     )
@@ -390,20 +431,23 @@ def _index_neo4j(
     for slug, display_name, ent_uri in entity_records:
         if slug not in slug_to_uri:
             emb = ctx.embed.embed(display_name)
+            entity_fm = frontmatter.parse(ctx.fs.read(ent_uri)).frontmatter
             ctx.neo4j.merge_node(
                 source_uri=ent_uri,
                 parent_uri=f"mem://user/entities/{slug}",
                 properties={
-                    "id": str(uuid.uuid4()),
+                    "id": entity_fm["id"],
                     "node_type": "ENTITY",
                     "status": "ACTIVE",
-                    "l0_abstract": f"{display_name} — mentioned in episode.",
+                    "l0_abstract": display_name,
                     "l0_embedding": emb,
                     "retrieval_weight": 1.0,
-                    "created_at": now,
+                    "created_at": entity_fm["created_at"],
                     "last_accessed_at": now,
                     "access_count": 0,
                     "schema_version": 1,
+                    "content_hash": entity_fm.get("content_hash"),
+                    "source_turn_ids": entity_fm.get("source_turn_ids", []),
                 },
             )
             slug_to_uri[slug] = ent_uri
@@ -453,6 +497,7 @@ def _index_neo4j(
                 "confidence": conf,
                 "created_at": now,
                 "ingest_event_id": event_id,
+                "source_turn_ids": source["source_turn_ids"],
             },
         )
         # Cross-reference from episode to subject entity (REFERENCES edge)
@@ -461,7 +506,11 @@ def _index_neo4j(
             object_uri=s_uri,
             relation_label="mentions",
             edge_type="REFERENCES",
-            properties={"created_at": now, "ingest_event_id": event_id},
+            properties={
+                "created_at": now,
+                "ingest_event_id": event_id,
+                "source_turn_ids": source["source_turn_ids"],
+            },
         )
 
 
@@ -479,6 +528,7 @@ def _write_low_confidence_fact(
     """Persist uncertain triplets as LOW_CONFIDENCE FACT nodes."""
     event = ctx.sqlite.get_event(event_id) or {}
     session_id = event.get("session_id")
+    source = _source_provenance(event.get("payload") or {})
     rel = str(triplet.get("relation") or "related_to")
     subject = str(triplet.get("subject") or "")
     obj = str(triplet.get("object") or "")
@@ -487,39 +537,47 @@ def _write_low_confidence_fact(
     uri = f"mem://user/facts/{event_id}/{triplet_idx}_{rel_slug}_{obj_slug}.md"
     sentence = f"{subject} {rel} {obj}".strip()
     if not ctx.fs.exists(uri):
+        body = f"{sentence}\n\nConfidence: {confidence:.2f}\n"
         fm = {
-            "id": str(uuid.uuid4()),
+            "id": _stable_id(uri),
+            "tenant_id": current_tenant_id(),
             "node_type": "FACT",
             "status": "LOW_CONFIDENCE",
             "created_at": now,
+            "updated_at": now,
+            "content_hash": _content_hash(body),
             "source_session_id": session_id,
+            "source_turn_ids": source["source_turn_ids"],
             "schema_version": 1,
             "provenance": {
                 "extractor": "core_model_v1",
                 "confidence": confidence,
                 "ingest_event_id": event_id,
+                "source_turn_ids": source["source_turn_ids"],
             },
         }
-        body = f"{sentence}\n\nConfidence: {confidence:.2f}\n"
         ctx.fs.write_atomic(uri, frontmatter.MemoryFile(frontmatter=fm, body=body).serialize())
 
+    fact_fm = frontmatter.parse(ctx.fs.read(uri)).frontmatter
     abstract = f"Low-confidence fact: {sentence}"
     ctx.neo4j.merge_node(
         source_uri=uri,
         parent_uri=uri_mod.parent_uri(uri),
         properties={
-            "id": str(uuid.uuid4()),
+            "id": fact_fm["id"],
             "node_type": "FACT",
             "status": "LOW_CONFIDENCE",
             "l0_abstract": abstract,
             "l0_embedding": ctx.embed.embed(abstract),
             "retrieval_weight": 1.0,
-            "created_at": now,
+            "created_at": fact_fm["created_at"],
             "last_accessed_at": now,
             "access_count": 0,
             "schema_version": 1,
             "confidence": confidence,
             "source_session_id": session_id,
+            "source_turn_ids": source["source_turn_ids"],
+            "content_hash": fact_fm.get("content_hash"),
             "provenance_ingest_event_id": event_id,
         },
     )
@@ -528,16 +586,63 @@ def _write_low_confidence_fact(
         object_uri=subject_uri,
         relation_label="subject",
         edge_type="REFERENCES",
-        properties={"created_at": now, "ingest_event_id": event_id, "confidence": confidence},
+        properties={
+            "created_at": now,
+            "ingest_event_id": event_id,
+            "confidence": confidence,
+            "source_turn_ids": source["source_turn_ids"],
+        },
     )
     ctx.neo4j.merge_edge(
         subject_uri=uri,
         object_uri=object_uri,
         relation_label="object",
         edge_type="REFERENCES",
-        properties={"created_at": now, "ingest_event_id": event_id, "confidence": confidence},
+        properties={
+            "created_at": now,
+            "ingest_event_id": event_id,
+            "confidence": confidence,
+            "source_turn_ids": source["source_turn_ids"],
+        },
     )
     return uri
+
+
+def _stable_id(uri: str) -> str:
+    """Return a replay-stable UUID for a tenant-scoped memory URI."""
+    value = f"{current_tenant_id()}:{uri}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
+
+
+def _content_hash(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _source_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+    pair = payload.get("turn_pair") or payload.get("turn_group") or payload
+    turns = [pair.get("user"), pair.get("assistant")]
+    records = [turn for turn in turns if isinstance(turn, dict)]
+
+    def unique(field: str) -> list[str]:
+        return list(dict.fromkeys(str(row[field]) for row in records if row.get(field)))
+
+    source_turn_ids = unique("external_id")
+    conversation_ids = unique("source_conversation_id")
+    return {
+        "source_turn_ids": source_turn_ids,
+        "source_conversation_id": conversation_ids[0] if conversation_ids else None,
+        "source_session_ids": unique("source_session_id"),
+        "source_speakers": unique("speaker"),
+        "source_task": next(
+            (str(row["source_task"]) for row in records if row.get("source_task")),
+            None,
+        ),
+        "multimodal_turn_ids": [
+            str(row["external_id"])
+            for row in records
+            if row.get("external_id") and (row.get("image_caption") or row.get("image_urls"))
+        ],
+    }
 
 
 def _validate_written_frontmatter(

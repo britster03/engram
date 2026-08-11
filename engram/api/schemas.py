@@ -23,6 +23,16 @@ class TurnContent(BaseModel):
     content: str = Field(..., max_length=MAX_CONTENT_LENGTH)
     timestamp: str | None = Field(default=None, max_length=64)
     turn_idx: int | None = Field(default=None, ge=0, le=1_000_000)
+    # Source-native provenance. ``external_id`` is intentionally independent
+    # from ``turn_idx`` so benchmark IDs such as LoCoMo's ``D1:3`` survive.
+    external_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    speaker: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    source_conversation_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    source_session_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    source_task: str | None = Field(default=None, max_length=64)
+    image_caption: str | None = Field(default=None, max_length=MAX_CONTENT_LENGTH)
+    image_urls: list[str] | None = Field(default=None, max_length=20)
+    image_query: str | None = Field(default=None, max_length=2_000)
     # Optional tool-call / tool-result payloads (§5.2 turn groups).
     tool_calls: list[dict[str, Any]] | None = Field(default=None, max_length=20)
     tool_results: list[dict[str, Any]] | None = Field(default=None, max_length=20)
@@ -89,12 +99,15 @@ class QueryRequest(BaseModel):
     max_depth: str | None = Field(default=None, pattern=r"^L[0-4]$|^SESSION$")
     max_reentries: int | None = Field(default=None, ge=0, le=5)
     stream: bool = False
+    include_trace: bool = False
 
 
 class QueryResponse(BaseModel):
     answer: str
     session_id: str | None = None
     retrieval_metadata: dict[str, Any]
+    trace_id: str | None = None
+    retrieval_trace: dict[str, Any] | None = None
 
 
 class ChatCompletionMessage(BaseModel):

@@ -384,6 +384,7 @@ def query(req: schemas.QueryRequest):
             session_context=req.session_context,
             max_depth=req.max_depth,
             max_reentries=req.max_reentries,
+            include_trace=req.include_trace,
         )
     except Exception as err:
         log.exception("query failed")
@@ -409,6 +410,8 @@ def query(req: schemas.QueryRequest):
             answer=result.answer,
             session_id=req.session_id,
             retrieval_metadata=md.to_dict(),
+            trace_id=md.trace_id,
+            retrieval_trace=md.trace,
         )
 
     # Streaming: emit the buffered answer as a single SSE event and close.

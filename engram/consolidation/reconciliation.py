@@ -33,6 +33,7 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         "gated_store_stuck": 0,
         "written_stuck": 0,
         "index_failed_retried": 0,
+        "indexed_without_consolidation": 0,
         "stale_overviews_enqueued": 0,
     }
     conn = ctx.sqlite.get_conn()
@@ -85,6 +86,15 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     for row in failed:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["index_failed_retried"] += 1
+
+    # 4b. KG committed but consolidation intent/COMPLETE did not commit.
+    indexed = conn.execute(
+        "SELECT event_id FROM events WHERE status = 'INDEXED' "
+        "AND julianday('now') - julianday(coalesce(processed_at, created_at)) > 2.0/1440"
+    ).fetchall()
+    for row in indexed:
+        _requeue_event(ctx.sqlite, row["event_id"])
+        counts["indexed_without_consolidation"] += 1
 
     # 5. §7.4 daily scan: enqueue CONSOLIDATE_OVERVIEW for directories whose
     # child was modified after the overview was regenerated.

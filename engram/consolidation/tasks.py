@@ -90,24 +90,31 @@ def handle_consolidate_overview(
         children_abstracts.append({"source_uri": curi, "abstract": abs_})
     children_relations = _collect_relations(neo4j, children_uris)
 
-    prompt = prompts.render(
-        "overview",
-        directory_uri=dir_uri,
-        children_abstracts=children_abstracts,
-        children_relations=children_relations,
-        overview_max_tokens=cfg.overview_max_tokens,
-    )
-    result = core.complete(
-        system_prompt=prompt,
-        user_prompt="Return the overview as Markdown.",
-    )
     text: str
-    if isinstance(result.output, dict) and "overview" in result.output:
-        text = str(result.output["overview"])
-    elif isinstance(result.output, str):
-        text = result.output
+    if len(children_abstracts) <= 1:
+        if children_abstracts:
+            child = children_abstracts[0]
+            text = f"# Overview\n\n- {child['source_uri']}: {child['abstract']}\n"
+        else:
+            text = "# Overview\n\nThis directory contains no memory documents.\n"
     else:
-        text = result.raw_text
+        prompt = prompts.render(
+            "overview",
+            directory_uri=dir_uri,
+            children_abstracts=children_abstracts,
+            children_relations=children_relations,
+            overview_max_tokens=cfg.overview_max_tokens,
+        )
+        result = core.complete(
+            system_prompt=prompt,
+            user_prompt="Return the overview as Markdown.",
+        )
+        if isinstance(result.output, dict) and "overview" in result.output:
+            text = str(result.output["overview"])
+        elif isinstance(result.output, str):
+            text = result.output
+        else:
+            text = result.raw_text
     fs.write_atomic(
         f"{dir_uri.rstrip('/')}/overview.md",
         text if text.endswith("\n") else text + "\n",
@@ -131,11 +138,17 @@ def handle_propagate_overview(
     node_id: str,
     sqlite: SqliteStore,
     cfg: ConsolidationConfig,
+    tenant_id: str | None = None,
 ) -> None:
     """Enqueue CONSOLIDATE_OVERVIEW for each ancestor up to the root, deduped."""
     ancestor = uri_mod.parent_uri(node_id)
     while ancestor is not None:
-        sqlite.enqueue_task(node_id=ancestor, task_type="CONSOLIDATE_OVERVIEW", priority=5)
+        sqlite.enqueue_task(
+            node_id=ancestor,
+            task_type="CONSOLIDATE_OVERVIEW",
+            priority=5,
+            tenant_id=tenant_id or "_default",
+        )
         ancestor = uri_mod.parent_uri(ancestor)
 
 
@@ -296,6 +309,7 @@ def handle_unmerge(
     core: CoreModelProvider,
     embed: EmbeddingService,
     cfg: ConsolidationConfig,
+    tenant_id: str | None = None,
 ) -> None:
     """Split a merged ENTITY back into its contributing sources (§8.6).
 
@@ -311,8 +325,18 @@ def handle_unmerge(
     for uri in [result.merged_uri, *result.split_uris]:
         parent = uri_mod.parent_uri(uri)
         if parent:
-            sqlite.enqueue_task(node_id=parent, task_type="CONSOLIDATE_OVERVIEW", priority=5)
-            sqlite.enqueue_task(node_id=parent, task_type="REGENERATE_MANIFEST", priority=5)
+            sqlite.enqueue_task(
+                node_id=parent,
+                task_type="CONSOLIDATE_OVERVIEW",
+                priority=5,
+                tenant_id=tenant_id or "_default",
+            )
+            sqlite.enqueue_task(
+                node_id=parent,
+                task_type="REGENERATE_MANIFEST",
+                priority=5,
+                tenant_id=tenant_id or "_default",
+            )
 
 
 # ----------------------------------------------------------------------

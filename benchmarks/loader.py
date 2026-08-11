@@ -51,6 +51,9 @@ class Turn:
     dia_id: str          # e.g. "D1:3" — what `evidence` refers to
     session_idx: int
     timestamp: str | None  # ISO-8601 when parseable, else the raw string
+    blip_caption: str | None = None
+    image_urls: list[str] = field(default_factory=list)
+    image_query: str | None = None
 
     def attributed(self) -> str:
         """Text prefixed with the speaker name.
@@ -60,7 +63,14 @@ class Turn:
         like "When did Caroline go to...", so attribution must survive into the
         extracted memory. Prefixing is the cheapest way to preserve it.
         """
-        return f"{self.speaker}: {self.text}"
+        spoken = f"{self.speaker}: {self.text}" if self.text else f"{self.speaker}:"
+        if self.blip_caption:
+            return f"{spoken}\n[Image caption: {self.blip_caption}]"
+        return spoken
+
+    @property
+    def has_image(self) -> bool:
+        return bool(self.blip_caption or self.image_urls)
 
 
 @dataclass
@@ -125,9 +135,14 @@ def _load_turns(conversation: dict) -> list[Turn]:
         timestamp = _parse_timestamp(conversation.get(f"{key}_date_time"))
         for raw in conversation[key]:
             text = (raw.get("text") or "").strip()
-            if not text:
-                # Some turns are image-only in the multimodal variant.
+            caption = (raw.get("blip_caption") or "").strip() or None
+            if not text and not caption:
                 continue
+            image_urls = raw.get("img_url") or []
+            if isinstance(image_urls, str):
+                image_urls = [image_urls]
+            elif not isinstance(image_urls, list):
+                image_urls = [str(image_urls)]
             turns.append(
                 Turn(
                     speaker=raw.get("speaker", "unknown"),
@@ -135,6 +150,9 @@ def _load_turns(conversation: dict) -> list[Turn]:
                     dia_id=raw.get("dia_id", ""),
                     session_idx=idx,
                     timestamp=timestamp,
+                    blip_caption=caption,
+                    image_urls=[str(url) for url in image_urls if url],
+                    image_query=(raw.get("query") or "").strip() or None,
                 )
             )
     return turns

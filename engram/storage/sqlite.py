@@ -235,6 +235,27 @@ class SqliteStore:
         d["payload"] = json.loads(d["payload"])
         return d
 
+    def get_event_readiness(
+        self,
+        event_ids: list[str],
+        *,
+        tenant_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return tenant-scoped event plus outbox state for exact drain checks."""
+        if not event_ids:
+            return []
+        placeholders = ",".join("?" for _ in event_ids)
+        rows = self.get_conn().execute(
+            "SELECT e.event_id, e.pair_id, e.status, e.error_message, "
+            "e.created_at, e.processed_at, o.state AS outbox_state, "
+            "o.source_uri AS source_uri "
+            "FROM events e LEFT JOIN fs_outbox o ON o.event_id = e.event_id "
+            f"WHERE e.tenant_id = ? AND e.event_id IN ({placeholders})",
+            (tenant_id, *event_ids),
+        ).fetchall()
+        by_id = {row["event_id"]: dict(row) for row in rows}
+        return [by_id[event_id] for event_id in event_ids if event_id in by_id]
+
     def claim_pending_events(
         self, limit: int = 10, *, tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -329,6 +350,26 @@ class SqliteStore:
                 "retry_count = retry_count + 1, error_message = ? WHERE event_id = ?",
                 (state, error, event_id),
             )
+
+    def get_fs_outbox(self, event_id: str) -> dict[str, Any] | None:
+        row = self.get_conn().execute(
+            "SELECT * FROM fs_outbox WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_linked_entity_uris(self, event_id: str, *, tenant_id: str) -> list[str]:
+        rows = self.get_conn().execute(
+            "SELECT subject_node_id, object_node_id FROM linked_entities "
+            "WHERE event_id = ? AND tenant_id = ? ORDER BY triplet_idx",
+            (event_id, tenant_id),
+        ).fetchall()
+        values: list[str] = []
+        for row in rows:
+            for key in ("subject_node_id", "object_node_id"):
+                value = row[key]
+                if value and value not in values:
+                    values.append(str(value))
+        return values
 
     # ------------------------------------------------------------------
     # Consolidation queue

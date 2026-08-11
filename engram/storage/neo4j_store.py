@@ -222,7 +222,8 @@ class Neo4jStore:
             cypher += "AND node.source_uri STARTS WITH $prefix "
         cypher += (
             "RETURN node.source_uri AS source_uri, node.l0_abstract AS l0_abstract, "
-            "score, node.id AS id, node.node_type AS node_type ORDER BY score DESC"
+            "score, node.id AS id, node.node_type AS node_type, "
+            "coalesce(node.source_turn_ids, []) AS source_turn_ids ORDER BY score DESC"
         )
         params: dict[str, Any] = {
             "k": over_k, "vec": query_embedding, "floor": dormant_floor,

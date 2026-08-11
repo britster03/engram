@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from engram.api.routes import bulk_ingest, kg, memories
+from engram.api.routes import bulk_ingest, events, kg, memories
 from engram.audit import AuditLog
 from engram.cache import EmbeddingCache, MemoryCache, OverviewCache
 from engram.config import EngramConfig
@@ -70,6 +70,7 @@ def client(cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch):
     app.include_router(bulk_ingest.router)
     app.include_router(kg.router)
     app.include_router(memories.router)
+    app.include_router(events.router)
     state = _build_state(cfg)
     import engram.config as config_mod
     import engram.deps as deps_mod
@@ -133,6 +134,40 @@ def test_bulk_csv_queues_durable_events(client):
     completed_data = completed.json()
     assert completed_data["status"] == "COMPLETE"
     assert completed_data["completed_at"] is not None
+
+
+def test_exact_event_status_reports_ready_failed_and_missing(client):
+    c, state = client
+    ready_id, _ = state.sqlite.record_event(
+        pair_id="ready",
+        session_id="s",
+        source="test",
+        event_type="INGEST",
+        payload={},
+    )
+    failed_id, _ = state.sqlite.record_event(
+        pair_id="failed",
+        session_id="s",
+        source="test",
+        event_type="INGEST",
+        payload={},
+    )
+    state.sqlite.fs_outbox_write(ready_id, "mem://user/episodes/ready.md")
+    state.sqlite.fs_outbox_mark(ready_id, "INDEXED")
+    state.sqlite.set_event_status(ready_id, "COMPLETE")
+    state.sqlite.set_event_status(failed_id, "FAILED", error_message="boom")
+
+    response = c.post(
+        "/api/v1/events/status",
+        json={"event_ids": [ready_id, failed_id, "evt-missing"]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["memory_ready"] is False
+    assert body["ready_count"] == 1
+    assert body["failed_count"] == 1
+    assert body["missing_ids"] == ["evt-missing"]
+    assert body["failures"][0]["error"] == "boom"
 
 
 def test_memory_list_root_prefix_falls_back_to_filesystem(client):

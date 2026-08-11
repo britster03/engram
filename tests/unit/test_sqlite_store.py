@@ -80,6 +80,34 @@ def test_event_lifecycle(tmp_path: Path):
     assert ev["processed_at"] is not None
 
 
+def test_get_event_readiness_is_exact_ordered_and_tenant_scoped(tmp_path: Path):
+    store = SqliteStore(tmp_path / "ev.db")
+    eid_a, _ = store.record_event(
+        pair_id="a",
+        session_id="s",
+        source="test",
+        event_type="INGEST",
+        payload={},
+        tenant_id="tenant-a",
+    )
+    eid_b, _ = store.record_event(
+        pair_id="b",
+        session_id="s",
+        source="test",
+        event_type="INGEST",
+        payload={},
+        tenant_id="tenant-b",
+    )
+    store.fs_outbox_write(eid_a, "mem://user/episodes/a.md", tenant_id="tenant-a")
+    store.fs_outbox_mark(eid_a, "INDEXED")
+    store.set_event_status(eid_a, "COMPLETE", tenant_id="tenant-a")
+
+    rows = store.get_event_readiness(["missing", eid_a, eid_b], tenant_id="tenant-a")
+    assert [row["event_id"] for row in rows] == [eid_a]
+    assert rows[0]["outbox_state"] == "INDEXED"
+    assert rows[0]["source_uri"] == "mem://user/episodes/a.md"
+
+
 def test_claim_pending_events_is_atomic_in_store(tmp_path: Path):
     store = SqliteStore(tmp_path / "ev.db")
     for idx in range(2):

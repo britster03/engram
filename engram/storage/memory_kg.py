@@ -192,6 +192,7 @@ class InMemoryKnowledgeGraph:
                             "score": score,
                             "id": node.get("id"),
                             "node_type": node.get("node_type"),
+                            "source_turn_ids": list(node.get("source_turn_ids") or []),
                         },
                     )
                 )

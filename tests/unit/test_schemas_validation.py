@@ -66,3 +66,20 @@ def test_ingest_effective_pair_for_turn_group():
     pair = req.effective_pair()
     assert pair.user.content == "hi"
     assert pair.assistant.content == "bye"
+
+
+def test_turn_content_preserves_external_and_multimodal_provenance():
+    turn = schemas.TurnContent(
+        content="A: Look at this",
+        external_id="D1:5",
+        speaker="A",
+        source_conversation_id="sample-1",
+        source_session_id="session_1",
+        source_task="locomo",
+        image_caption="a red bicycle",
+        image_urls=["https://example.test/bike.jpg"],
+        image_query="red bicycle",
+    )
+    dumped = turn.model_dump(exclude_none=True)
+    assert dumped["external_id"] == "D1:5"
+    assert dumped["image_caption"] == "a red bicycle"

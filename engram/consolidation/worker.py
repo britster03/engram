@@ -19,6 +19,7 @@ from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.sqlite import SqliteStore
+from engram.tenancy import Tenant, TenantQuotas, get_current_tenant, set_current_tenant
 
 log = logging.getLogger(__name__)
 
@@ -66,12 +67,23 @@ def process_one(ctx: ConsolidationContext) -> bool:
     task = _next_task(ctx.sqlite)
     if task is None:
         return False
+    previous_tenant = get_current_tenant()
+    task_tenant = str(task.get("tenant_id") or "_default")
+    set_current_tenant(
+        Tenant(
+            tenant_id=task_tenant,
+            display_name=task_tenant,
+            quotas=TenantQuotas(),
+        )
+    )
     try:
         _dispatch(ctx, task)
         _complete_task(ctx.sqlite, task["task_id"], "COMPLETE")
     except Exception as err:
         log.exception("consolidation task %s failed", task["task_id"])
         _complete_task(ctx.sqlite, task["task_id"], "FAILED", str(err))
+    finally:
+        set_current_tenant(previous_tenant)
     return True
 
 
@@ -93,7 +105,10 @@ def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
         )
     elif t == "PROPAGATE_OVERVIEW":
         handlers.handle_propagate_overview(
-            node_id=node_id, sqlite=ctx.sqlite, cfg=ctx.cfg.consolidation
+            node_id=node_id,
+            sqlite=ctx.sqlite,
+            cfg=ctx.cfg.consolidation,
+            tenant_id=task["tenant_id"],
         )
     elif t == "ATOMIZE":
         handlers.handle_atomize(
@@ -116,6 +131,7 @@ def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
         handlers.handle_unmerge(
             node_id=node_id, fs=ctx.fs, neo4j=ctx.neo4j, sqlite=ctx.sqlite,
             core=ctx.core, embed=ctx.embed, cfg=ctx.cfg.consolidation,
+            tenant_id=task["tenant_id"],
         )
     else:
         log.warning("unknown consolidation task type %r; marking complete", t)
