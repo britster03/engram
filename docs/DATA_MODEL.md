@@ -102,7 +102,8 @@ vector index and what the Frontier LLM sees at L1.
 
 Every extracted assertion is an immutable FACT. Its typed `fact` payload stores
 subject/object values and URIs, canonical relation, optional original relation,
-`relation_normalized`, `relation_review_required`, and object kind. Unknown
+`relation_normalized`, `relation_review_required`, object kind, and optional
+`atomized_from` source text when a verified list was split. Unknown
 relations remain queryable but are explicitly reviewable; the controlled
 vocabulary is never enforced by silently dropping an assertion.
 

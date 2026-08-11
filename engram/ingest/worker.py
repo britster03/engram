@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -76,6 +77,9 @@ _STAGE_ORDER = {
     "GATED_SKIP": 7,
 }
 
+_INLINE_IMAGE_CAPTION = re.compile(r"\[Image caption:\s*.*?\]", re.IGNORECASE | re.DOTALL)
+_OWNERSHIP_RELATIONS = frozenset({"drives", "has", "maintains", "owns"})
+
 
 def process_event(ctx: IngestContext, event_id: str) -> str:
     """Drive one event through the pipeline. Returns the final status string."""
@@ -86,8 +90,13 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     # Pin the ambient tenant context for every downstream call.
     event_tenant = event.get("tenant_id") or DEFAULT_TENANT_ID
     set_current_tenant(
-        Tenant(tenant_id=event_tenant, display_name=event_tenant,
-               api_key_hashes=[], quotas=TenantQuotas(), status="ACTIVE")
+        Tenant(
+            tenant_id=event_tenant,
+            display_name=event_tenant,
+            api_key_hashes=[],
+            quotas=TenantQuotas(),
+            status="ACTIVE",
+        )
     )
     stage_state = ctx.sqlite.get_event_stage(event_id, tenant_id=event_tenant)
     stage = str(stage_state["completed_stage"])
@@ -113,9 +122,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 except CoreModelError as err:
                     ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
                     raise
-        ctx.sqlite.advance_event_stage(
-            event_id, "GATED", tenant_id=event_tenant, gate_output=gate
-        )
+        ctx.sqlite.advance_event_stage(event_id, "GATED", tenant_id=event_tenant, gate_output=gate)
         stage = "GATED"
         _after_stage(ctx, stage)
     else:
@@ -207,11 +214,13 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
             )
         ctx.sqlite.fs_outbox_write(event_id, episode_uri, tenant_id=event_tenant)
         _record_linked_entities(
-            ctx, event_id, extraction["triplets"], entity_records, tenant_id=event_tenant,
+            ctx,
+            event_id,
+            extraction["triplets"],
+            entity_records,
+            tenant_id=event_tenant,
         )
-        ctx.sqlite.advance_event_stage(
-            event_id, "FILESYSTEM_COMMITTED", tenant_id=event_tenant
-        )
+        ctx.sqlite.advance_event_stage(event_id, "FILESYSTEM_COMMITTED", tenant_id=event_tenant)
         stage = "FILESYSTEM_COMMITTED"
         _after_stage(ctx, stage)
     else:
@@ -236,9 +245,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
             except Exception as err:
                 log.exception("KG index failed for event %s", event_id)
                 ctx.sqlite.fs_outbox_mark(event_id, "INDEX_FAILED", error=str(err))
-                ctx.sqlite.mark_event_artifacts_kg(
-                    event_id, "FAILED", error=str(err)[:500]
-                )
+                ctx.sqlite.mark_event_artifacts_kg(event_id, "FAILED", error=str(err)[:500])
                 raise
         ctx.sqlite.mark_event_artifacts_kg(event_id, "COMMITTED")
         ctx.sqlite.fs_outbox_mark(event_id, "INDEXED")
@@ -249,17 +256,19 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
 
     # --- Step 7: Consolidation enqueue -----------------------------------
     if not _stage_at_least(stage, "CONSOLIDATION_COMMITTED"):
-        with _Timed("consolidation_enqueue"), tracing.span(
-            "ingest.consolidation_enqueue", event_id=event_id,
+        with (
+            _Timed("consolidation_enqueue"),
+            tracing.span(
+                "ingest.consolidation_enqueue",
+                event_id=event_id,
+            ),
         ):
             _enqueue_consolidation(
                 ctx,
                 episode_uri,
                 [*[uri for _, _, uri in entity_records], *fact_uris.values()],
             )
-        ctx.sqlite.advance_event_stage(
-            event_id, "CONSOLIDATION_COMMITTED", tenant_id=event_tenant
-        )
+        ctx.sqlite.advance_event_stage(event_id, "CONSOLIDATION_COMMITTED", tenant_id=event_tenant)
         stage = "CONSOLIDATION_COMMITTED"
         _after_stage(ctx, stage)
     ctx.sqlite.advance_event_stage(event_id, "COMPLETE", tenant_id=event_tenant)
@@ -271,6 +280,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
 # ----------------------------------------------------------------------
 # Step helpers
 # ----------------------------------------------------------------------
+
 
 class _Timed:
     """Small context manager that records stage latency to Prometheus."""
@@ -319,7 +329,11 @@ def _prepare_extraction(
     normalized: list[dict[str, Any]] = []
     vocab = vocabulary()
     candidate_triplets = atomize_triplets(
-        [dict(raw) for raw in raw_triplets if isinstance(raw, dict)]
+        [
+            dict(raw)
+            for raw in raw_triplets
+            if isinstance(raw, dict) and not _caption_only_ownership(raw, payload)
+        ]
     )
     for raw in candidate_triplets:
         subject = str(raw.get("subject") or "").strip()
@@ -336,9 +350,8 @@ def _prepare_extraction(
         object_norm = obj.casefold().strip()
         relation_norm = relation.casefold().strip()
         relation_tail = relation_norm.removeprefix("feels_")
-        if (
-            object_norm in {"true", "false", "yes", "no", "none", "null", "unknown"}
-            or (relation_norm.startswith("feels_") and object_norm == relation_tail)
+        if object_norm in {"true", "false", "yes", "no", "none", "null", "unknown"} or (
+            relation_norm.startswith("feels_") and object_norm == relation_tail
         ):
             object_kind = "LITERAL"
         elif object_kind not in {"ENTITY", "LITERAL"}:
@@ -374,6 +387,36 @@ def _prepare_extraction(
     return prepared
 
 
+def _caption_only_ownership(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Reject ownership inferred solely from visual-caption text.
+
+    LoCoMo captions describe what a speaker shared, not necessarily what that
+    speaker owns. The live audit observed a stack of bowls in an assistant
+    caption becoming ``Caroline owns stack of bowls`` even though neither
+    speaker said that. Exact source episodes still retain the caption for
+    retrieval; only the unsupported derived ownership assertion is removed.
+    """
+    relation = str(triplet.get("relation") or "").casefold().strip()
+    obj = " ".join(str(triplet.get("object") or "").casefold().split())
+    if relation not in _OWNERSHIP_RELATIONS or not obj:
+        return False
+
+    pair = payload.get("turn_pair") or payload.get("turn_group") or payload
+    if not isinstance(pair, dict):
+        return False
+    spoken: list[str] = []
+    captions: list[str] = []
+    for _role, turn in _source_turn_records(payload):
+        content = str(turn.get("content") or "")
+        captions.extend(_INLINE_IMAGE_CAPTION.findall(content))
+        spoken.append(_INLINE_IMAGE_CAPTION.sub("", content))
+        if turn.get("image_caption"):
+            captions.append(str(turn["image_caption"]))
+    spoken_text = " ".join(" ".join(spoken).casefold().split())
+    caption_text = " ".join(" ".join(captions).casefold().split())
+    return obj in caption_text and obj not in spoken_text
+
+
 def _source_asserted_at(payload: dict[str, Any]) -> str | None:
     pair = payload.get("turn_pair") or payload.get("turn_group") or payload
     if not isinstance(pair, dict):
@@ -405,11 +448,15 @@ def _restore_entity_links(
             if row.get("slug") and row.get("display_name")
         ]
 
-    rows = ctx.sqlite.get_conn().execute(
-        "SELECT triplet_idx, subject_node_id, object_node_id FROM linked_entities "
-        "WHERE event_id = ? AND tenant_id = ? ORDER BY triplet_idx",
-        (event_id, tenant_id),
-    ).fetchall()
+    rows = (
+        ctx.sqlite.get_conn()
+        .execute(
+            "SELECT triplet_idx, subject_node_id, object_node_id FROM linked_entities "
+            "WHERE event_id = ? AND tenant_id = ? ORDER BY triplet_idx",
+            (event_id, tenant_id),
+        )
+        .fetchall()
+    )
     by_idx = {int(row["triplet_idx"]): row for row in rows}
     restored: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
@@ -476,9 +523,7 @@ def _record_artifacts(
                 else None
             ),
             extractor_version=(
-                str(provenance["extractor"])
-                if provenance.get("extractor") is not None
-                else None
+                str(provenance["extractor"]) if provenance.get("extractor") is not None else None
             ),
         )
 
@@ -570,7 +615,8 @@ def _resolve_entities(
         except Exception:
             log.warning(
                 "entity linker failed for %r; defaulting to new entity",
-                display_name, exc_info=True,
+                display_name,
+                exc_info=True,
             )
             matched_uri = None
         records.append((slug, display_name, matched_uri))
@@ -729,9 +775,7 @@ def _record_linked_entities(
     for idx, trip in enumerate(triplets):
         s_slug = slugify(trip.get("subject", ""), separator="-", lowercase=True)
         o_slug = slugify(trip.get("object", ""), separator="-", lowercase=True)
-        rows.append(
-            (event_id, tenant_id, idx, slug_to_uri.get(s_slug), slug_to_uri.get(o_slug))
-        )
+        rows.append((event_id, tenant_id, idx, slug_to_uri.get(s_slug), slug_to_uri.get(o_slug)))
     if not rows:
         return
     with ctx.sqlite.transaction() as conn:
@@ -929,11 +973,7 @@ def _index_fact_node(
     sentence = fact_sentence(triplet)
 
     fact_memory = frontmatter.parse(ctx.fs.read(uri))
-    abstract = (
-        f"Low-confidence fact: {sentence}"
-        if confidence < 0.6
-        else sentence
-    )
+    abstract = f"Low-confidence fact: {sentence}" if confidence < 0.6 else sentence
     ctx.neo4j.merge_node(
         source_uri=uri,
         parent_uri=uri_mod.parent_uri(uri),
@@ -1023,16 +1063,20 @@ def _write_fact_file(
             "relation": rel,
             "relation_original": triplet.get("relation_original"),
             "relation_normalized": bool(triplet.get("relation_normalized")),
-            "relation_review_required": bool(
-                triplet.get("relation_review_required")
-            ),
+            "relation_review_required": bool(triplet.get("relation_review_required")),
             "explicit_correction": triplet.get("explicit_correction") is True,
             "object": obj,
             "object_kind": str(triplet.get("object_kind") or "ENTITY"),
             "subject_uri": subject_uri,
             "object_uri": object_uri,
+            **(
+                {"atomized_from": str(triplet["atomized_from"])}
+                if triplet.get("atomized_from")
+                else {}
+            ),
         },
-        "temporal": triplet.get("temporal") or {
+        "temporal": triplet.get("temporal")
+        or {
             "asserted_at": created_at,
             "valid_from": None,
             "valid_until": None,

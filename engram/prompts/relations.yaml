@@ -4,7 +4,7 @@
 # labels that fail to match above 0.85 are preserved verbatim and flagged
 # for manual review via /api/v1/consolidation/status.
 
-version: 3
+version: 4
 relations:
   # Employment / organisational
   - works_at
@@ -23,6 +23,7 @@ relations:
   - visited
   - born_in
   - moved_to
+  - from_country
 
   # Personal / family
   - related_to
@@ -32,6 +33,9 @@ relations:
   - child_of
   - sibling_of
   - friend_of
+  - is_a
+  - knows_for
+  - married_for
 
   # Project / work artifacts
   - works_on
@@ -44,14 +48,21 @@ relations:
   - supersedes
   - references
   - mentions
+  - contains
+  - created_by
+  - helps_with
+  - undergoing
 
   # Events / temporal
   - started_on
+  - received_on
   - ended_on
   - scheduled_for
   - happened_at
   - achieved
   - took_place_in
+  - participated_in
+  - attended
 
   # Preferences
   - prefers
@@ -59,6 +70,9 @@ relations:
   - dislikes
   - avoids
   - interested_in
+  - motivated_by
+  - makes_feel
+  - reminds_of
 
   # Ownership / attributes
   - has
@@ -98,3 +112,8 @@ aliases:
   scheduledFor: scheduled_for
   happenedAt: happened_at
   tookPlaceIn: took_place_in
+  took_part_in: participated_in
+  "took part in": participated_in
+  gifted_on: received_on
+  reminder_of: reminds_of
+  reminded_of: reminds_of

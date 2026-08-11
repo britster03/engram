@@ -32,3 +32,30 @@ def test_prompt_working_on_relation_has_a_deterministic_canonical_label() -> Non
     assert vocab.canonicalise("works_on", embed) == "works_on"
     assert vocab.canonicalise("working_on", embed) == "works_on"
     assert vocab.canonicalise("working on", embed) == "works_on"
+
+
+def test_benchmark_relations_are_controlled_without_embedding_guesswork() -> None:
+    vocab = RelationVocabulary()
+    embed = UnexpectedEmbedder()
+
+    for relation in (
+        "attended",
+        "contains",
+        "created_by",
+        "from_country",
+        "helps_with",
+        "is_a",
+        "knows_for",
+        "makes_feel",
+        "married_for",
+        "motivated_by",
+        "participated_in",
+        "received_on",
+        "reminds_of",
+        "undergoing",
+    ):
+        assert vocab.canonicalise(relation, embed) == relation
+
+    assert vocab.canonicalise("took part in", embed) == "participated_in"
+    assert vocab.canonicalise("gifted_on", embed) == "received_on"
+    assert vocab.canonicalise("reminder_of", embed) == "reminds_of"

@@ -97,6 +97,8 @@ def project_memory_node(
                 props[f"fact_{key}"] = str(fact[key])
         if fact.get("relation_original") is not None:
             props["fact_relation_original"] = str(fact["relation_original"])
+        if fact.get("atomized_from") is not None:
+            props["fact_atomized_from"] = str(fact["atomized_from"])
         for key in (
             "relation_normalized",
             "relation_review_required",

@@ -32,8 +32,15 @@ from .providers import (
 
 
 class LowConfidenceCoreProvider(DeterministicCoreProvider):
-    def complete(self, *, system_prompt: str, user_prompt: str, output_schema=None,
-                 max_tokens=None, temperature=None):  # type: ignore[override]
+    def complete(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema=None,
+        max_tokens=None,
+        temperature=None,
+    ):  # type: ignore[override]
         from engram.models.core import CompletionResult
 
         tag = system_prompt.split("]", 1)[0].lstrip("[") if system_prompt.startswith("[") else ""
@@ -44,12 +51,14 @@ class LowConfidenceCoreProvider(DeterministicCoreProvider):
                 output={
                     "resolved_text": "The user may be moving to Lisbon.",
                     "l0_abstract": "The user may be moving to Lisbon.",
-                    "triplets": [{
-                        "subject": "user",
-                        "relation": "may_move_to",
-                        "object": "Lisbon",
-                        "confidence": 0.45,
-                    }],
+                    "triplets": [
+                        {
+                            "subject": "user",
+                            "relation": "may_move_to",
+                            "object": "Lisbon",
+                            "confidence": 0.45,
+                        }
+                    ],
                 },
                 raw_text="{}",
             )
@@ -76,13 +85,42 @@ class LiteralFactCoreProvider(DeterministicCoreProvider):
                 output={
                     "resolved_text": "The user is a software engineer.",
                     "l0_abstract": "The user is a software engineer.",
-                    "triplets": [{
-                        "subject": "user",
-                        "relation": "has_role",
-                        "object": "software engineer",
-                        "object_kind": "LITERAL",
-                        "confidence": 0.95,
-                    }],
+                    "triplets": [
+                        {
+                            "subject": "user",
+                            "relation": "has_role",
+                            "object": "software engineer",
+                            "object_kind": "LITERAL",
+                            "confidence": 0.95,
+                        }
+                    ],
+                },
+                raw_text="{}",
+            )
+        return super().complete(**kwargs)
+
+
+class CompoundFactCoreProvider(DeterministicCoreProvider):
+    def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        from engram.models.core import CompletionResult
+
+        prompt = str(kwargs.get("system_prompt") or "")
+        if prompt.startswith("[GATE]"):
+            return CompletionResult(output={"store": True, "reason": "fact"}, raw_text="{}")
+        if prompt.startswith("[EXTRACT]"):
+            return CompletionResult(
+                output={
+                    "resolved_text": "Caroline likes painting and swimming.",
+                    "l0_abstract": "Caroline likes painting and swimming.",
+                    "triplets": [
+                        {
+                            "subject": "Caroline",
+                            "relation": "likes",
+                            "object": "painting and swimming",
+                            "object_kind": "ENTITY",
+                            "confidence": 0.95,
+                        }
+                    ],
                 },
                 raw_text="{}",
             )
@@ -99,20 +137,22 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EngramConfig:
     monkeypatch.setenv("ENGRAM_API_KEY", "test-key")
     monkeypatch.setenv("NEO4J_ADMIN_PASSWORD", "x")
     # Build a config without going through load_config / env-interpolation
-    cfg = EngramConfig.model_validate({
-        "api": {"api_key": "test-key"},
-        "core_model": {"provider": "ollama_cloud", "api_key": "x"},
-        "frontier_llm": {"provider": "ollama_cloud", "api_key": "x"},
-        "filesystem": {"data_dir": str(tmp_path / "mem")},
-        "event_ledger": {"path": str(tmp_path / "ev.db")},
-        "consolidation": {"db_path": str(tmp_path / "cons.db")},
-        "session_cache": {"backend": "memory"},
-        "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
-        # Stub embeddings produce random cosine scores, so the L0 memory-hit
-        # fallback would always BYPASS. Skip L0 in tests; the gate has its own
-        # dedicated test.
-        "retrieval": {"l0_skip": True},
-    })
+    cfg = EngramConfig.model_validate(
+        {
+            "api": {"api_key": "test-key"},
+            "core_model": {"provider": "ollama_cloud", "api_key": "x"},
+            "frontier_llm": {"provider": "ollama_cloud", "api_key": "x"},
+            "filesystem": {"data_dir": str(tmp_path / "mem")},
+            "event_ledger": {"path": str(tmp_path / "ev.db")},
+            "consolidation": {"db_path": str(tmp_path / "cons.db")},
+            "session_cache": {"backend": "memory"},
+            "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
+            # Stub embeddings produce random cosine scores, so the L0 memory-hit
+            # fallback would always BYPASS. Skip L0 in tests; the gate has its own
+            # dedicated test.
+            "retrieval": {"l0_skip": True},
+        }
+    )
     return cfg
 
 
@@ -123,10 +163,22 @@ def _build_contexts(cfg: EngramConfig):
     core = DeterministicCoreProvider()
     frontier = DeterministicFrontierProvider()
     embed = DeterministicEmbeddingService()
-    ingest = IngestContext(cfg=cfg, sqlite=sqlite, fs=fs, neo4j=fake_neo,  # type: ignore[arg-type]
-                           core=core, embed=embed)  # type: ignore[arg-type]
-    orch = OrchestratorContext(cfg=cfg, fs=fs, neo4j=fake_neo,  # type: ignore[arg-type]
-                               core=core, frontier=frontier, embed=embed)  # type: ignore[arg-type]
+    ingest = IngestContext(
+        cfg=cfg,
+        sqlite=sqlite,
+        fs=fs,
+        neo4j=fake_neo,  # type: ignore[arg-type]
+        core=core,
+        embed=embed,
+    )  # type: ignore[arg-type]
+    orch = OrchestratorContext(
+        cfg=cfg,
+        fs=fs,
+        neo4j=fake_neo,  # type: ignore[arg-type]
+        core=core,
+        frontier=frontier,
+        embed=embed,
+    )  # type: ignore[arg-type]
     return ingest, orch, sqlite, fake_neo
 
 
@@ -148,6 +200,36 @@ def test_ingest_gated_skip_on_pleasantry(cfg: EngramConfig):
     )
     final = process_event(ingest_ctx, event_id)
     assert final == "GATED_SKIP"
+
+
+def test_atomization_provenance_survives_filesystem_and_graph_projection(
+    cfg: EngramConfig,
+) -> None:
+    ingest_ctx, _, sqlite, neo = _build_contexts(cfg)
+    ingest_ctx.core = CompoundFactCoreProvider()
+    event_id, _ = sqlite.record_event(
+        pair_id=pair_id_fn("sess-atomize", 0, 1),
+        session_id="sess-atomize",
+        source="test",
+        event_type="INGEST",
+        payload={
+            "turn_pair": {
+                "user": {"content": "I like painting and swimming.", "turn_idx": 0},
+                "assistant": {"content": "Those sound fun.", "turn_idx": 1},
+            }
+        },
+    )
+
+    assert process_event(ingest_ctx, event_id) == "COMPLETE"
+    fact_nodes = {uri: node for uri, node in neo.nodes.items() if node.get("node_type") == "FACT"}
+    assert {node["fact_object"] for node in fact_nodes.values()} == {
+        "painting",
+        "swimming",
+    }
+    assert {node["fact_atomized_from"] for node in fact_nodes.values()} == {"painting and swimming"}
+    for uri in fact_nodes:
+        fact_file = parse(ingest_ctx.fs.read(uri))
+        assert fact_file.frontmatter["fact"]["atomized_from"] == ("painting and swimming")
 
 
 def test_full_flow_ingest_then_query(cfg: EngramConfig):
@@ -233,11 +315,13 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     )
     l1_blocks = _format_ltm_blocks(
         orch_ctx,
-        [{
-            "source_uri": meta_episode_uri,
-            "l0_abstract": "User has a new job.",
-            "retrieval_level": "L1",
-        }],
+        [
+            {
+                "source_uri": meta_episode_uri,
+                "l0_abstract": "User has a new job.",
+                "retrieval_level": "L1",
+            }
+        ],
         "L1",
     )
     assert "accepted a job at Meta" in l1_blocks[0]
@@ -342,13 +426,15 @@ def test_low_confidence_triplet_writes_fact_node(cfg: EngramConfig):
     assert process_event(ingest_ctx, event_id) == "COMPLETE"
 
     facts = [
-        node for node in neo.nodes.values()
+        node
+        for node in neo.nodes.values()
         if node.get("node_type") == "FACT" and node.get("status") == "LOW_CONFIDENCE"
     ]
     assert len(facts) == 1
     assert facts[0]["confidence"] == 0.45
     assert not [
-        edge for edge in neo.edges
+        edge
+        for edge in neo.edges
         if edge["type"] == "RELATES_TO" and edge["relation_label"] == "may_move_to"
     ]
 
@@ -390,7 +476,5 @@ def test_high_confidence_literal_is_preserved_as_fact_without_phantom_entity(
     assert "mem://user/entities/software-engineer/software-engineer.md" not in neo.nodes
     assert not [edge for edge in neo.edges if edge["type"] == "RELATES_TO"]
     assert any(
-        edge["type"] == "REFERENCES"
-        and edge["relation_label"] == "assertion"
-        for edge in neo.edges
+        edge["type"] == "REFERENCES" and edge["relation_label"] == "assertion" for edge in neo.edges
     )

@@ -36,10 +36,22 @@ Produce three outputs:
    manages, founded, invested_in, partners_with, lives_in, located_in,
    resides_in, visited, born_in, moved_to, related_to, married_to, partner_of,
    parent_of, child_of, sibling_of, friend_of, works_on, contributes_to, owns,
-   maintains, uses, built_with, depends_on, references, mentions, started_on,
-   ended_on, scheduled_for, happened_at, achieved, took_place_in, prefers,
-   likes, dislikes, avoids, interested_in, has, owns_pet_named, drives, reads,
-   and watches. Use a new precise relation only when none fits.
+   maintains, uses, built_with, depends_on, references, mentions, contains,
+   created_by, received_on, reminds_of, started_on, ended_on, scheduled_for,
+   happened_at, achieved, took_place_in, participated_in, attended, prefers,
+   likes, dislikes, avoids, interested_in, motivated_by, makes_feel, helps_with,
+   undergoing, has, is_a, knows_for, married_for, from_country, owns_pet_named,
+   drives, reads, and watches. Use a new precise relation only when none fits.
+
+   Extract assertions supported by the current turn pair only. Preceding
+   session context may resolve a pronoun or unnamed referent, but a fact stated
+   only in that context must not be emitted again under the current source IDs.
+
+   Each triplet must represent one semantic assertion. Split true lists into
+   separate triplets ("likes painting and swimming"), but keep coordinated
+   words that describe one entity or goal together ("black and white flower
+   design", "research and development", "a more inclusive and understanding
+   world"). Do not turn a descriptive fragment into a second entity.
 
    Set `object_kind` to `ENTITY` for a person, place, organization, project,
    event, artifact, or named/concrete concept that should have stable identity.
@@ -63,6 +75,14 @@ Produce three outputs:
    Do not fabricate. If the surrounding session context makes a
    referenced fact clearer, use it; otherwise keep the triplet minimal
    and the confidence honest. Discard any fact with confidence < 0.3.
+
+   Do not invent placeholder facts such as `(person, moved_to, current
+   location)` or `(person, has, 4 years)`. Use the precise relation when the
+   source supports one (`knows_for`, `married_for`, `received_on`,
+   `reminds_of`); otherwise omit the triplet and retain the detail in
+   `resolved_text`. Use a consistent possessive role label for an unnamed
+   person (for example, "Melanie's husband") rather than alternating between
+   "husband" and several aliases.
 
    Set `explicit_correction` to true only when the current source explicitly
    retracts, corrects, or replaces an earlier value for the same subject and
@@ -91,9 +111,10 @@ Produce three outputs:
 
 Multimodal source rule: text marked `[Image caption: ...]` is observable
 evidence attached to that speaker's turn, not decoration. Preserve salient
-caption content in `resolved_text`, the abstract, and triplets when it may be
-queried later. A caption describes what was shared; do not infer who created,
-owns, or experienced it unless the dialogue or preceding context says so.
+caption content in `resolved_text` and the abstract when it may be queried
+later. Emit a caption-derived triplet only when the dialogue explicitly links
+the depicted thing to a subject. A caption describes what was shared; never
+infer who created, owns, possesses, or experienced it from the caption alone.
 
 Preceding session context:
 {{ session_context or "(none)" }}
