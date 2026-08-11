@@ -14,7 +14,11 @@ import pytest
 from engram.config import EngramConfig
 from engram.frontmatter import parse
 from engram.ingest.worker import IngestContext, process_event
-from engram.retrieval.orchestrator import OrchestratorContext, run_query
+from engram.retrieval.orchestrator import (
+    OrchestratorContext,
+    _format_ltm_blocks,
+    run_query,
+)
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.sqlite import SqliteStore
@@ -217,6 +221,22 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     )
     assert works_at_fact["fact_relation_normalized"] is True
     assert works_at_fact["fact_relation_review_required"] is False
+
+    meta_episode_uri = next(
+        uri
+        for uri, node in neo.nodes.items()
+        if node.get("node_type") == "DOCUMENT" and "Meta" in orch_ctx.fs.read(uri)
+    )
+    l1_blocks = _format_ltm_blocks(
+        orch_ctx,
+        [{
+            "source_uri": meta_episode_uri,
+            "l0_abstract": "User has a new job.",
+            "retrieval_level": "L1",
+        }],
+        "L1",
+    )
+    assert "accepted a job at Meta" in l1_blocks[0]
 
     # Query it — the stub frontier echoes retrieved sentences; we just check the pipeline runs.
     result = run_query(

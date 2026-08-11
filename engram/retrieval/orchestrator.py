@@ -760,7 +760,14 @@ def _format_ltm_blocks(
     *,
     trace: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Build LTM context blocks. At deeper levels we load richer content."""
+    """Build bounded LTM context blocks from the selected retrieval hits.
+
+    A vector hit's abstract is sufficient for ranking but often omits the
+    exact reason, date, or list needed for answer generation. Load the source
+    body at L1/L2 as well as L4, while retaining the smaller 6k-token early-
+    cascade budget. This fixes context selection without increasing candidate
+    count or leaking memory bodies into traces.
+    """
     budget = (
         ctx.cfg.retrieval.full_doc_budget_tokens
         if cascade_depth in ("L4",)
@@ -778,11 +785,11 @@ def _format_ltm_blocks(
         elif r.get("overview"):
             body = r["overview"]
             level = "L3"
-        elif cascade_depth in ("L4",):
+        elif cascade_depth in ("L1", "L2", "L4"):
             body = _read_full_body(ctx, source_uri)
             if body is None:
-                continue
-            level = "L4"
+                body = r.get("l0_abstract") or ""
+            level = r.get("retrieval_level", cascade_depth)
         else:
             body = r.get("l0_abstract") or ""
             level = r.get("retrieval_level", cascade_depth)
