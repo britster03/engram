@@ -49,6 +49,8 @@ from benchmarks.metrics import (
 
 _LOCOMO_LICENSE = "CC BY-NC 4.0"
 _LOCOMO_UPSTREAM = "https://github.com/snap-research/locomo"
+_LOCOMO_RELEASE_COMMIT = "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+_LOCOMO10_SHA256 = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
 _MIN_AUTO_DRAIN_TIMEOUT_S = 600.0
 _AUTO_DRAIN_SECONDS_PER_PAIR = 30.0
 _RETRIEVAL_MODES = ("adaptive", "forced", "no_memory", "vector_only")
@@ -242,6 +244,18 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _dataset_provenance_error(*, sha256: str, upstream_commit: str) -> str | None:
+    """Fail closed when the pinned release bytes and claimed commit disagree."""
+    if not upstream_commit or upstream_commit == "unrecorded":
+        return "--dataset-commit must identify the exact dataset revision"
+    if sha256 == _LOCOMO10_SHA256 and upstream_commit != _LOCOMO_RELEASE_COMMIT:
+        return (
+            "bundled locomo10.json matches the pinned release bytes, but "
+            f"--dataset-commit is {upstream_commit!r}; expected {_LOCOMO_RELEASE_COMMIT}"
+        )
+    return None
 
 
 def _git_metadata() -> dict[str, Any]:
@@ -504,6 +518,13 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     data_path = Path(args.data)
+    provenance_error = _dataset_provenance_error(
+        sha256=_sha256(data_path),
+        upstream_commit=str(args.dataset_commit),
+    )
+    if provenance_error:
+        print(f"error: {provenance_error}", file=sys.stderr)
+        return 2
     conversations = load_locomo(data_path)
     if args.limit_convs:
         conversations = conversations[: args.limit_convs]
@@ -1053,7 +1074,7 @@ def print_summary(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a fail-closed LoCoMo QA baseline.")
     parser.add_argument("--data", default="benchmarks/data/locomo10.json")
-    parser.add_argument("--dataset-commit", default="unrecorded")
+    parser.add_argument("--dataset-commit", default=_LOCOMO_RELEASE_COMMIT)
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--admin-key", default=None)
     parser.add_argument("--limit-convs", type=int, default=0, help="0 = all")

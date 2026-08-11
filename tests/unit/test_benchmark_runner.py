@@ -7,6 +7,7 @@ import pytest
 from benchmarks.engram_client import DrainConfig, EngramClient, IngestFailedError
 from benchmarks.loader import Conversation, QAProbe, Turn
 from benchmarks.run_locomo import (
+    _dataset_provenance_error,
     _effective_drain_timeout,
     _event_latency_seconds,
     _expected_pair_count,
@@ -82,6 +83,22 @@ def test_drain_timeout_scales_for_full_conversations_but_honors_override() -> No
     assert _effective_drain_timeout(None, 15) == 600.0
     assert _effective_drain_timeout(None, 214) == 6420.0
     assert _effective_drain_timeout(45.0, 214) == 45.0
+
+
+def test_bundled_dataset_commit_must_match_known_release_bytes() -> None:
+    known_hash = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+    known_commit = "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376"
+
+    assert (
+        _dataset_provenance_error(sha256=known_hash, upstream_commit=known_commit)
+        is None
+    )
+    assert "expected" in str(
+        _dataset_provenance_error(sha256=known_hash, upstream_commit="wrong")
+    )
+    assert "must identify" in str(
+        _dataset_provenance_error(sha256="custom", upstream_commit="unrecorded")
+    )
 
 
 def test_expected_pair_count_uses_source_sessions_and_limit() -> None:
