@@ -570,11 +570,18 @@ def _normalize_template_params(
     elif template == "t_path_between":
         normalized.setdefault(
             "src_uri",
-            normalized.get("start_node") or normalized.get("source_uri"),
+            normalized.get("start_node")
+            or normalized.get("start_uri")
+            or normalized.get("source_uri")
+            or normalized.get("from_uri"),
         )
         normalized.setdefault(
             "dst_uri",
-            normalized.get("end_node") or normalized.get("destination_uri"),
+            normalized.get("end_node")
+            or normalized.get("end_uri")
+            or normalized.get("destination_uri")
+            or normalized.get("to_uri")
+            or normalized.get("target_uri"),
         )
     elif template == "t_children_of":
         normalized.setdefault("uri", normalized.get("node_uri"))

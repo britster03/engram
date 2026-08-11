@@ -56,3 +56,8 @@ def test_planner_parameter_aliases_normalize_to_template_contract() -> None:
         "src_uri": "mem://a",
         "dst_uri": "mem://b",
     }
+    alternate = _normalize_template_params(
+        "t_path_between", {"from_uri": "mem://a", "target_uri": "mem://b"}
+    )
+    assert alternate["src_uri"] == "mem://a"
+    assert alternate["dst_uri"] == "mem://b"

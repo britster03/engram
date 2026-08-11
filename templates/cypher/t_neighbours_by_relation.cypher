@@ -1,7 +1,6 @@
 // Follow RELATES_TO edges of a given label up to N hops.
 MATCH (n:Node {tenant_id: $tenant_id, source_uri: $node_uri})
-CALL {
-  WITH n
+CALL (n) {
   MATCH p = (n)-[r:RELATES_TO*1..4]->(m:Node)
   WHERE m.tenant_id = $tenant_id
     AND ALL(edge IN relationships(p) WHERE edge.status = 'ACTIVE')

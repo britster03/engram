@@ -13,6 +13,13 @@ If insufficient, emit the commands needed at this level. At L2 use Cypher
 templates (t_neighbours_by_relation, t_path_between, t_temporal_filter,
 t_history_chain, t_cross_references). At L3 use `overview` commands on the
 top candidates. At L4 use `cat` to read full documents and multi-hop Cypher.
+Use these exact parameters:
+- `t_neighbours_by_relation`: `node_uri`, optional `relation`, `hops`, `limit`
+- `t_path_between`: `src_uri`, `dst_uri`, optional `max_hops`
+- `t_temporal_filter`: `node_uri`, optional `from`, `until`, `limit`
+- `t_history_chain` / `t_cross_references`: `node_uri`, optional `limit`
+- `overview` / `cat`: `uri`
+All storage locations must be `mem://` URIs. Never emit raw Cypher.
 
 User query:
 {{ query }}

@@ -21,6 +21,17 @@ Mode selection:
 Vector query rewriting: rewrite the user's query into 1–3 concise vector
 queries that target different facets (entity names, relation phrases).
 
+Allowed commands and exact parameter names:
+- `t_top_k_vector`: `query` (string), optional `k` and `scope`
+- `t_children_of` / `ls`: `uri` (a `mem://` URI), optional `limit`
+- `cat`: `uri` (a `mem://` file URI)
+- `overview`: `uri` (a `mem://` directory URI)
+- `t_neighbours_by_relation`: `node_uri`, optional `relation`, `hops`, `limit`
+- `t_path_between`: `src_uri`, `dst_uri`, optional `max_hops`
+- `t_temporal_filter`: `node_uri`, optional `from`, `until`, `limit`
+- `t_history_chain` / `t_cross_references`: `node_uri`, optional `limit`
+Use only these names. Never invent a `t_cat` or raw-Cypher command.
+
 {% if memory_hit %}
 L0 memory-hit preview (from §3.1.2 fallback):
 {{ memory_hit }}
