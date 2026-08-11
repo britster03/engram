@@ -440,7 +440,10 @@ def _execute_commands(
       - template <name> (arbitrary whitelisted Cypher template)
     """
     seen: set[str] = {e["source_uri"] for e in existing if e.get("source_uri")}
-    out = list(existing)
+    # Commands may enrich rows returned by an earlier retrieval level. Copy
+    # those mappings so an explicit filesystem read does not mutate the
+    # caller's input or create a second hit for the same memory.
+    out = [dict(item) for item in existing]
     timeout = (
         ctx.cfg.knowledge_graph.l4_query_timeout_seconds
         if level in ("L3", "L4")
@@ -467,14 +470,23 @@ def _execute_commands(
             continue
         if template == "cat":
             uri = params.get("uri") or params.get("path")
-            if uri and ctx.fs.exists(uri) and uri not in seen:
+            if uri and ctx.fs.exists(uri):
                 body = _read_full_body(ctx, uri) or ""
-                seen.add(uri)
-                out.append({
-                    "source_uri": uri,
-                    "l0_abstract": body.splitlines()[0][:500] if body else "",
-                    "retrieval_level": "L4",
-                })
+                existing_row = next(
+                    (row for row in out if row.get("source_uri") == uri),
+                    None,
+                )
+                if existing_row is not None:
+                    existing_row["full_body"] = body
+                    existing_row["retrieval_level"] = f"{level}_cat"
+                else:
+                    seen.add(uri)
+                    out.append({
+                        "source_uri": uri,
+                        "l0_abstract": body.splitlines()[0][:500] if body else "",
+                        "full_body": body,
+                        "retrieval_level": f"{level}_cat",
+                    })
             continue
 
         # --- Vector search ----------------------------------------------
@@ -626,7 +638,10 @@ def _format_ltm_blocks(
         source_uri = r.get("source_uri")
         if not source_uri:
             continue
-        if r.get("overview"):
+        if "full_body" in r:
+            body = r["full_body"]
+            level = r.get("retrieval_level", "L4")
+        elif r.get("overview"):
             body = r["overview"]
             level = "L3"
         elif cascade_depth in ("L4",):
