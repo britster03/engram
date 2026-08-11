@@ -471,6 +471,13 @@ terminal/ready counts, and aggregate `memory_ready`. A stored event is ready
 when its required filesystem/KG work is indexed; a gate skip is terminal with
 no required artifacts.
 
+### `GET /api/v1/events?source=locomo&limit=500`
+
+Returns a bounded list of event IDs plus the unbounded total count for the
+authenticated tenant and optional source. Benchmark corpus reuse first verifies
+that this set has the exact expected size, then submits its IDs to the status
+endpoint above. Payloads and memory bodies are never returned.
+
 ### `POST /api/v1/events/{event_id}/retry`
 
 Manually retry a FAILED ingest event. Resets status → RECEIVED; the

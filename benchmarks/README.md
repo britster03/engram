@@ -53,6 +53,10 @@ python benchmarks/run_locomo.py \
   --run-id gate2-vector-only
 ```
 
+Reuse is not a blind tenant-name shortcut. The runner enumerates the tenant's
+`source=locomo` events, requires the exact pair count implied by the dataset and
+`--limit-pairs`, and waits on those exact IDs before asking any question.
+
 The runner needs `ENGRAM_ADMIN_KEY` in its environment to create a tenant or
 mint a key for a versioned corpus tenant. Provider credentials remain server
 side unless the optional secondary judge is enabled.

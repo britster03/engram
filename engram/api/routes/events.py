@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from engram.api.auth import AuthDep
@@ -61,7 +61,28 @@ class EventStatusResponse(BaseModel):
     events: list[EventReadiness]
 
 
+class EventListResponse(BaseModel):
+    source: str | None
+    total_count: int
+    event_ids: list[str]
+
+
 _TERMINAL_STATUSES = {"COMPLETE", "GATED_SKIP", "FAILED"}
+
+
+@router.get("", response_model=EventListResponse)
+def list_events(
+    source: str | None = Query(default=None, min_length=1, max_length=64),
+    limit: int = Query(default=500, ge=1, le=500),
+) -> EventListResponse:
+    """Enumerate a bounded, tenant-scoped event set for exact corpus checks."""
+    state = get_state()
+    total, event_ids = state.sqlite.list_event_ids(
+        tenant_id=current_tenant_id(),
+        source=source,
+        limit=limit,
+    )
+    return EventListResponse(source=source, total_count=total, event_ids=event_ids)
 
 
 @router.post("/status", response_model=EventStatusResponse)

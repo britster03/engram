@@ -127,6 +127,44 @@ def test_get_event_readiness_is_exact_ordered_and_tenant_scoped(tmp_path: Path):
     assert rows[0]["source_uri"] == "mem://user/episodes/a.md"
 
 
+def test_event_listing_is_tenant_and_source_scoped_with_total(tmp_path: Path):
+    store = SqliteStore(tmp_path / "ev.db")
+    expected: list[str] = []
+    for idx in range(3):
+        event_id, _ = store.record_event(
+            pair_id=f"locomo-{idx}",
+            session_id="s",
+            source="locomo",
+            event_type="INGEST",
+            payload={},
+            tenant_id="tenant-a",
+        )
+        expected.append(event_id)
+    store.record_event(
+        pair_id="other-source",
+        session_id="s",
+        source="ui",
+        event_type="INGEST",
+        payload={},
+        tenant_id="tenant-a",
+    )
+    store.record_event(
+        pair_id="other-tenant",
+        session_id="s",
+        source="locomo",
+        event_type="INGEST",
+        payload={},
+        tenant_id="tenant-b",
+    )
+
+    total, event_ids = store.list_event_ids(
+        tenant_id="tenant-a", source="locomo", limit=2
+    )
+
+    assert total == 3
+    assert event_ids == expected[:2]
+
+
 def test_claim_pending_events_is_atomic_in_store(tmp_path: Path):
     store = SqliteStore(tmp_path / "ev.db")
     for idx in range(2):

@@ -172,6 +172,36 @@ def test_exact_event_status_reports_ready_failed_and_missing(client):
     assert body["events"][0]["processed_at"] is not None
 
 
+def test_event_list_is_tenant_scoped_and_reports_unbounded_total(client):
+    c, state = client
+    expected = []
+    for idx in range(3):
+        event_id, _ = state.sqlite.record_event(
+            pair_id=f"corpus-{idx}",
+            session_id="s",
+            source="locomo",
+            event_type="INGEST",
+            payload={},
+        )
+        expected.append(event_id)
+    state.sqlite.record_event(
+        pair_id="not-corpus",
+        session_id="s",
+        source="ui",
+        event_type="INGEST",
+        payload={},
+    )
+
+    response = c.get("/api/v1/events", params={"source": "locomo", "limit": 2})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "source": "locomo",
+        "total_count": 3,
+        "event_ids": expected[:2],
+    }
+
+
 def test_memory_list_root_prefix_falls_back_to_filesystem(client):
     c, state = client
     state.fs.write_atomic(

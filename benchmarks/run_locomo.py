@@ -164,6 +164,11 @@ def _ingested_turn_ids(conv: Conversation, *, limit_pairs: int) -> set[str]:
     return included
 
 
+def _expected_pair_count(conv: Conversation, *, limit_pairs: int) -> int:
+    total = sum(1 for _ in _session_pairs(conv))
+    return min(total, limit_pairs) if limit_pairs else total
+
+
 def _selected_questions(
     conv: Conversation,
     limit: int,
@@ -594,7 +599,52 @@ def run(args: argparse.Namespace) -> int:
                         _write_json_atomic(manifest_path, manifest)
                         runtime_config_recorded = True
                     if args.corpus_run_id:
-                        print(f"  reusing memory-ready corpus from {args.corpus_run_id}")
+                        expected_pairs = _expected_pair_count(
+                            conv,
+                            limit_pairs=args.limit_pairs,
+                        )
+                        event_set = client.list_events(
+                            source="locomo",
+                            limit=min(500, expected_pairs + 1),
+                        )
+                        total_events = int(event_set.get("total_count") or 0)
+                        event_ids = [str(value) for value in event_set.get("event_ids") or []]
+                        if total_events != expected_pairs or len(event_ids) != expected_pairs:
+                            raise IngestFailedError(
+                                f"corpus {args.corpus_run_id} has {total_events} locomo events; "
+                                f"expected exactly {expected_pairs}"
+                            )
+                        readiness = client.wait_for_events(
+                            event_ids,
+                            DrainConfig(
+                                max_wait_s=_effective_drain_timeout(
+                                    args.drain_timeout,
+                                    len(event_ids),
+                                )
+                            ),
+                        )
+                        manifest["operational"]["conversations"].append({
+                            "sample_id": conv.sample_id,
+                            "tenant_id": tenant_id,
+                            "event_count": len(event_ids),
+                            "corpus_reused": True,
+                            "memory_ready": bool(readiness.get("memory_ready")),
+                            "terminal_status_counts": {
+                                status: sum(
+                                    event.get("status") == status
+                                    for event in readiness["events"]
+                                )
+                                for status in sorted({
+                                    str(event.get("status"))
+                                    for event in readiness["events"]
+                                })
+                            },
+                        })
+                        _write_json_atomic(manifest_path, manifest)
+                        print(
+                            f"  verified and reused {len(event_ids)} memory-ready events "
+                            f"from {args.corpus_run_id}"
+                        )
                     else:
                         metrics_before = _metrics_snapshot(client.metrics_text())
                         started = time.monotonic()

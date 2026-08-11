@@ -334,6 +334,31 @@ class SqliteStore:
         by_id = {row["event_id"]: dict(row) for row in rows}
         return [by_id[event_id] for event_id in event_ids if event_id in by_id]
 
+    def list_event_ids(
+        self,
+        *,
+        tenant_id: str,
+        source: str | None = None,
+        limit: int = 500,
+    ) -> tuple[int, list[str]]:
+        """Return a bounded tenant event set and its unbounded total count."""
+        where = "tenant_id = ?"
+        params: list[Any] = [tenant_id]
+        if source is not None:
+            where += " AND source = ?"
+            params.append(source)
+        total_row = self.get_conn().execute(
+            f"SELECT COUNT(*) AS count FROM events WHERE {where}",
+            tuple(params),
+        ).fetchone()
+        rows = self.get_conn().execute(
+            f"SELECT event_id FROM events WHERE {where} ORDER BY created_at, rowid LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return int(total_row["count"] if total_row else 0), [
+            str(row["event_id"]) for row in rows
+        ]
+
     def get_event_stage(self, event_id: str, *, tenant_id: str) -> dict[str, Any]:
         """Return the durable ingest stage, creating a legacy-compatible row."""
         row = self.get_conn().execute(

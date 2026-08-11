@@ -399,6 +399,16 @@ class EngramClient:
                 return {**status, "overview_ready": True, "waited_s": elapsed}
             time.sleep(cfg.poll_interval_s)
 
+    def list_events(self, *, source: str, limit: int = 500) -> dict[str, Any]:
+        """Enumerate this tenant's source events before reusing a corpus."""
+        resp = self._http.get(
+            "/api/v1/events",
+            params={"source": source, "limit": limit},
+        )
+        if resp.status_code != 200:
+            raise EngramError(f"event list failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
     # -- query -------------------------------------------------------------
 
     def query(

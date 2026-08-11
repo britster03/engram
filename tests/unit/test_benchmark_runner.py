@@ -9,6 +9,7 @@ from benchmarks.loader import Conversation, QAProbe, Turn
 from benchmarks.run_locomo import (
     _effective_drain_timeout,
     _event_latency_seconds,
+    _expected_pair_count,
     _metrics_delta,
     _metrics_snapshot,
     _retrieved_turn_ids,
@@ -81,6 +82,17 @@ def test_drain_timeout_scales_for_full_conversations_but_honors_override() -> No
     assert _effective_drain_timeout(None, 15) == 600.0
     assert _effective_drain_timeout(None, 214) == 6420.0
     assert _effective_drain_timeout(45.0, 214) == 45.0
+
+
+def test_expected_pair_count_uses_source_sessions_and_limit() -> None:
+    conv = Conversation(
+        sample_id="pairs",
+        speaker_a="A",
+        speaker_b="B",
+        turns=[_turn(1), _turn(2), _turn(3), _turn(4)],
+    )
+    assert _expected_pair_count(conv, limit_pairs=0) == 2
+    assert _expected_pair_count(conv, limit_pairs=1) == 1
 
 
 def test_retrieved_turn_ids_are_unique_and_rank_preserving() -> None:
