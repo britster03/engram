@@ -4,7 +4,7 @@
 # labels that fail to match above 0.85 are preserved verbatim and flagged
 # for manual review via /api/v1/consolidation/status.
 
-version: 1
+version: 2
 relations:
   # Employment / organisational
   - works_at
@@ -72,7 +72,11 @@ aliases:
   worksAt: works_at
   "works at": works_at
   workedAt: worked_at
-  employedBy: employed_by
+  # `employed_by` and `works_at` have the same subject/object semantics in
+  # Engram. Keep one canonical edge label so paraphrases can deduplicate.
+  employedBy: works_at
+  employed_by: works_at
+  "employed by": works_at
   reportsTo: reports_to
   livesIn: lives_in
   "lives in": lives_in
