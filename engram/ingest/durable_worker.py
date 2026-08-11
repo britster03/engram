@@ -148,15 +148,28 @@ class DurableIngestWorker:
             self._stop.wait(self.poll_interval)
 
     def _claim_batch(self) -> list[str]:
-        """Claim up to `batch_size` events in status=RECEIVED.
+        """Claim only the RECEIVED events this worker can start processing.
 
         Claiming is an SQLite transaction that flips RECEIVED → PROCESSING.
         That state transition is shared across API workers and replicas,
         unlike the process-local `_in_flight` set used only for queue hygiene.
+
+        A claim is a processing lease, not queue prefetch.  Claiming more rows
+        than there are worker slots leaves otherwise healthy events in
+        PROCESSING while they wait in the local queue.  Reconciliation then
+        mistakes sufficiently old queued rows for abandoned work and inflates
+        retry counts.  Hold the in-flight lock through the shared SQLite claim
+        so concurrent calls on this instance cannot over-reserve capacity.
         """
-        rows = self.ctx.sqlite.claim_pending_events(limit=self.batch_size)
-        claimed: list[str] = []
         with self._in_flight_lock:
+            available = min(
+                self.batch_size,
+                max(0, self.max_concurrent - len(self._in_flight)),
+            )
+            if available == 0:
+                return []
+            rows = self.ctx.sqlite.claim_pending_events(limit=available)
+            claimed: list[str] = []
             for r in rows:
                 eid = r["event_id"]
                 if eid in self._in_flight:

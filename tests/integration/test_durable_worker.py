@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,46 @@ def test_claim_batch_is_shared_across_worker_instances(cfg: EngramConfig):
     ev = sqlite.get_event(eid)
     assert ev is not None
     assert ev["status"] == "PROCESSING"
+
+
+def test_claim_batch_never_exceeds_free_worker_capacity(cfg: EngramConfig):
+    worker, sqlite, _neo = _build_worker(cfg, concurrency=1)
+    event_ids = [
+        _enqueue(sqlite, "capacity", i, f"Fact {i}", "Noted.")
+        for i in range(4)
+    ]
+
+    assert worker._claim_batch() == [event_ids[0]]
+    assert worker._claim_batch() == []
+
+    statuses = [sqlite.get_event(event_id)["status"] for event_id in event_ids]
+    assert statuses == ["PROCESSING", "RECEIVED", "RECEIVED", "RECEIVED"]
+
+    # Completing a processing lease releases one slot for the next claim.
+    with worker._in_flight_lock:
+        worker._in_flight.discard(event_ids[0])
+    sqlite.set_event_status(event_ids[0], "COMPLETE")
+
+    assert worker._claim_batch() == [event_ids[1]]
+    statuses = [sqlite.get_event(event_id)["status"] for event_id in event_ids]
+    assert statuses == ["COMPLETE", "PROCESSING", "RECEIVED", "RECEIVED"]
+
+
+def test_concurrent_claim_calls_share_instance_capacity(cfg: EngramConfig):
+    worker, sqlite, _neo = _build_worker(cfg, concurrency=2)
+    event_ids = [
+        _enqueue(sqlite, "concurrent-capacity", i, f"Fact {i}", "Noted.")
+        for i in range(8)
+    ]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        batches = list(executor.map(lambda _index: worker._claim_batch(), range(8)))
+
+    claimed = [event_id for batch in batches for event_id in batch]
+    assert claimed == event_ids[:2]
+    assert len(set(claimed)) == 2
+    statuses = [sqlite.get_event(event_id)["status"] for event_id in event_ids]
+    assert statuses == ["PROCESSING", "PROCESSING", *(["RECEIVED"] * 6)]
 
 
 def test_worker_is_idempotent_on_replay(cfg: EngramConfig):
