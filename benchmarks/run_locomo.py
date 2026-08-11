@@ -49,6 +49,24 @@ from benchmarks.metrics import (
 
 _LOCOMO_LICENSE = "CC BY-NC 4.0"
 _LOCOMO_UPSTREAM = "https://github.com/snap-research/locomo"
+_MIN_AUTO_DRAIN_TIMEOUT_S = 600.0
+_AUTO_DRAIN_SECONDS_PER_PAIR = 30.0
+
+
+def _effective_drain_timeout(requested_s: float | None, event_count: int) -> float:
+    """Return an explicit deadline or a corpus-sized conservative default.
+
+    A full LoCoMo conversation contains hundreds of pairs and hosted model
+    providers intentionally serialize calls.  The old fixed ten-minute
+    default could therefore fail a healthy run after only a fraction of its
+    events had completed.  Explicit caller deadlines remain authoritative.
+    """
+    if requested_s is not None:
+        return requested_s
+    return max(
+        _MIN_AUTO_DRAIN_TIMEOUT_S,
+        event_count * _AUTO_DRAIN_SECONDS_PER_PAIR,
+    )
 
 
 def _session_pairs(conv: Conversation):
@@ -410,6 +428,11 @@ def _make_manifest(
             or os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000"),
             "max_depth": args.max_depth,
             "max_reentries": args.max_reentries,
+            "drain_timeout_s": args.drain_timeout,
+            "drain_timeout_policy": (
+                "explicit" if args.drain_timeout is not None
+                else "auto=max(600,pairs*30)"
+            ),
             "retrieval_forced": True,
             "ingest_force_store": True,
             "corpus_run_id": args.corpus_run_id or run_id,
@@ -496,7 +519,6 @@ def run(args: argparse.Namespace) -> int:
             completed_ids.add(result_id)
             rows.append(row)
 
-    drain_cfg = DrainConfig(max_wait_s=args.drain_timeout)
     print(f"run {run_id}: {len(conversations)} conversation(s) -> {out_dir}")
     judge_context = (
         OllamaJudge(model=args.judge_model) if args.judge else nullcontext(None)
@@ -577,6 +599,12 @@ def run(args: argparse.Namespace) -> int:
                             conv,
                             limit_pairs=args.limit_pairs,
                             context_turns=args.context_turns,
+                        )
+                        drain_cfg = DrainConfig(
+                            max_wait_s=_effective_drain_timeout(
+                                args.drain_timeout,
+                                len(event_ids),
+                            )
                         )
                         readiness = client.wait_for_events(event_ids, drain_cfg)
                         memory_ready_s = time.monotonic() - started
@@ -912,7 +940,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-depth", default="L4")
     parser.add_argument("--max-reentries", type=int, default=1)
-    parser.add_argument("--drain-timeout", type=float, default=600.0)
+    parser.add_argument(
+        "--drain-timeout",
+        type=float,
+        default=None,
+        help="seconds per conversation; default auto-scales as max(600, pairs*30)",
+    )
     parser.add_argument("--query-timeout", type=float, default=300.0)
     parser.add_argument("--tenant-prefix", default="locomo")
     parser.add_argument(

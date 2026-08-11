@@ -7,6 +7,7 @@ import pytest
 from benchmarks.engram_client import DrainConfig, EngramClient, IngestFailedError
 from benchmarks.loader import Conversation, QAProbe, Turn
 from benchmarks.run_locomo import (
+    _effective_drain_timeout,
     _event_latency_seconds,
     _metrics_delta,
     _metrics_snapshot,
@@ -57,6 +58,12 @@ def test_ingest_conversation_preserves_ids_images_and_prior_only_context() -> No
     second_context = client.calls[1]["session_context"]
     assert "turn 1" in second_context and "turn 2" in second_context
     assert "turn 3" not in second_context and "turn 4" not in second_context
+
+
+def test_drain_timeout_scales_for_full_conversations_but_honors_override() -> None:
+    assert _effective_drain_timeout(None, 15) == 600.0
+    assert _effective_drain_timeout(None, 214) == 6420.0
+    assert _effective_drain_timeout(45.0, 214) == 45.0
 
 
 def test_retrieved_turn_ids_are_unique_and_rank_preserving() -> None:
