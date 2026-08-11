@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from engram import frontmatter, prompts, tracing
+from engram import metrics as metrics_mod
 from engram import tokens as tok_mod
 from engram.config import EngramConfig
 from engram.frontmatter import FrontmatterError
-from engram.models.core import CoreModelError, CoreModelProvider
+from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
 from engram.models.semantic import L1PlanOutput, LnPlanOutput, complete_validated
@@ -128,6 +129,7 @@ def run_query(
             "token_allocation": {},
             "reentry_requests": [],
             "l0_gate": {},
+            "model_calls": [],
         }
     max_depth = max_depth or ctx.cfg.retrieval.max_depth
     max_reentries = max_reentries if max_reentries is not None else ctx.cfg.retrieval.max_reentries
@@ -189,6 +191,7 @@ def run_query(
         plan = _l1_plan(
             ctx, query=query, session_context=session_context,
             memory_hit=gate.memory_hit,
+            metadata=md,
         )
     md.latency_ms["l1_plan"] = (time.perf_counter() - t) * 1000
     md.levels_visited.append("L1")
@@ -234,6 +237,7 @@ def run_query(
                 session_context=session_context,
                 previous_level=prev_level,
                 previous_results=current_results,
+                metadata=md,
             )
         md.latency_ms[f"{level_name.lower()}_plan"] = (time.perf_counter() - t) * 1000
         md.levels_visited.append(level_name)
@@ -288,6 +292,7 @@ def _l1_plan(
     query: str,
     session_context: str | None,
     memory_hit: dict | None,
+    metadata: RetrievalMetadata | None = None,
 ) -> dict[str, Any]:
     try:
         tree = render_tree(
@@ -304,13 +309,14 @@ def _l1_plan(
         memory_hit=(memory_hit and memory_hit.get("l0_abstract")),
     )
     try:
-        validated, _result = complete_validated(
+        validated, result = complete_validated(
             ctx.core,
             task="l1_plan",
             schema=L1PlanOutput,
             system_prompt=prompt,
             user_prompt="Return the plan JSON.",
         )
+        _trace_core_call(metadata, ctx, "l1_plan", result)
         out = validated.model_dump(mode="json")
     except (CoreModelError, CircuitOpenError, Exception) as err:
         # §Graceful degradation: when the Core Model is unavailable we fall
@@ -334,6 +340,7 @@ def _ln_plan(
     session_context: str | None,
     previous_level: str,
     previous_results: list[dict[str, Any]],
+    metadata: RetrievalMetadata | None = None,
 ) -> dict[str, Any]:
     summary = _summarise_results(previous_results, limit=20)
     prompt = prompts.render(
@@ -345,13 +352,14 @@ def _ln_plan(
         previous_results=summary,
     )
     try:
-        validated, _result = complete_validated(
+        validated, result = complete_validated(
             ctx.core,
             task="ln_plan",
             schema=LnPlanOutput,
             system_prompt=prompt,
             user_prompt="Return the fused plan-judge JSON.",
         )
+        _trace_core_call(metadata, ctx, f"{level.lower()}_plan", result)
         out = validated.model_dump(mode="json")
     except (CoreModelError, CircuitOpenError, Exception) as err:
         # §Graceful degradation: when Ln planning fails we terminate the
@@ -833,6 +841,8 @@ def _answer_loop(
             md.latency_ms[f"frontier_answer_{reentries}"] = (
                 time.perf_counter() - t
             ) * 1000
+            _record_frontier_metrics(ctx, None, outcome="ERROR")
+            _trace_frontier_call(md, ctx, None, outcome="ERROR")
             _notify_step(on_step, md, "frontier_error")
             return QueryResult(
                 answer=(
@@ -842,6 +852,8 @@ def _answer_loop(
                 retrieval_metadata=md,
             )
         md.latency_ms[f"frontier_answer_{reentries}"] = (time.perf_counter() - t) * 1000
+        _record_frontier_metrics(ctx, verdict, outcome=verdict.verdict)
+        _trace_frontier_call(md, ctx, verdict, outcome=verdict.verdict)
         if verdict.verdict == "ANSWER" or not allow_more:
             md.reentries = reentries
             _notify_step(on_step, md, "frontier_answer")
@@ -940,6 +952,7 @@ def _run_reentry_cascade(
                 session_context=session_context,
                 previous_level=previous_level,
                 previous_results=current_results,
+                metadata=md,
             )
         md.latency_ms[f"{level_name.lower()}_reentry_{reentry_idx}_plan"] = (
             time.perf_counter() - t
@@ -1000,6 +1013,89 @@ def _trace_plan(md: RetrievalMetadata, level: str, plan: dict[str, Any]) -> None
                 "params": _bounded_trace_value(params),
             }
         )
+
+
+def _trace_core_call(
+    metadata: RetrievalMetadata | None,
+    ctx: OrchestratorContext,
+    task: str,
+    result: CompletionResult,
+) -> None:
+    if metadata is None or metadata.trace is None:
+        return
+    calls = metadata.trace["model_calls"]
+    if len(calls) >= 50:
+        return
+    calls.append({
+        "family": "core",
+        "task": task,
+        "provider": ctx.cfg.core_model.provider,
+        "model": ctx.cfg.core_model.model_path,
+        "provider_calls": max(1, result.provider_calls),
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "latency_ms": result.latency_ms,
+        "outcome": "COMPLETE",
+    })
+
+
+def _record_frontier_metrics(
+    ctx: OrchestratorContext,
+    verdict: FrontierVerdict | None,
+    *,
+    outcome: str,
+) -> None:
+    provider = ctx.cfg.frontier_llm.provider
+    model = ctx.cfg.frontier_llm.model_path
+    metrics_mod.frontier_calls.labels(
+        provider=provider,
+        model=model,
+        outcome=outcome,
+    ).inc(max(1, verdict.provider_calls) if verdict is not None else 1)
+    if verdict is None:
+        return
+    if verdict.tokens_in is not None:
+        metrics_mod.frontier_tokens.labels(
+            provider=provider,
+            model=model,
+            direction="in",
+        ).inc(verdict.tokens_in)
+    if verdict.tokens_out is not None:
+        metrics_mod.frontier_tokens.labels(
+            provider=provider,
+            model=model,
+            direction="out",
+        ).inc(verdict.tokens_out)
+    if verdict.latency_ms is not None:
+        metrics_mod.frontier_latency.labels(
+            provider=provider,
+            model=model,
+        ).observe(verdict.latency_ms / 1000.0)
+
+
+def _trace_frontier_call(
+    metadata: RetrievalMetadata,
+    ctx: OrchestratorContext,
+    verdict: FrontierVerdict | None,
+    *,
+    outcome: str,
+) -> None:
+    if metadata.trace is None:
+        return
+    calls = metadata.trace["model_calls"]
+    if len(calls) >= 50:
+        return
+    calls.append({
+        "family": "frontier",
+        "task": "answer",
+        "provider": ctx.cfg.frontier_llm.provider,
+        "model": ctx.cfg.frontier_llm.model_path,
+        "provider_calls": max(1, verdict.provider_calls) if verdict is not None else 1,
+        "tokens_in": verdict.tokens_in if verdict is not None else None,
+        "tokens_out": verdict.tokens_out if verdict is not None else None,
+        "latency_ms": verdict.latency_ms if verdict is not None else None,
+        "outcome": outcome,
+    })
 
 
 def _trace_hits(

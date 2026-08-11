@@ -226,6 +226,8 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     assert trace["hits"]
     assert any(hit["source_turn_ids"] for hit in trace["hits"])
     assert "token_allocation" in trace
+    assert {call["family"] for call in trace["model_calls"]} == {"core", "frontier"}
+    assert all("provider_calls" in call for call in trace["model_calls"])
 
 
 def test_low_confidence_triplet_writes_fact_node(cfg: EngramConfig):

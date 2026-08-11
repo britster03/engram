@@ -28,6 +28,7 @@ class FrontierVerdict:
     tokens_in: int | None = None
     tokens_out: int | None = None
     latency_ms: float | None = None
+    provider_calls: int = 1
 
 
 class FrontierLLMProvider(ABC):

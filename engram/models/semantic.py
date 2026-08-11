@@ -153,13 +153,41 @@ def complete_validated(
     repair = user_prompt
     last_error: ValidationError | None = None
     for attempt in range(2):
-        result = provider.complete(
-            system_prompt=system_prompt,
-            user_prompt=repair,
-            output_schema=schema.model_json_schema(),
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        try:
+            result = provider.complete(
+                system_prompt=system_prompt,
+                user_prompt=repair,
+                output_schema=schema.model_json_schema(),
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception:
+            metrics_mod.core_model_calls.labels(
+                task=task,
+                provider=provider_name,
+            ).inc()
+            raise
+        metrics_mod.core_model_calls.labels(
+            task=task,
+            provider=provider_name,
+        ).inc(max(1, result.provider_calls))
+        if result.tokens_in is not None:
+            metrics_mod.core_model_tokens.labels(
+                task=task,
+                provider=provider_name,
+                direction="in",
+            ).inc(result.tokens_in)
+        if result.tokens_out is not None:
+            metrics_mod.core_model_tokens.labels(
+                task=task,
+                provider=provider_name,
+                direction="out",
+            ).inc(result.tokens_out)
+        if result.latency_ms is not None:
+            metrics_mod.core_model_latency.labels(
+                task=task,
+                provider=provider_name,
+            ).observe(result.latency_ms / 1000.0)
         try:
             return schema.model_validate(result.output), result
         except ValidationError as err:

@@ -166,6 +166,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
         if output_schema is not None:
             sys_text += "\n\nOutput schema:\n" + json.dumps(output_schema, indent=2)
         started = time.perf_counter()
+        provider_calls = 1
         options: dict[str, float | int] = {
             "temperature": self.cfg.temperature if temperature is None else temperature,
             "num_predict": max_tokens or self.cfg.max_tokens,
@@ -206,6 +207,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
             ]
             retry_payload["options"] = {**payload["options"], "temperature": 0.0}
             data = self._post_chat(retry_payload)
+            provider_calls += 1
             latency_ms = (time.perf_counter() - started) * 1000
             raw_text = self._message_content(data)
             output = self.extract_json(raw_text)
@@ -216,6 +218,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
             tokens_in=data.get("prompt_eval_count"),
             tokens_out=data.get("eval_count"),
             latency_ms=latency_ms,
+            provider_calls=provider_calls,
         )
 
 
@@ -259,8 +262,10 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
         }
         started = time.perf_counter()
         parsed = None
+        provider_calls = 0
         for attempt in range(2):
             try:
+                provider_calls += 1
                 data = self._post_chat(payload)
                 raw_text = self._message_content(data)
                 parsed = validate_frontier_output(
@@ -297,4 +302,5 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
             tokens_in=data.get("prompt_eval_count"),
             tokens_out=data.get("eval_count"),
             latency_ms=(time.perf_counter() - started) * 1000,
+            provider_calls=provider_calls,
         )

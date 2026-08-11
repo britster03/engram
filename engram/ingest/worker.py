@@ -112,9 +112,6 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 except CoreModelError as err:
                     ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
                     raise
-                metrics_mod.core_model_calls.labels(
-                    task="gate_write", provider=ctx.cfg.core_model.provider
-                ).inc()
         ctx.sqlite.advance_event_stage(
             event_id, "GATED", tenant_id=event_tenant, gate_output=gate
         )
@@ -143,9 +140,6 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 extraction = _call_extract(
                     ctx, turn_pair, session_context=payload.get("session_context")
                 )
-                metrics_mod.core_model_calls.labels(
-                    task="extract", provider=ctx.cfg.core_model.provider
-                ).inc()
             else:
                 extraction = existing
             extraction = _prepare_extraction(ctx, extraction, payload)
@@ -570,9 +564,6 @@ def _resolve_entities(
                 surrounding_sentence=extraction.get("resolved_text", "")[:500],
                 incoming_abstract=l0,
             )
-            metrics_mod.core_model_calls.labels(
-                task="entity_link", provider=ctx.cfg.core_model.provider
-            ).inc()
             matched_uri = link.matched_uri if link else None
         except Exception:
             log.warning(

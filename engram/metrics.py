@@ -61,6 +61,18 @@ core_model_calls = Counter(
     ["task", "provider"],
     registry=REGISTRY,
 )
+core_model_tokens = Counter(
+    "engram_core_model_tokens_total",
+    "Core Model provider-reported tokens by task and direction.",
+    ["task", "provider", "direction"],
+    registry=REGISTRY,
+)
+core_model_latency = Histogram(
+    "engram_core_model_latency_seconds",
+    "Core Model logical-call latency by task and provider.",
+    ["task", "provider"],
+    registry=REGISTRY,
+)
 semantic_output_schema_failures = Counter(
     "engram_semantic_output_schema_failures_total",
     "Semantic model outputs rejected by typed task contracts.",
@@ -76,7 +88,19 @@ overview_model_calls = Counter(
 frontier_tokens = Counter(
     "engram_frontier_tokens_total",
     "Frontier LLM tokens in/out.",
-    ["direction"],
+    ["provider", "model", "direction"],
+    registry=REGISTRY,
+)
+frontier_calls = Counter(
+    "engram_frontier_calls_total",
+    "Frontier logical calls by provider, model, and outcome.",
+    ["provider", "model", "outcome"],
+    registry=REGISTRY,
+)
+frontier_latency = Histogram(
+    "engram_frontier_latency_seconds",
+    "Frontier logical-call latency by provider and model.",
+    ["provider", "model"],
     registry=REGISTRY,
 )
 

@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from engram import metrics as metrics_mod
 from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
 from engram.models.semantic import (
     GateWriteOutput,
@@ -28,6 +29,8 @@ class SequenceCore(CoreModelProvider):
 
 def test_schema_violation_gets_exactly_one_repair_attempt() -> None:
     core = SequenceCore([{"store": "yes"}, {"store": True, "reason": "fact"}])
+    counter = metrics_mod.core_model_calls.labels(task="gate_write", provider="unknown")
+    before = counter._value.get()
     validated, _result = complete_validated(
         core,
         task="gate_write",
@@ -38,6 +41,7 @@ def test_schema_violation_gets_exactly_one_repair_attempt() -> None:
     assert validated.store is True
     assert len(core.calls) == 2
     assert core.calls[0] == GateWriteOutput.model_json_schema()
+    assert counter._value.get() - before == 2
 
 
 def test_repeated_schema_violation_fails_without_unbounded_retries() -> None:
