@@ -293,7 +293,10 @@ def audit(
             atomized += 1
         if fact.get("relation_normalized") is not True:
             relation_review += 1
-        if not isinstance(fm.get("conflict"), dict):
+        # Conflict classification applies only to graph assertions between two
+        # entity nodes. Literal-object FACTs remain first-class files/nodes but
+        # intentionally have no RELATES_TO edge to classify.
+        if fact.get("object_uri") and not isinstance(fm.get("conflict"), dict):
             fail("conflict_decision", uri)
         expected_episode = f"mem://user/episodes/{source_event}.md"
         if fm.get("source_episode_uri") != expected_episode:
@@ -317,7 +320,22 @@ def audit(
     episode_multiplicity = {
         event_id: len(values) for event_id, values in episode_by_event.items() if len(values) != 1
     }
-    missing_episodes = sorted(event_ids - set(episode_by_event))
+    episode_expected_events = (
+        event_ids
+        if require_complete
+        else {
+            str(row["event_id"])
+            for row in events
+            if row["completed_stage"]
+            in {
+                "FILESYSTEM_COMMITTED",
+                "KG_COMMITTED",
+                "CONSOLIDATION_COMMITTED",
+                "COMPLETE",
+            }
+        }
+    )
+    missing_episodes = sorted(episode_expected_events - set(episode_by_event))
     if episode_multiplicity or missing_episodes:
         fail(
             "episode_per_event",
