@@ -59,6 +59,8 @@ def _notify_step(
 @dataclass
 class RetrievalMetadata:
     retrieval_mode: str = "adaptive"
+    min_depth: str | None = None
+    max_depth: str | None = None
     cascade_depth_reached: str = "L0"
     levels_visited: list[str] = field(default_factory=list)
     predicted_depth: str | None = None
@@ -74,6 +76,8 @@ class RetrievalMetadata:
     def to_dict(self) -> dict[str, Any]:
         return {
             "retrieval_mode": self.retrieval_mode,
+            "min_depth": self.min_depth,
+            "max_depth": self.max_depth,
             "cascade_depth_reached": self.cascade_depth_reached,
             "levels_visited": self.levels_visited,
             "predicted_depth": self.predicted_depth,
@@ -115,6 +119,7 @@ def run_query(
     query: str,
     session_context: str | None = None,
     max_depth: str | None = None,
+    min_depth: str | None = None,
     max_reentries: int | None = None,
     include_trace: bool = False,
     force_retrieval: bool = False,
@@ -125,11 +130,27 @@ def run_query(
     # explicit, manifestable strategy name.
     if force_retrieval and retrieval_mode == "adaptive":
         retrieval_mode = "forced"
-    md = RetrievalMetadata(retrieval_mode=retrieval_mode)
+    max_depth = max_depth or ctx.cfg.retrieval.max_depth
+    if max_depth not in _DEPTH_ORDER:
+        raise ValueError(f"invalid max_depth: {max_depth}")
+    if min_depth is not None:
+        if min_depth not in {"L1", "L2", "L3", "L4"}:
+            raise ValueError(f"invalid min_depth: {min_depth}")
+        if retrieval_mode != "forced":
+            raise ValueError("min_depth requires retrieval_mode='forced'")
+        if _depth_rank(min_depth) > _depth_rank(max_depth):
+            raise ValueError("min_depth cannot exceed max_depth")
+
+    md = RetrievalMetadata(
+        retrieval_mode=retrieval_mode,
+        min_depth=min_depth,
+        max_depth=max_depth,
+    )
     if include_trace:
         md.trace_id = f"trace-{uuid.uuid4().hex}"
         md.trace = {
             "retrieval_mode": retrieval_mode,
+            "request": {"min_depth": min_depth, "max_depth": max_depth},
             "vector_queries": [],
             "commands": [],
             "sufficiency_decisions": [],
@@ -140,7 +161,6 @@ def run_query(
             "l0_gate": {},
             "model_calls": [],
         }
-    max_depth = max_depth or ctx.cfg.retrieval.max_depth
     max_reentries = max_reentries if max_reentries is not None else ctx.cfg.retrieval.max_reentries
 
     if retrieval_mode == "no_memory":
@@ -231,7 +251,12 @@ def run_query(
     _trace_plan(md, "L1", plan)
     _notify_step(on_step, md, "l1_plan")
 
-    if plan.get("session_sufficient") and plan.get("session_answer_context"):
+    minimum_rank = _depth_rank(min_depth or "L1")
+    if (
+        plan.get("session_sufficient")
+        and plan.get("session_answer_context")
+        and minimum_rank <= _depth_rank("L1")
+    ):
         msc = _assemble_msc(
             session_context=session_context,
             ltm_blocks=[plan["session_answer_context"]],
@@ -250,7 +275,7 @@ def run_query(
     _notify_step(on_step, md, "l1_execute")
 
     predicted_depth = plan.get("predicted_depth", "L4")
-    target_depth = _depth_rank(predicted_depth)
+    target_depth = max(_depth_rank(predicted_depth), minimum_rank)
     cap_depth = _depth_rank(max_depth)
     target_depth = min(target_depth, cap_depth)
 
@@ -275,7 +300,10 @@ def run_query(
         md.cascade_depth_reached = level_name
         _trace_plan(md, level_name, ln_plan)
         _notify_step(on_step, md, f"{level_name.lower()}_plan")
-        if ln_plan.get("terminate_cascade"):
+        # A forced benchmark depth is a lower bound on planner visitation.
+        # Respect sufficiency at that layer, but never let an earlier layer
+        # silently turn an advertised L4 run into an L2 run.
+        if ln_plan.get("terminate_cascade") and _depth_rank(level_name) >= minimum_rank:
             break
         t = time.perf_counter()
         with tracing.span(f"query.{level_name.lower()}_execute"):

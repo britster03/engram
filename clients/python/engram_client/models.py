@@ -6,6 +6,9 @@ from pydantic import BaseModel
 
 
 class RetrievalMetadata(BaseModel):
+    retrieval_mode: str = "adaptive"
+    min_depth: str | None = None
+    max_depth: str | None = None
     cascade_depth_reached: str
     levels_visited: list[str]
     predicted_depth: str | None = None

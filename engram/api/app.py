@@ -471,6 +471,7 @@ def query(req: schemas.QueryRequest):
             query=req.query,
             session_context=req.session_context,
             max_depth=req.max_depth,
+            min_depth=req.min_depth,
             max_reentries=req.max_reentries,
             include_trace=req.include_trace,
             force_retrieval=req.force_retrieval,

@@ -111,10 +111,14 @@ def test_benchmark_client_sends_one_unambiguous_retrieval_mode() -> None:
     capture = _CapturingHttp()
     client._http = capture  # type: ignore[assignment]
 
-    client.query("question", retrieval_mode="vector_only")
+    client.query(
+        "question", retrieval_mode="forced", min_depth="L4", max_depth="L4"
+    )
 
     assert capture.body is not None
-    assert capture.body["retrieval_mode"] == "vector_only"
+    assert capture.body["retrieval_mode"] == "forced"
+    assert capture.body["min_depth"] == "L4"
+    assert capture.body["max_depth"] == "L4"
     assert "force_retrieval" not in capture.body
 
 

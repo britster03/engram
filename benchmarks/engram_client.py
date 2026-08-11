@@ -398,6 +398,7 @@ class EngramClient:
         question: str,
         *,
         max_depth: str | None = None,
+        min_depth: str | None = None,
         max_reentries: int | None = None,
         session_context: str | None = None,
         include_trace: bool = True,
@@ -413,6 +414,8 @@ class EngramClient:
         body: dict[str, Any] = {"query": question}
         if max_depth is not None:
             body["max_depth"] = max_depth
+        if min_depth is not None:
+            body["min_depth"] = min_depth
         if max_reentries is not None:
             body["max_reentries"] = max_reentries
         if session_context is not None:

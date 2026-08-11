@@ -12,8 +12,8 @@ Run the same seeded/category-balanced question IDs at every retrieval gate:
 
 1. `no_memory`: frontier-only quality floor.
 2. `vector_only`: one raw-query vector search, no semantic planner/cascade.
-3. `forced` with `--max-depth L2`: planned L1 plus graph/AGFS L2.
-4. `forced` with `--max-depth L4`: full forced cascade.
+3. `forced` with `--min-depth L2 --max-depth L2`: planned L1 plus graph/AGFS L2.
+4. `forced` with `--min-depth L4 --max-depth L4`: visit the full planned cascade.
 5. `adaptive`: normal L0 routing, used to compare classifier off/shadow/active
    on separately configured servers.
 
@@ -31,6 +31,7 @@ python benchmarks/run_locomo.py \
   --limit-convs 1 \
   --limit-questions 25 \
   --retrieval-mode forced \
+  --min-depth L2 \
   --max-depth L2 \
   --seed 42 \
   --tenant-prefix locomo \
@@ -56,6 +57,11 @@ python benchmarks/run_locomo.py \
 Reuse is not a blind tenant-name shortcut. The runner enumerates the tenant's
 `source=locomo` events, requires the exact pair count implied by the dataset and
 `--limit-pairs`, and waits on those exact IDs before asking any question.
+
+`--max-depth` is only a ceiling. Forced ablations must also set `--min-depth`
+to the same layer; otherwise the semantic planner may correctly stop early and
+the run is not evidence that the deeper layers were exercised. The runner
+rejects forced mode without an explicit lower bound.
 
 The runner needs `ENGRAM_ADMIN_KEY` in its environment to create a tenant or
 mint a key for a versioned corpus tenant. Provider credentials remain server

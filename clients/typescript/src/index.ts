@@ -7,6 +7,9 @@
  */
 
 export interface RetrievalMetadata {
+  retrieval_mode: string;
+  min_depth: string | null;
+  max_depth: string | null;
   cascade_depth_reached: string;
   levels_visited: string[];
   predicted_depth: string | null;
@@ -145,18 +148,22 @@ export class EngramClient {
     sessionId?: string | null;
     sessionContext?: string | null;
     maxDepth?: string;
+    minDepth?: 'L1' | 'L2' | 'L3' | 'L4';
     maxReentries?: number;
     includeTrace?: boolean;
     forceRetrieval?: boolean;
+    retrievalMode?: 'adaptive' | 'forced' | 'no_memory' | 'vector_only';
   } = {}): Promise<QueryResponse> {
     const body = {
       session_id: opts.sessionId ?? null,
       query,
       session_context: opts.sessionContext ?? null,
       max_depth: opts.maxDepth ?? null,
+      min_depth: opts.minDepth ?? null,
       max_reentries: opts.maxReentries ?? null,
       include_trace: opts.includeTrace ?? false,
       force_retrieval: opts.forceRetrieval ?? false,
+      retrieval_mode: opts.retrievalMode ?? 'adaptive',
     };
     return this.post<QueryResponse>('/api/v1/query', body);
   }

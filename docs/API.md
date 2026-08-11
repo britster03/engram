@@ -122,6 +122,7 @@ independently; response is 202 with a list of per-item results.
   "query": "What project is Alice working on?",
   "session_context": "...",        // optional explicit override
   "max_depth": "L4",               // optional, default from config
+  "min_depth": null,                // L1-L4; forced benchmark mode only
   "max_reentries": 2,              // optional, default from config
   "include_trace": true,           // optional, default false
   "retrieval_mode": "adaptive",    // adaptive | forced | no_memory | vector_only
@@ -137,6 +138,12 @@ The latter two modes are diagnostic benchmark ablations, not recommended
 product defaults. An explicit `retrieval_mode` takes precedence over the legacy
 `force_retrieval` boolean.
 
+`max_depth` is a ceiling, not a promise that every layer will run. Diagnostic
+ablations that must visit a specific layer use `retrieval_mode: "forced"` and
+set `min_depth` to that layer. The lower bound cannot exceed `max_depth`; L2/L3
+sufficiency can still prevent unnecessary execution at the requested terminal
+layer, but cannot stop the planners before it is visited.
+
 Response — 200 OK:
 
 ```json
@@ -145,6 +152,8 @@ Response — 200 OK:
   "session_id": "sess-abc-123",
   "retrieval_metadata": {
     "retrieval_mode": "adaptive",
+    "min_depth": null,
+    "max_depth": "L4",
     "cascade_depth_reached": "L2",
     "levels_visited": ["L0", "L1", "L2"],
     "predicted_depth": "L2",
@@ -167,6 +176,7 @@ Response — 200 OK:
   "trace_id": "trace-...",
   "retrieval_trace": {
     "retrieval_mode": "adaptive",
+    "request": {"min_depth": null, "max_depth": "L4"},
     "vector_queries": ["What project is Alice working on?"],
     "commands": [],
     "hits": [

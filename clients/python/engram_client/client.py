@@ -106,14 +106,22 @@ class EngramClient:
         session_id: str | None = None,
         session_context: str | None = None,
         max_depth: str | None = None,
+        min_depth: str | None = None,
         max_reentries: int | None = None,
+        include_trace: bool = False,
+        force_retrieval: bool = False,
+        retrieval_mode: str = "adaptive",
     ) -> QueryResponse:
         body = {
             "session_id": session_id,
             "query": query,
             "session_context": session_context,
             "max_depth": max_depth,
+            "min_depth": min_depth,
             "max_reentries": max_reentries,
+            "include_trace": include_trace,
+            "force_retrieval": force_retrieval,
+            "retrieval_mode": retrieval_mode,
         }
         raw = self._post("/api/v1/query", body)
         return QueryResponse.model_validate(raw)
@@ -271,7 +279,7 @@ class EngramClient:
         """Create a tenant. Returns (payload, api_key). The api_key is
         shown exactly once — persist it immediately.
         """
-        body = {"tenant_id": tenant_id, "display_name": display_name}
+        body: dict[str, Any] = {"tenant_id": tenant_id, "display_name": display_name}
         if quotas:
             body["quotas"] = quotas
         raw = self._post("/api/v1/admin/tenants", body)

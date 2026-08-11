@@ -261,6 +261,26 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     assert {call["family"] for call in trace["model_calls"]} == {"core", "frontier"}
     assert all("provider_calls" in call for call in trace["model_calls"])
 
+    # A benchmark lower bound must override early Ln sufficiency. The stub Ln
+    # planner terminates at every layer, so this proves a forced-L4 manifest
+    # cannot quietly describe an L2 execution.
+    forced_l4 = run_query(
+        orch_ctx,
+        session_id=None,
+        query="Where does the user work?",
+        max_depth="L4",
+        min_depth="L4",
+        include_trace=True,
+        retrieval_mode="forced",
+    )
+    forced_l4_md = forced_l4.retrieval_metadata
+    assert forced_l4_md.cascade_depth_reached == "L4"
+    assert forced_l4_md.levels_visited == ["L0", "L1", "L2", "L3", "L4"]
+    assert forced_l4_md.min_depth == "L4"
+    assert forced_l4_md.max_depth == "L4"
+    assert forced_l4_md.trace is not None
+    assert forced_l4_md.trace["request"] == {"min_depth": "L4", "max_depth": "L4"}
+
     # Frozen ablations must be materially distinct. Neither mode may invoke
     # the Core planner, and no-memory must not touch any stored memory.
     orch_ctx.core = UnexpectedPlannerProvider()

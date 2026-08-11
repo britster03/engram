@@ -42,13 +42,15 @@ describe('EngramClient', () => {
     });
 
     const result = await client.query('Where?', {
-      includeTrace: true, forceRetrieval: true, maxDepth: 'L2', maxReentries: 1,
+      includeTrace: true, retrievalMode: 'forced', minDepth: 'L2',
+      maxDepth: 'L2', maxReentries: 1,
     });
 
     expect(result.trace_id).toBe('trace-1');
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body).toMatchObject({
-      include_trace: true, force_retrieval: true, max_depth: 'L2', max_reentries: 1,
+      include_trace: true, retrieval_mode: 'forced', min_depth: 'L2',
+      max_depth: 'L2', max_reentries: 1,
     });
   });
 

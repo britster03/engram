@@ -24,6 +24,19 @@ def test_query_depth_pattern():
     assert schemas.QueryRequest(query="hi", max_depth="L4").max_depth == "L4"
 
 
+def test_query_minimum_depth_requires_a_valid_forced_window():
+    request = schemas.QueryRequest(
+        query="hi", retrieval_mode="forced", min_depth="L3", max_depth="L4"
+    )
+    assert request.min_depth == "L3"
+    with pytest.raises(ValidationError, match="requires retrieval_mode='forced'"):
+        schemas.QueryRequest(query="hi", min_depth="L2")
+    with pytest.raises(ValidationError, match="cannot exceed max_depth"):
+        schemas.QueryRequest(
+            query="hi", retrieval_mode="forced", min_depth="L4", max_depth="L2"
+        )
+
+
 def test_query_max_reentries_bounds():
     with pytest.raises(ValidationError):
         schemas.QueryRequest(query="hi", max_reentries=6)

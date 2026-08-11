@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # --- Per-field caps (characters, not tokens) -----------------------------
 MAX_CONTENT_LENGTH = 32_000          # per turn
@@ -101,6 +101,10 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
     session_context: str | None = Field(default=None, max_length=MAX_SESSION_CONTEXT_LENGTH)
     max_depth: str | None = Field(default=None, pattern=r"^L[0-4]$|^SESSION$")
+    # Benchmark-only lower bound for the planned cascade. Unlike max_depth,
+    # this deliberately excludes SESSION/L0 because those are routing stages,
+    # not memory-retrieval layers.
+    min_depth: Literal["L1", "L2", "L3", "L4"] | None = None
     max_reentries: int | None = Field(default=None, ge=0, le=5)
     stream: bool = False
     include_trace: bool = False
@@ -112,6 +116,21 @@ class QueryRequest(BaseModel):
     # Benchmark/diagnostic override. It can only add retrieval, never suppress it.
     # Retained for clients created before ``retrieval_mode`` was introduced.
     force_retrieval: bool = False
+
+    @model_validator(mode="after")
+    def _validate_depth_window(self) -> QueryRequest:
+        if self.min_depth is None:
+            return self
+        forced = self.retrieval_mode == "forced" or (
+            self.retrieval_mode == "adaptive" and self.force_retrieval
+        )
+        if not forced:
+            raise ValueError("min_depth requires retrieval_mode='forced'")
+        if self.max_depth is not None:
+            order = {"SESSION": 0, "L0": 1, "L1": 2, "L2": 3, "L3": 4, "L4": 5}
+            if order[self.min_depth] > order[self.max_depth]:
+                raise ValueError("min_depth cannot exceed max_depth")
+        return self
 
 
 class QueryResponse(BaseModel):

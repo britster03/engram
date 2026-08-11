@@ -433,6 +433,7 @@ def _make_manifest(
             "base_url": args.base_url
             or os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000"),
             "max_depth": args.max_depth,
+            "min_depth": args.min_depth,
             "max_reentries": args.max_reentries,
             "retrieval_mode": args.retrieval_mode,
             "drain_timeout_s": args.drain_timeout,
@@ -740,6 +741,7 @@ def run(args: argparse.Namespace) -> int:
                         response = client.query(
                             probe.question,
                             max_depth=args.max_depth,
+                            min_depth=args.min_depth,
                             max_reentries=args.max_reentries,
                             include_trace=True,
                             force_retrieval=False,
@@ -993,7 +995,15 @@ def main() -> int:
     parser.add_argument("--limit-pairs", type=int, default=0, help="0 = all")
     parser.add_argument("--context-turns", type=int, default=12)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-depth", default="L4")
+    parser.add_argument(
+        "--max-depth", choices=("L0", "L1", "L2", "L3", "L4"), default="L4"
+    )
+    parser.add_argument(
+        "--min-depth",
+        choices=("L1", "L2", "L3", "L4"),
+        default=None,
+        help="forced-mode lower bound on planned cascade visitation",
+    )
     parser.add_argument("--max-reentries", type=int, default=1)
     parser.add_argument(
         "--retrieval-mode",
@@ -1025,6 +1035,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.context_turns < 0:
         parser.error("--context-turns must be non-negative")
+    if args.retrieval_mode == "forced" and args.min_depth is None:
+        parser.error("--retrieval-mode forced requires an explicit --min-depth")
+    if args.min_depth is not None:
+        if args.retrieval_mode != "forced":
+            parser.error("--min-depth requires --retrieval-mode forced")
+        order = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "L4": 4}
+        if order[args.min_depth] > order[args.max_depth]:
+            parser.error("--min-depth cannot exceed --max-depth")
     return run(args)
 
 
