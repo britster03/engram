@@ -1,10 +1,4 @@
-"""Consolidation worker — polls the SQLite queue and dispatches tasks (§7.2).
-
-Runs as a daemon thread owned by the FastAPI lifespan (or the CLI when
-invoked from `engram` operations). Uses the unique `idx_tasks_pending_unique`
-index to debounce (§7.5): duplicate enqueues for the same (node_id, task_type)
-while one is PENDING or PROCESSING are silently coalesced.
-"""
+"""Consolidation worker — polls the generation-aware SQLite queue (§7.2)."""
 
 from __future__ import annotations
 
@@ -41,13 +35,14 @@ def _next_task(sqlite: SqliteStore) -> dict | None:
         row = conn.execute(
             "SELECT * FROM consolidation_tasks "
             "WHERE status = 'PENDING' "
+            "AND datetime(COALESCE(not_before, scheduled_at)) <= datetime('now') "
             "ORDER BY priority ASC, scheduled_at ASC LIMIT 1"
         ).fetchone()
         if row is None:
             return None
         conn.execute(
             "UPDATE consolidation_tasks SET status = 'PROCESSING', started_at = datetime('now') "
-            "WHERE task_id = ?",
+            ", claimed_generation = generation WHERE task_id = ?",
             (row["task_id"],),
         )
     return dict(row)
@@ -55,6 +50,23 @@ def _next_task(sqlite: SqliteStore) -> dict | None:
 
 def _complete_task(sqlite: SqliteStore, task_id: str, status: str, err: str | None = None) -> None:
     with sqlite.transaction() as conn:
+        current = conn.execute(
+            "SELECT task_type, generation, claimed_generation FROM consolidation_tasks "
+            "WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is not None
+            and status == "COMPLETE"
+            and current["task_type"] == "REFRESH_DIRECTORY"
+            and int(current["generation"] or 0) > int(current["claimed_generation"] or 0)
+        ):
+            conn.execute(
+                "UPDATE consolidation_tasks SET status = 'PENDING', started_at = NULL, "
+                "completed_at = NULL, error_message = NULL WHERE task_id = ?",
+                (task_id,),
+            )
+            return
         conn.execute(
             "UPDATE consolidation_tasks SET status = ?, completed_at = datetime('now'), "
             "error_message = ? WHERE task_id = ?",
@@ -109,6 +121,17 @@ def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
             sqlite=ctx.sqlite,
             cfg=ctx.cfg.consolidation,
             tenant_id=task["tenant_id"],
+        )
+    elif t == "REFRESH_DIRECTORY":
+        handlers.handle_refresh_directory(
+            node_id=node_id,
+            sqlite=ctx.sqlite,
+            fs=ctx.fs,
+            neo4j=ctx.neo4j,
+            core=ctx.core,
+            cfg=ctx.cfg.consolidation,
+            tenant_id=task["tenant_id"],
+            overview_cache=ctx.overview_cache,
         )
     elif t == "ATOMIZE":
         handlers.handle_atomize(

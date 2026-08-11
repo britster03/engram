@@ -61,6 +61,12 @@ core_model_calls = Counter(
     ["task", "provider"],
     registry=REGISTRY,
 )
+overview_model_calls = Counter(
+    "engram_overview_model_calls_total",
+    "Overview model calls by tenant (deterministic single-child refreshes are excluded).",
+    ["tenant_id"],
+    registry=REGISTRY,
+)
 frontier_tokens = Counter(
     "engram_frontier_tokens_total",
     "Frontier LLM tokens in/out.",

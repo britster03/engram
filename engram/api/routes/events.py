@@ -39,6 +39,11 @@ class EventReadiness(BaseModel):
     memory_ready: bool
     outbox_state: str | None = None
     source_uri: str | None = None
+    completed_stage: str | None = None
+    artifact_count: int = 0
+    filesystem_ready_count: int = 0
+    kg_ready_count: int = 0
+    artifact_error_count: int = 0
     error: str | None = None
 
 
@@ -67,9 +72,24 @@ def event_status(req: EventStatusRequest) -> EventStatusResponse:
     events: list[EventReadiness] = []
     for row in rows:
         status = str(row["status"])
-        memory_ready = status == "GATED_SKIP" or (
-            status in {"INDEXED", "COMPLETE"} and row.get("outbox_state") == "INDEXED"
-        )
+        artifact_count = int(row.get("artifact_count") or 0)
+        filesystem_ready_count = int(row.get("filesystem_ready_count") or 0)
+        kg_ready_count = int(row.get("kg_ready_count") or 0)
+        artifact_error_count = int(row.get("artifact_error_count") or 0)
+        completed_stage = row.get("completed_stage")
+        if artifact_count:
+            memory_ready = (
+                completed_stage
+                in {"KG_COMMITTED", "CONSOLIDATION_COMMITTED", "COMPLETE"}
+                and filesystem_ready_count == artifact_count
+                and kg_ready_count == artifact_count
+                and artifact_error_count == 0
+            )
+        else:
+            # Compatibility for ledgers created before artifact-level outbox records.
+            memory_ready = status == "GATED_SKIP" or (
+                status in {"INDEXED", "COMPLETE"} and row.get("outbox_state") == "INDEXED"
+            )
         events.append(
             EventReadiness(
                 event_id=row["event_id"],
@@ -79,6 +99,11 @@ def event_status(req: EventStatusRequest) -> EventStatusResponse:
                 memory_ready=memory_ready,
                 outbox_state=row.get("outbox_state"),
                 source_uri=row.get("source_uri"),
+                completed_stage=completed_stage,
+                artifact_count=artifact_count,
+                filesystem_ready_count=filesystem_ready_count,
+                kg_ready_count=kg_ready_count,
+                artifact_error_count=artifact_error_count,
                 error=row.get("error_message"),
             )
         )

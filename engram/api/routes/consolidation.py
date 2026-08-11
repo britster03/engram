@@ -66,13 +66,22 @@ def trigger(req: TriggerRequest) -> dict[str, Any]:
         "TEMPORALIZE",
         "INTEGRATE",
         "UNMERGE",
+        "REFRESH_DIRECTORY",
     }
     if req.task_type not in allowed:
         raise HTTPException(status_code=400, detail=f"unknown task_type: {req.task_type}")
-    task_id = state.sqlite.enqueue_task(
-        node_id=req.node_id,
-        task_type=req.task_type,
-        priority=req.priority,
-        tenant_id=tenant_id,
-    )
+    if req.task_type == "REFRESH_DIRECTORY":
+        task_id = state.sqlite.enqueue_directory_refresh(
+            node_id=req.node_id,
+            priority=req.priority,
+            tenant_id=tenant_id,
+            debounce_seconds=state.cfg.consolidation.overview_debounce_seconds,
+        )
+    else:
+        task_id = state.sqlite.enqueue_task(
+            node_id=req.node_id,
+            task_type=req.task_type,
+            priority=req.priority,
+            tenant_id=tenant_id,
+        )
     return {"task_id": task_id, "status": "PENDING" if task_id else "ALREADY_QUEUED"}

@@ -7,11 +7,11 @@ Implements the full seven-step pipeline:
   4. Entity linking with disambiguation (Core Model + embeddings).
   5. Filesystem write (authoritative; atomic via temp+rename+fsync).
   6. Dedup / conflict resolution + KG index update.
-  7. Consolidation enqueue (CONSOLIDATE_OVERVIEW, REGENERATE_MANIFEST,
-     PROPAGATE_OVERVIEW).
+  7. Generation-aware REFRESH_DIRECTORY consolidation intent.
 
-Every step is idempotent so the Reconciliation Worker can replay from any
-crashed state without data corruption.
+Each committed stage and nondeterministic output is persisted independently
+of worker-facing event status, so recovery resumes after the last durable
+boundary instead of rerunning gate, extraction, or entity linking.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import hashlib
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -55,6 +56,20 @@ class IngestContext:
     neo4j: Any
     core: CoreModelProvider
     embed: EmbeddingService
+    stage_hook: Callable[[str], None] | None = None
+
+
+_STAGE_ORDER = {
+    "RECEIVED": 0,
+    "GATED": 1,
+    "EXTRACTED": 2,
+    "LINKED": 3,
+    "FILESYSTEM_COMMITTED": 4,
+    "KG_COMMITTED": 5,
+    "CONSOLIDATION_COMMITTED": 6,
+    "COMPLETE": 7,
+    "GATED_SKIP": 7,
+}
 
 
 def process_event(ctx: IngestContext, event_id: str) -> str:
@@ -62,8 +77,6 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     event = ctx.sqlite.get_event(event_id)
     if event is None:
         raise RuntimeError(f"unknown event_id: {event_id}")
-    if event["status"] in {"COMPLETE", "GATED_SKIP"}:
-        return event["status"]
 
     # Pin the ambient tenant context for every downstream call.
     event_tenant = event.get("tenant_id") or DEFAULT_TENANT_ID
@@ -71,43 +84,61 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
         Tenant(tenant_id=event_tenant, display_name=event_tenant,
                api_key_hashes=[], quotas=TenantQuotas(), status="ACTIVE")
     )
-
-    # A crash after KG commit but before consolidation intent used to strand
-    # the event forever because INDEXED was treated as terminal.  The indexed
-    # outbox row is the durable proof that only step 7 remains.
-    outbox = ctx.sqlite.get_fs_outbox(event_id)
-    if event["status"] == "INDEXED" or (outbox and outbox["state"] == "INDEXED"):
-        if outbox is None or not outbox.get("source_uri"):
-            raise RuntimeError(f"indexed event {event_id} has no filesystem outbox row")
-        entity_uris = ctx.sqlite.get_linked_entity_uris(event_id, tenant_id=event_tenant)
-        _enqueue_consolidation(ctx, str(outbox["source_uri"]), entity_uris)
-        ctx.sqlite.set_event_status(event_id, "COMPLETE", tenant_id=event_tenant)
-        return "COMPLETE"
+    stage_state = ctx.sqlite.get_event_stage(event_id, tenant_id=event_tenant)
+    stage = str(stage_state["completed_stage"])
+    if stage in {"COMPLETE", "GATED_SKIP"}:
+        terminal = "GATED_SKIP" if stage == "GATED_SKIP" else "COMPLETE"
+        if event["status"] != terminal:
+            ctx.sqlite.set_event_status(event_id, terminal, tenant_id=event_tenant)
+        return terminal
 
     payload = event["payload"]
     turn_pair = _turn_pair(payload)
 
     # --- Step 2: Write-path gate -----------------------------------------
-    with _Timed("gate"), tracing.span("ingest.gate", event_id=event_id):
-        try:
-            gate = _call_gate(ctx, turn_pair, session_summary=payload.get("session_summary"))
-        except CoreModelError as err:
-            ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
-            raise
-        metrics_mod.core_model_calls.labels(task="gate_write",
-                                            provider=ctx.cfg.core_model.provider).inc()
+    if not _stage_at_least(stage, "GATED"):
+        with _Timed("gate"), tracing.span("ingest.gate", event_id=event_id):
+            try:
+                gate = _call_gate(
+                    ctx, turn_pair, session_summary=payload.get("session_summary")
+                )
+            except CoreModelError as err:
+                ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
+                raise
+            metrics_mod.core_model_calls.labels(
+                task="gate_write", provider=ctx.cfg.core_model.provider
+            ).inc()
+        ctx.sqlite.advance_event_stage(
+            event_id, "GATED", tenant_id=event_tenant, gate_output=gate
+        )
+        stage = "GATED"
+        _after_stage(ctx, stage)
+    else:
+        gate = stage_state.get("gate_output") or {"store": True, "reason": "legacy replay"}
     if not gate.get("store", False):
-        ctx.sqlite.set_event_status(event_id, "GATED_SKIP", error_message=gate.get("reason"))
+        ctx.sqlite.advance_event_stage(event_id, "GATED_SKIP", tenant_id=event_tenant)
+        ctx.sqlite.set_event_status(
+            event_id, "GATED_SKIP", error_message=gate.get("reason"), tenant_id=event_tenant
+        )
+        _after_stage(ctx, "GATED_SKIP")
         return "GATED_SKIP"
-    ctx.sqlite.set_event_status(event_id, "GATED_STORE")
+    ctx.sqlite.set_event_status(event_id, "GATED_STORE", tenant_id=event_tenant)
 
     # --- Step 3: S-R-O extraction + L0 abstract --------------------------
-    with _Timed("extract"), tracing.span("ingest.extract", event_id=event_id):
-        existing = ctx.sqlite.get_extraction(event_id)
-        if existing is None:
-            extraction = _call_extract(
-                ctx, turn_pair, session_context=payload.get("session_context")
-            )
+    existing = ctx.sqlite.get_extraction(event_id)
+    extraction: dict[str, Any]
+    if not _stage_at_least(stage, "EXTRACTED"):
+        with _Timed("extract"), tracing.span("ingest.extract", event_id=event_id):
+            if existing is None:
+                extraction = _call_extract(
+                    ctx, turn_pair, session_context=payload.get("session_context")
+                )
+                metrics_mod.core_model_calls.labels(
+                    task="extract", provider=ctx.cfg.core_model.provider
+                ).inc()
+            else:
+                extraction = existing
+            extraction = _prepare_extraction(ctx, extraction, payload)
             ctx.sqlite.save_extraction(
                 event_id=event_id,
                 resolved_text=extraction["resolved_text"],
@@ -115,53 +146,120 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 l0_abstract=extraction["l0_abstract"],
                 tenant_id=event_tenant,
             )
-            metrics_mod.core_model_calls.labels(task="extract",
-                                                provider=ctx.cfg.core_model.provider).inc()
-        else:
-            extraction = existing
+        ctx.sqlite.advance_event_stage(event_id, "EXTRACTED", tenant_id=event_tenant)
+        stage = "EXTRACTED"
+        _after_stage(ctx, stage)
+    else:
+        if existing is None:
+            raise RuntimeError(f"{event_id} is EXTRACTED but has no extraction record")
+        extraction = existing
 
     # --- Step 4: Entity linking with disambiguation ----------------------
-    with _Timed("entity_link"), tracing.span("ingest.entity_link", event_id=event_id):
-        entities = _resolve_entities(ctx, extraction)
+    if not _stage_at_least(stage, "LINKED"):
+        with _Timed("entity_link"), tracing.span("ingest.entity_link", event_id=event_id):
+            entities = _resolve_entities(ctx, extraction)
+        link_output = [
+            {"slug": slug, "display_name": display_name, "matched_uri": matched_uri}
+            for slug, display_name, matched_uri in entities
+        ]
+        ctx.sqlite.advance_event_stage(
+            event_id, "LINKED", tenant_id=event_tenant, link_output=link_output
+        )
+        stage = "LINKED"
+        _after_stage(ctx, stage)
+    else:
+        stored_link_output = stage_state.get("link_output")
+        entities = _restore_entity_links(
+            ctx,
+            event_id,
+            extraction,
+            tenant_id=event_tenant,
+            stored=stored_link_output if isinstance(stored_link_output, list) else None,
+        )
+
+    entity_records = _materialized_entity_records(entities)
+    episode_uri = f"mem://user/episodes/{event_id}.md"
+    fact_uris: dict[int, str] = {}
 
     # --- Step 5: Filesystem write (authoritative) ------------------------
-    with _Timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
-        episode_uri, _ = _write_episode(ctx, event, extraction)
-        entity_records: list[tuple[str, str, str]] = []
-        for slug, display_name, matched_uri in entities:
-            if matched_uri:
-                entity_records.append((slug, display_name, matched_uri))
-                continue
-            ent_uri = _write_entity(
-                ctx, event_id, event["session_id"], slug, display_name,
-                payload,
+    if not _stage_at_least(stage, "FILESYSTEM_COMMITTED"):
+        with _Timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
+            episode_uri, _ = _write_episode(ctx, event, extraction)
+            entity_records = []
+            for slug, display_name, matched_uri in entities:
+                ent_uri = matched_uri or _write_entity(
+                    ctx, event_id, event["session_id"], slug, display_name, payload
+                )
+                entity_records.append((slug, display_name, ent_uri))
+            fact_uris = _write_fact_files(
+                ctx, event_id, extraction, entity_records, created_at=str(event["created_at"])
             )
-            entity_records.append((slug, display_name, ent_uri))
+            _record_artifacts(
+                ctx,
+                event_id,
+                [episode_uri, *[uri for _, _, uri in entity_records], *fact_uris.values()],
+                tenant_id=event_tenant,
+            )
         ctx.sqlite.fs_outbox_write(event_id, episode_uri, tenant_id=event_tenant)
         _record_linked_entities(
             ctx, event_id, extraction["triplets"], entity_records, tenant_id=event_tenant,
         )
+        ctx.sqlite.advance_event_stage(
+            event_id, "FILESYSTEM_COMMITTED", tenant_id=event_tenant
+        )
+        stage = "FILESYSTEM_COMMITTED"
+        _after_stage(ctx, stage)
+    else:
+        fact_uris = _fact_uris_for(extraction, event_id)
 
     # --- Step 6: Validate metadata, then dedup/conflict + KG index ------
-    with _Timed("kg_index"), tracing.span("ingest.kg_index", event_id=event_id):
-        try:
-            _validate_written_frontmatter(ctx, episode_uri, entity_records)
-            _index_neo4j(
-                ctx, event_id, episode_uri, extraction, entity_records, payload
-            )
-        except Exception as err:
-            log.exception("KG index failed for event %s", event_id)
-            ctx.sqlite.fs_outbox_mark(event_id, "INDEX_FAILED", error=str(err))
-            raise
-    ctx.sqlite.fs_outbox_mark(event_id, "INDEXED")
-    ctx.sqlite.set_event_status(event_id, "INDEXED")
+    if not _stage_at_least(stage, "KG_COMMITTED"):
+        with _Timed("kg_index"), tracing.span("ingest.kg_index", event_id=event_id):
+            try:
+                _validate_written_frontmatter(
+                    ctx, episode_uri, entity_records, list(fact_uris.values())
+                )
+                _index_neo4j(
+                    ctx,
+                    event_id,
+                    episode_uri,
+                    extraction,
+                    entity_records,
+                    payload,
+                    fact_uris=fact_uris,
+                )
+            except Exception as err:
+                log.exception("KG index failed for event %s", event_id)
+                ctx.sqlite.fs_outbox_mark(event_id, "INDEX_FAILED", error=str(err))
+                ctx.sqlite.mark_event_artifacts_kg(
+                    event_id, "FAILED", error=str(err)[:500]
+                )
+                raise
+        ctx.sqlite.mark_event_artifacts_kg(event_id, "COMMITTED")
+        ctx.sqlite.fs_outbox_mark(event_id, "INDEXED")
+        ctx.sqlite.advance_event_stage(event_id, "KG_COMMITTED", tenant_id=event_tenant)
+        ctx.sqlite.set_event_status(event_id, "INDEXED", tenant_id=event_tenant)
+        stage = "KG_COMMITTED"
+        _after_stage(ctx, stage)
 
     # --- Step 7: Consolidation enqueue -----------------------------------
-    with _Timed("consolidation_enqueue"), tracing.span(
-        "ingest.consolidation_enqueue", event_id=event_id,
-    ):
-        _enqueue_consolidation(ctx, episode_uri, [uri for _, _, uri in entity_records])
-    ctx.sqlite.set_event_status(event_id, "COMPLETE")
+    if not _stage_at_least(stage, "CONSOLIDATION_COMMITTED"):
+        with _Timed("consolidation_enqueue"), tracing.span(
+            "ingest.consolidation_enqueue", event_id=event_id,
+        ):
+            _enqueue_consolidation(
+                ctx,
+                episode_uri,
+                [*[uri for _, _, uri in entity_records], *fact_uris.values()],
+            )
+        ctx.sqlite.advance_event_stage(
+            event_id, "CONSOLIDATION_COMMITTED", tenant_id=event_tenant
+        )
+        stage = "CONSOLIDATION_COMMITTED"
+        _after_stage(ctx, stage)
+    ctx.sqlite.advance_event_stage(event_id, "COMPLETE", tenant_id=event_tenant)
+    ctx.sqlite.set_event_status(event_id, "COMPLETE", tenant_id=event_tenant)
+    _after_stage(ctx, "COMPLETE")
     return "COMPLETE"
 
 
@@ -183,6 +281,169 @@ class _Timed:
     def __exit__(self, *_exc) -> None:
         dt = time.perf_counter() - self._t0
         metrics_mod.ingest_stage.labels(stage=self.stage).observe(dt)
+
+
+def _stage_at_least(current: str, expected: str) -> bool:
+    try:
+        return _STAGE_ORDER[current] >= _STAGE_ORDER[expected]
+    except KeyError as err:
+        raise RuntimeError(f"unknown ingest stage: {err.args[0]}") from err
+
+
+def _after_stage(ctx: IngestContext, stage: str) -> None:
+    """Run the optional crash-injection hook after a durable stage commit."""
+    if ctx.stage_hook is not None:
+        ctx.stage_hook(stage)
+
+
+def _prepare_extraction(
+    ctx: IngestContext,
+    extraction: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and canonicalise deterministic extraction fields before indexing."""
+    from engram.relations import vocabulary
+
+    prepared = dict(extraction)
+    prepared["resolved_text"] = str(prepared.get("resolved_text") or "")
+    prepared["l0_abstract"] = str(prepared.get("l0_abstract") or "")[:500]
+    raw_triplets = prepared.get("triplets")
+    if not isinstance(raw_triplets, list):
+        raise CoreModelError("extract triplets must be a list")
+    asserted_at = _source_asserted_at(payload)
+    normalized: list[dict[str, Any]] = []
+    vocab = vocabulary()
+    for raw in raw_triplets:
+        if not isinstance(raw, dict):
+            continue
+        subject = str(raw.get("subject") or "").strip()
+        relation = str(raw.get("relation") or "").strip()
+        obj = str(raw.get("object") or "").strip()
+        try:
+            confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if not (subject and relation and obj) or confidence < 0.3:
+            continue
+        trip = dict(raw)
+        trip.update(
+            {
+                "subject": subject,
+                "relation": relation,
+                "object": obj,
+                "confidence": confidence,
+            }
+        )
+        canonical = vocab.canonicalise(relation, ctx.embed)
+        if canonical:
+            if canonical != relation:
+                trip["relation_original"] = relation
+            trip["relation"] = canonical
+            trip["relation_normalized"] = True
+            trip.pop("relation_review_required", None)
+        else:
+            trip["relation_normalized"] = False
+            trip["relation_review_required"] = True
+        if asserted_at:
+            temporal_value = trip.get("temporal")
+            temporal: dict[str, Any] = (
+                dict(temporal_value) if isinstance(temporal_value, dict) else {}
+            )
+            trip["temporal"] = {**temporal, "asserted_at": asserted_at}
+        normalized.append(trip)
+    prepared["triplets"] = normalized
+    return prepared
+
+
+def _source_asserted_at(payload: dict[str, Any]) -> str | None:
+    pair = payload.get("turn_pair") or payload.get("turn_group") or payload
+    if not isinstance(pair, dict):
+        return None
+    for role in ("assistant", "user"):
+        turn = pair.get(role)
+        if isinstance(turn, dict) and turn.get("timestamp"):
+            return str(turn["timestamp"])
+    return None
+
+
+def _restore_entity_links(
+    ctx: IngestContext,
+    event_id: str,
+    extraction: dict[str, Any],
+    *,
+    tenant_id: str,
+    stored: list[dict[str, Any]] | None,
+) -> list[tuple[str, str, str | None]]:
+    """Restore committed linker decisions without invoking the model again."""
+    if stored is not None:
+        return [
+            (
+                str(row.get("slug") or ""),
+                str(row.get("display_name") or ""),
+                str(row["matched_uri"]) if row.get("matched_uri") else None,
+            )
+            for row in stored
+            if row.get("slug") and row.get("display_name")
+        ]
+
+    rows = ctx.sqlite.get_conn().execute(
+        "SELECT triplet_idx, subject_node_id, object_node_id FROM linked_entities "
+        "WHERE event_id = ? AND tenant_id = ? ORDER BY triplet_idx",
+        (event_id, tenant_id),
+    ).fetchall()
+    by_idx = {int(row["triplet_idx"]): row for row in rows}
+    restored: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+    for idx, trip in enumerate(extraction.get("triplets", [])):
+        linked = by_idx.get(idx)
+        for key, uri_key in (
+            ("subject", "subject_node_id"),
+            ("object", "object_node_id"),
+        ):
+            display_name = str(trip.get(key) or "").strip()
+            slug = slugify(display_name, separator="-", lowercase=True)
+            if not slug or slug in seen:
+                continue
+            seen.add(slug)
+            matched_uri = str(linked[uri_key]) if linked is not None and linked[uri_key] else None
+            restored.append((slug, display_name, matched_uri))
+    if not restored and extraction.get("triplets"):
+        raise RuntimeError(f"{event_id} is LINKED but has no persisted linker output")
+    return restored
+
+
+def _entity_uri(slug: str) -> str:
+    return f"mem://user/entities/{slug}/{slug}.md"
+
+
+def _materialized_entity_records(
+    entities: list[tuple[str, str, str | None]],
+) -> list[tuple[str, str, str]]:
+    return [
+        (slug, display_name, matched_uri or _entity_uri(slug))
+        for slug, display_name, matched_uri in entities
+    ]
+
+
+def _record_artifacts(
+    ctx: IngestContext,
+    event_id: str,
+    uris: list[str],
+    *,
+    tenant_id: str,
+) -> None:
+    """Register every required memory file using its authoritative identity."""
+    for uri in dict.fromkeys(uris):
+        memory = frontmatter.parse(ctx.fs.read(uri))
+        fm = memory.frontmatter
+        ctx.sqlite.upsert_ingest_artifact(
+            event_id=event_id,
+            tenant_id=tenant_id,
+            artifact_type=str(fm["node_type"]),
+            source_uri=uri,
+            artifact_id=str(fm["id"]),
+            content_hash=str(fm.get("content_hash") or _content_hash(memory.body)),
+        )
 
 
 def _turn_pair(payload: dict[str, Any]) -> dict[str, str]:
@@ -307,6 +568,13 @@ def _write_episode(
         "source_conversation_id": provenance["source_conversation_id"],
         "source_session_ids": provenance["source_session_ids"],
         "source_speakers": provenance["source_speakers"],
+        "source_timestamps": provenance["source_timestamps"],
+        "temporal": {
+            "asserted_at": _source_asserted_at(payload) or created_at,
+            "valid_from": None,
+            "valid_until": None,
+            "phrase": "source turn timestamp",
+        },
         "schema_version": 1,
         "provenance": {
             "extractor": "core_model_v1",
@@ -330,8 +598,7 @@ def _write_entity(
     display_name: str,
     payload: dict[str, Any],
 ) -> str:
-    filename = f"{slug}.md"
-    uri = f"mem://user/entities/{slug}/{filename}"
+    uri = _entity_uri(slug)
     if ctx.fs.exists(uri):
         return uri  # idempotent — existing entity node is authoritative
     created_at = datetime.now(timezone.utc).isoformat()
@@ -389,6 +656,55 @@ def _record_linked_entities(
         )
 
 
+def _fact_uris_for(extraction: dict[str, Any], event_id: str) -> dict[int, str]:
+    result: dict[int, str] = {}
+    for idx, trip in enumerate(extraction.get("triplets", [])):
+        try:
+            confidence = float(trip.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if 0.3 <= confidence < 0.6:
+            result[idx] = _low_confidence_fact_uri(event_id, idx, trip)
+    return result
+
+
+def _write_fact_files(
+    ctx: IngestContext,
+    event_id: str,
+    extraction: dict[str, Any],
+    entity_records: list[tuple[str, str, str]],
+    *,
+    created_at: str,
+) -> dict[int, str]:
+    """Commit low-confidence FACT files before any KG mutation occurs."""
+    slug_to_uri = {slug: uri for slug, _, uri in entity_records}
+    result: dict[int, str] = {}
+    for idx, trip in enumerate(extraction.get("triplets", [])):
+        try:
+            confidence = float(trip.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not 0.3 <= confidence < 0.6:
+            continue
+        subject_slug = slugify(str(trip.get("subject") or ""), separator="-", lowercase=True)
+        object_slug = slugify(str(trip.get("object") or ""), separator="-", lowercase=True)
+        subject_uri = slug_to_uri.get(subject_slug)
+        object_uri = slug_to_uri.get(object_slug)
+        if not subject_uri or not object_uri:
+            continue
+        result[idx] = _write_low_confidence_fact_file(
+            ctx=ctx,
+            event_id=event_id,
+            triplet_idx=idx,
+            triplet=trip,
+            subject_uri=subject_uri,
+            object_uri=object_uri,
+            confidence=confidence,
+            created_at=created_at,
+        )
+    return result
+
+
 def _index_neo4j(
     ctx: IngestContext,
     event_id: str,
@@ -396,12 +712,14 @@ def _index_neo4j(
     extraction: dict[str, Any],
     entity_records: list[tuple[str, str, str]],
     payload: dict[str, Any],
+    *,
+    fact_uris: dict[int, str],
 ) -> None:
     """Merge episode + entity nodes and apply conflict-resolved RELATES_TO edges."""
-    now = datetime.now(timezone.utc).isoformat()
     # Episode node
     source = _source_provenance(payload)
     episode_fm = frontmatter.parse(ctx.fs.read(episode_uri)).frontmatter
+    now = str(episode_fm["created_at"])
     episode_emb = ctx.embed.embed(extraction["l0_abstract"])
     ctx.neo4j.merge_node(
         source_uri=episode_uri,
@@ -423,6 +741,7 @@ def _index_neo4j(
             "source_conversation_id": source["source_conversation_id"],
             "source_session_ids": source["source_session_ids"],
             "source_speakers": source["source_speakers"],
+            "source_timestamps": source["source_timestamps"],
             "provenance_ingest_event_id": event_id,
         },
     )
@@ -455,7 +774,7 @@ def _index_neo4j(
     for idx, trip in enumerate(extraction.get("triplets", [])):
         s_raw = trip.get("subject")
         o_raw = trip.get("object")
-        rel = trip.get("relation")
+        rel = trip.get("relation_canonical") or trip.get("relation")
         conf = float(trip.get("confidence", 0.0))
         if not (s_raw and o_raw and rel) or conf < 0.3:
             continue
@@ -466,6 +785,9 @@ def _index_neo4j(
         if not (s_uri and o_uri):
             continue
         if conf < 0.6:
+            fact_uri = fact_uris.get(idx)
+            if fact_uri is None:
+                raise RuntimeError(f"missing committed FACT artifact for triplet {idx}")
             _write_low_confidence_fact(
                 ctx=ctx,
                 event_id=event_id,
@@ -475,6 +797,7 @@ def _index_neo4j(
                 object_uri=o_uri,
                 confidence=conf,
                 now=now,
+                expected_uri=fact_uri,
             )
             continue
         decision = classify(
@@ -524,39 +847,19 @@ def _write_low_confidence_fact(
     object_uri: str,
     confidence: float,
     now: str,
+    expected_uri: str,
 ) -> str:
-    """Persist uncertain triplets as LOW_CONFIDENCE FACT nodes."""
+    """Index a previously committed LOW_CONFIDENCE FACT artifact."""
     event = ctx.sqlite.get_event(event_id) or {}
     session_id = event.get("session_id")
     source = _source_provenance(event.get("payload") or {})
     rel = str(triplet.get("relation") or "related_to")
     subject = str(triplet.get("subject") or "")
     obj = str(triplet.get("object") or "")
-    rel_slug = slugify(rel, separator="-", lowercase=True)[:40] or "fact"
-    obj_slug = slugify(obj, separator="-", lowercase=True)[:40] or "object"
-    uri = f"mem://user/facts/{event_id}/{triplet_idx}_{rel_slug}_{obj_slug}.md"
+    uri = _low_confidence_fact_uri(event_id, triplet_idx, triplet)
+    if uri != expected_uri or not ctx.fs.exists(uri):
+        raise RuntimeError(f"FACT artifact missing or changed for triplet {triplet_idx}")
     sentence = f"{subject} {rel} {obj}".strip()
-    if not ctx.fs.exists(uri):
-        body = f"{sentence}\n\nConfidence: {confidence:.2f}\n"
-        fm = {
-            "id": _stable_id(uri),
-            "tenant_id": current_tenant_id(),
-            "node_type": "FACT",
-            "status": "LOW_CONFIDENCE",
-            "created_at": now,
-            "updated_at": now,
-            "content_hash": _content_hash(body),
-            "source_session_id": session_id,
-            "source_turn_ids": source["source_turn_ids"],
-            "schema_version": 1,
-            "provenance": {
-                "extractor": "core_model_v1",
-                "confidence": confidence,
-                "ingest_event_id": event_id,
-                "source_turn_ids": source["source_turn_ids"],
-            },
-        }
-        ctx.fs.write_atomic(uri, frontmatter.MemoryFile(frontmatter=fm, body=body).serialize())
 
     fact_fm = frontmatter.parse(ctx.fs.read(uri)).frontmatter
     abstract = f"Low-confidence fact: {sentence}"
@@ -608,6 +911,75 @@ def _write_low_confidence_fact(
     return uri
 
 
+def _low_confidence_fact_uri(
+    event_id: str,
+    triplet_idx: int,
+    triplet: dict[str, Any],
+) -> str:
+    rel = str(triplet.get("relation") or "related_to")
+    obj = str(triplet.get("object") or "")
+    rel_slug = slugify(rel, separator="-", lowercase=True)[:40] or "fact"
+    obj_slug = slugify(obj, separator="-", lowercase=True)[:40] or "object"
+    return f"mem://user/facts/{event_id}/{triplet_idx}_{rel_slug}_{obj_slug}.md"
+
+
+def _write_low_confidence_fact_file(
+    *,
+    ctx: IngestContext,
+    event_id: str,
+    triplet_idx: int,
+    triplet: dict[str, Any],
+    subject_uri: str,
+    object_uri: str,
+    confidence: float,
+    created_at: str,
+) -> str:
+    uri = _low_confidence_fact_uri(event_id, triplet_idx, triplet)
+    if ctx.fs.exists(uri):
+        return uri
+    event = ctx.sqlite.get_event(event_id) or {}
+    session_id = event.get("session_id")
+    source = _source_provenance(event.get("payload") or {})
+    rel = str(triplet.get("relation") or "related_to")
+    subject = str(triplet.get("subject") or "")
+    obj = str(triplet.get("object") or "")
+    sentence = f"{subject} {rel} {obj}".strip()
+    body = f"{sentence}\n\nConfidence: {confidence:.2f}\n"
+    fm = {
+        "id": _stable_id(uri),
+        "tenant_id": current_tenant_id(),
+        "node_type": "FACT",
+        "status": "LOW_CONFIDENCE",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "content_hash": _content_hash(body),
+        "source_session_id": session_id,
+        "source_turn_ids": source["source_turn_ids"],
+        "schema_version": 1,
+        "fact": {
+            "subject": subject,
+            "relation": rel,
+            "object": obj,
+            "subject_uri": subject_uri,
+            "object_uri": object_uri,
+        },
+        "temporal": triplet.get("temporal") or {
+            "asserted_at": created_at,
+            "valid_from": None,
+            "valid_until": None,
+            "phrase": sentence,
+        },
+        "provenance": {
+            "extractor": "core_model_v1",
+            "confidence": confidence,
+            "ingest_event_id": event_id,
+            "source_turn_ids": source["source_turn_ids"],
+        },
+    }
+    ctx.fs.write_atomic(uri, frontmatter.MemoryFile(frontmatter=fm, body=body).serialize())
+    return uri
+
+
 def _stable_id(uri: str) -> str:
     """Return a replay-stable UUID for a tenant-scoped memory URI."""
     value = f"{current_tenant_id()}:{uri}"
@@ -633,6 +1005,7 @@ def _source_provenance(payload: dict[str, Any]) -> dict[str, Any]:
         "source_conversation_id": conversation_ids[0] if conversation_ids else None,
         "source_session_ids": unique("source_session_id"),
         "source_speakers": unique("speaker"),
+        "source_timestamps": unique("timestamp"),
         "source_task": next(
             (str(row["source_task"]) for row in records if row.get("source_task")),
             None,
@@ -649,9 +1022,10 @@ def _validate_written_frontmatter(
     ctx: IngestContext,
     episode_uri: str,
     entity_records: list[tuple[str, str, str]],
+    fact_uris: list[str],
 ) -> None:
     """Run §6.3 reserved-key validation on every file just written."""
-    uris = [episode_uri, *{uri for _, _, uri in entity_records}]
+    uris = [episode_uri, *{uri for _, _, uri in entity_records}, *fact_uris]
     for uri in uris:
         if not ctx.fs.exists(uri):
             continue
@@ -666,12 +1040,7 @@ def _enqueue_consolidation(
     episode_uri: str,
     entity_uris: list[str],
 ) -> None:
-    """Enqueue overview + manifest + propagate for each touched parent directory.
-
-    The unique index on (node_id, task_type) WHERE status IN (PENDING, PROCESSING)
-    deduplicates repeated writes — combined with the worker draining PENDING
-    tasks, this implements the §7.5 debounce naturally.
-    """
+    """Coalesce every touched directory into one generation-aware refresh."""
     touched: set[str] = set()
     for uri in [episode_uri, *entity_uris]:
         parent = uri_mod.parent_uri(uri)
@@ -679,9 +1048,23 @@ def _enqueue_consolidation(
             touched.add(parent)
     tid = current_tenant_id()
     for dir_uri in touched:
-        ctx.sqlite.enqueue_task(node_id=dir_uri, task_type="CONSOLIDATE_OVERVIEW",
-                                priority=5, tenant_id=tid)
-        ctx.sqlite.enqueue_task(node_id=dir_uri, task_type="REGENERATE_MANIFEST",
-                                priority=5, tenant_id=tid)
-        ctx.sqlite.enqueue_task(node_id=dir_uri, task_type="PROPAGATE_OVERVIEW",
-                                priority=7, tenant_id=tid)
+        ctx.sqlite.enqueue_directory_refresh(
+            node_id=dir_uri,
+            priority=5,
+            tenant_id=tid,
+            debounce_seconds=ctx.cfg.consolidation.overview_debounce_seconds,
+            child_signature=_directory_child_signature(ctx.fs, dir_uri),
+        )
+
+
+def _directory_child_signature(fs: FilesystemStore, dir_uri: str) -> str:
+    """Hash non-generated direct children for stable refresh generations."""
+    digest = hashlib.sha256()
+    for child_uri in sorted(fs.list_children(dir_uri)):
+        digest.update(child_uri.encode("utf-8"))
+        path = fs.path_for(child_uri)
+        if path.is_file():
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        else:
+            digest.update(b"directory")
+    return digest.hexdigest()

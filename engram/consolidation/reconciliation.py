@@ -112,8 +112,9 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
             )
             for row in stale:
                 uri = row.get("uri")
-                if uri and ctx.sqlite.enqueue_task(
-                    node_id=str(uri), task_type="CONSOLIDATE_OVERVIEW", priority=6
+                if uri and ctx.sqlite.enqueue_directory_refresh(
+                    node_id=str(uri), priority=6,
+                    debounce_seconds=ctx.cfg.consolidation.overview_debounce_seconds,
                 ):
                     counts["stale_overviews_enqueued"] += 1
         except Exception:

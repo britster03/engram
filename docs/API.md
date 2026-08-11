@@ -453,7 +453,8 @@ readiness remains separate.
 }
 ```
 
-The response includes per-event status/outbox state, `missing_ids`, `failures`,
+The response includes per-event durable stage, artifact counts/readiness,
+legacy outbox state, `missing_ids`, `failures`,
 terminal/ready counts, and aggregate `memory_ready`. A stored event is ready
 when its required filesystem/KG work is indexed; a gate skip is terminal with
 no required artifacts.
@@ -496,7 +497,9 @@ reconciliation worker (or the triggered BackgroundTask) picks it up.
 ```
 
 Allowed task types: `CONSOLIDATE_OVERVIEW`, `REGENERATE_MANIFEST`,
-`PROPAGATE_OVERVIEW`, `ATOMIZE`, `NORMALIZE`, `TEMPORALIZE`, `INTEGRATE`.
+`PROPAGATE_OVERVIEW`, `REFRESH_DIRECTORY`, `ATOMIZE`, `NORMALIZE`,
+`TEMPORALIZE`, `INTEGRATE`, and `UNMERGE`. Normal ingestion uses the coalesced
+`REFRESH_DIRECTORY` task; granular tasks remain for explicit maintenance.
 
 ## Observability
 

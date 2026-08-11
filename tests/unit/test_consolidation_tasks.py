@@ -123,11 +123,14 @@ def test_temporalize_attaches_date_from_body(cfg: EngramConfig):
     assert mf.frontmatter["temporal"]["valid_from"] == "2026-05-04"
 
 
-def test_integrate_resets_event_status(cfg: EngramConfig):
+def test_integrate_requests_kg_only_replay(cfg: EngramConfig):
     sqlite = SqliteStore(cfg.event_ledger.path)
     eid = _seed_extraction(sqlite, [])
-    sqlite.set_event_status(eid, "INDEXED")
+    sqlite.advance_event_stage(eid, "FILESYSTEM_COMMITTED", tenant_id="_default")
+    sqlite.set_event_status(eid, "COMPLETE")
     handle_integrate(node_id=eid, sqlite=sqlite, cfg=cfg.consolidation)
     refreshed = sqlite.get_event(eid)
     assert refreshed is not None
-    assert refreshed["status"] == "GATED_STORE"
+    assert refreshed["status"] == "RECEIVED"
+    state = sqlite.get_event_stage(eid, tenant_id="_default")
+    assert state["completed_stage"] == "FILESYSTEM_COMMITTED"

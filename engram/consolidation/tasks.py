@@ -1,9 +1,8 @@
 """Consolidation task handlers (§7.3).
 
 Implements every task type from the SDD:
-  - CONSOLIDATE_OVERVIEW: regenerate overview.md for a directory via Core Model.
-  - REGENERATE_MANIFEST: rebuild the .manifest file from current children.
-  - PROPAGATE_OVERVIEW: enqueue CONSOLIDATE_OVERVIEW for each ancestor up to root.
+  - REFRESH_DIRECTORY: rebuild manifest+overview and dirty every ancestor once.
+  - Legacy granular overview/manifest/propagation tasks remain operator-callable.
   - ATOMIZE: split compound triplets stored for an event into single-claim triplets.
   - NORMALIZE: canonicalise entity names and relation labels.
   - TEMPORALIZE: attach temporal scope (valid_from/valid_until/phrase) to nodes.
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from engram import frontmatter, prompts
+from engram import metrics as metrics_mod
 from engram import uri as uri_mod
 from engram.config import ConsolidationConfig
 from engram.models.core import CoreModelProvider
@@ -109,6 +109,7 @@ def handle_consolidate_overview(
             system_prompt=prompt,
             user_prompt="Return the overview as Markdown.",
         )
+        metrics_mod.overview_model_calls.labels(tenant_id=current_tenant_id()).inc()
         if isinstance(result.output, dict) and "overview" in result.output:
             text = str(result.output["overview"])
         elif isinstance(result.output, str):
@@ -140,16 +141,45 @@ def handle_propagate_overview(
     cfg: ConsolidationConfig,
     tenant_id: str | None = None,
 ) -> None:
-    """Enqueue CONSOLIDATE_OVERVIEW for each ancestor up to the root, deduped."""
+    """Mark every ancestor directory dirty, coalesced by generation."""
     ancestor = uri_mod.parent_uri(node_id)
     while ancestor is not None:
-        sqlite.enqueue_task(
+        sqlite.enqueue_directory_refresh(
             node_id=ancestor,
-            task_type="CONSOLIDATE_OVERVIEW",
             priority=5,
             tenant_id=tenant_id or "_default",
+            debounce_seconds=cfg.overview_debounce_seconds,
         )
         ancestor = uri_mod.parent_uri(ancestor)
+
+
+def handle_refresh_directory(
+    *,
+    node_id: str,
+    sqlite: SqliteStore,
+    fs: FilesystemStore,
+    neo4j: Neo4jStore,
+    core: CoreModelProvider,
+    cfg: ConsolidationConfig,
+    tenant_id: str,
+    overview_cache: Any | None = None,
+) -> None:
+    """Refresh manifest+overview once, then propagate one dirty signal upward."""
+    handle_regenerate_manifest(node_id=node_id, fs=fs, cfg=cfg)
+    handle_consolidate_overview(
+        node_id=node_id,
+        fs=fs,
+        neo4j=neo4j,
+        core=core,
+        cfg=cfg,
+        overview_cache=overview_cache,
+    )
+    handle_propagate_overview(
+        node_id=node_id,
+        sqlite=sqlite,
+        cfg=cfg,
+        tenant_id=tenant_id,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -285,19 +315,18 @@ def handle_integrate(
     sqlite: SqliteStore,
     cfg: ConsolidationConfig,
 ) -> None:
-    """Mark an event as re-runnable so the next reconciliation pass re-indexes.
+    """Request an explicit KG-only maintenance replay for affected events.
 
-    ATOMIZE/NORMALIZE/TEMPORALIZE mutate SQLite-side data; INTEGRATE reruns
-    step 6 (KG index update) for each affected event.
+    This deliberately preserves committed gate, extraction, entity-link, and
+    filesystem outputs. It must not route an event back through GATED_STORE.
     """
     event_ids = _event_ids_for(sqlite, node_id)
     for event_id in event_ids:
-        with sqlite.transaction() as conn:
-            conn.execute(
-                "UPDATE events SET status = 'GATED_STORE', processed_at = NULL "
-                "WHERE event_id = ?",
-                (event_id,),
-            )
+        row = sqlite.get_conn().execute(
+            "SELECT tenant_id FROM events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        if row is not None:
+            sqlite.request_maintenance_kg_replay(event_id, tenant_id=str(row["tenant_id"]))
 
 
 def handle_unmerge(
@@ -325,17 +354,11 @@ def handle_unmerge(
     for uri in [result.merged_uri, *result.split_uris]:
         parent = uri_mod.parent_uri(uri)
         if parent:
-            sqlite.enqueue_task(
+            sqlite.enqueue_directory_refresh(
                 node_id=parent,
-                task_type="CONSOLIDATE_OVERVIEW",
                 priority=5,
                 tenant_id=tenant_id or "_default",
-            )
-            sqlite.enqueue_task(
-                node_id=parent,
-                task_type="REGENERATE_MANIFEST",
-                priority=5,
-                tenant_id=tenant_id or "_default",
+                debounce_seconds=cfg.overview_debounce_seconds,
             )
 
 

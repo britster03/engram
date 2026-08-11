@@ -172,3 +172,50 @@ def test_worker_binds_task_tenant_and_restores_context(cfg: EngramConfig):
     assert process_one(ctx) is True
     assert tenant_fs.read_manifest("mem://user/entities/alice") is not None
     assert current_tenant_id() == "_default"
+
+
+def test_refresh_directory_coalesces_and_calls_overview_once_per_signature(
+    cfg: EngramConfig,
+):
+    class CountingOverviewCore(DeterministicCoreProvider):
+        def __init__(self) -> None:
+            self.overview_calls = 0
+
+        def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
+            prompt = str(kwargs.get("system_prompt") or "")
+            if prompt.startswith("[OVERVIEW]"):
+                self.overview_calls += 1
+            return super().complete(**kwargs)
+
+    cfg.consolidation.overview_debounce_seconds = 0
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    for name in ("a", "b"):
+        fs.write_atomic(
+            f"mem://user/{name}.md",
+            "---\nid: " + name + "\nnode_type: DOCUMENT\nstatus: ACTIVE\n"
+            "created_at: 2026-04-01T00:00:00Z\nschema_version: 1\n---\n" + name + "\n",
+        )
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    task_id = sqlite.enqueue_directory_refresh(
+        node_id="mem://user", child_signature="signature-1", debounce_seconds=0
+    )
+    assert task_id is not None
+    assert sqlite.enqueue_directory_refresh(
+        node_id="mem://user", child_signature="signature-1", debounce_seconds=0
+    ) == task_id
+    core = CountingOverviewCore()
+    ctx = ConsolidationContext(
+        cfg=cfg,
+        sqlite=sqlite,
+        fs=fs,
+        neo4j=InMemoryKnowledgeGraph(),  # type: ignore[arg-type]
+        core=core,
+        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+    )
+    assert process_one(ctx) is True
+    assert process_one(ctx) is False
+    assert core.overview_calls == 1
+    assert sqlite.enqueue_directory_refresh(
+        node_id="mem://user", child_signature="signature-1", debounce_seconds=0
+    ) is None
+    assert "mem://user/overview.md" not in fs.list_children("mem://user")

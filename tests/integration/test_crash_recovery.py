@@ -6,6 +6,8 @@ requeues every stuck state described in §5.5's recovery table.
 
 from __future__ import annotations
 
+import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,17 @@ from engram.storage.sqlite import SqliteStore
 from engram.uri import pair_id as pair_id_fn
 
 from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
+
+
+class CountingCoreProvider(DeterministicCoreProvider):
+    def __init__(self) -> None:
+        self.calls: Counter[str] = Counter()
+
+    def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        prompt = str(kwargs.get("system_prompt") or "")
+        tag = prompt.split("]", 1)[0].lstrip("[") if prompt.startswith("[") else ""
+        self.calls[tag] += 1
+        return super().complete(**kwargs)
 
 
 @pytest.fixture
@@ -76,6 +89,84 @@ def test_process_event_is_idempotent_on_replay(cfg: EngramConfig):
     assert len(neo.nodes) == nodes_first  # no duplication
 
 
+@pytest.mark.parametrize(
+    "crash_stage",
+    [
+        "GATED",
+        "EXTRACTED",
+        "LINKED",
+        "FILESYSTEM_COMMITTED",
+        "KG_COMMITTED",
+        "CONSOLIDATION_COMMITTED",
+        "COMPLETE",
+    ],
+)
+def test_crash_after_every_committed_stage_resumes_without_model_replay(
+    cfg: EngramConfig,
+    crash_stage: str,
+):
+    ingest, sqlite, neo, _fs = _ctx(cfg)
+    core = CountingCoreProvider()
+    ingest.core = core  # type: ignore[assignment]
+    eid = _enqueue_event(
+        sqlite,
+        f"crash-{crash_stage}",
+        "I moved to Berlin.",
+        "That is a significant move.",
+        0,
+    )
+    crashed = False
+
+    def inject(stage: str) -> None:
+        nonlocal crashed
+        if stage == crash_stage and not crashed:
+            crashed = True
+            raise RuntimeError(f"injected after {stage}")
+
+    ingest.stage_hook = inject
+    with pytest.raises(RuntimeError, match=f"injected after {crash_stage}"):
+        process_event(ingest, eid)
+    calls_after_crash = core.calls.copy()
+
+    ingest.stage_hook = None
+    assert process_event(ingest, eid) == "COMPLETE"
+    # Any nondeterministic stages which committed before the crash are never called again.
+    if crash_stage != "GATED":
+        assert core.calls["EXTRACT"] == calls_after_crash["EXTRACT"]
+    assert core.calls["GATE"] == calls_after_crash["GATE"]
+    if crash_stage in {
+        "LINKED",
+        "FILESYSTEM_COMMITTED",
+        "KG_COMMITTED",
+        "CONSOLIDATION_COMMITTED",
+        "COMPLETE",
+    }:
+        assert core.calls["LINK"] == calls_after_crash["LINK"]
+
+    artifacts = sqlite.list_ingest_artifacts(eid, tenant_id="_default")
+    assert artifacts
+    assert all(row["filesystem_state"] == "COMMITTED" for row in artifacts)
+    assert all(row["kg_state"] == "COMMITTED" for row in artifacts)
+    file_snapshot = {
+        str(path.relative_to(Path(cfg.filesystem.data_dir))): path.read_text(encoding="utf-8")
+        for path in Path(cfg.filesystem.data_dir).rglob("*.md")
+    }
+    graph_snapshot = json.dumps(
+        {"nodes": neo.nodes, "edges": neo.edges}, sort_keys=True, separators=(",", ":")
+    )
+    call_snapshot = core.calls.copy()
+
+    assert process_event(ingest, eid) == "COMPLETE"
+    assert core.calls == call_snapshot
+    assert file_snapshot == {
+        str(path.relative_to(Path(cfg.filesystem.data_dir))): path.read_text(encoding="utf-8")
+        for path in Path(cfg.filesystem.data_dir).rglob("*.md")
+    }
+    assert graph_snapshot == json.dumps(
+        {"nodes": neo.nodes, "edges": neo.edges}, sort_keys=True, separators=(",", ":")
+    )
+
+
 def test_reconciliation_requeues_received_stuck(cfg: EngramConfig):
     _ingest, sqlite, _, _ = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s2", "I live in Chicago.", "Got it.", 0)
@@ -127,11 +218,22 @@ def test_gated_store_without_extraction_requeues(cfg: EngramConfig):
 def test_indexed_event_resumes_only_consolidation(cfg: EngramConfig):
     ingest, sqlite, _neo, _fs = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s5", "I moved to Berlin.", "Noted.", 0)
-    assert process_event(ingest, eid) == "COMPLETE"
-    with sqlite.transaction() as conn:
-        conn.execute("DELETE FROM consolidation_tasks")
-        conn.execute("UPDATE events SET status = 'INDEXED' WHERE event_id = ?", (eid,))
+    crashed = False
 
+    def crash_after_kg(stage: str) -> None:
+        nonlocal crashed
+        if stage == "KG_COMMITTED" and not crashed:
+            crashed = True
+            raise RuntimeError("injected after KG commit")
+
+    ingest.stage_hook = crash_after_kg
+    with pytest.raises(RuntimeError, match="injected after KG commit"):
+        process_event(ingest, eid)
+    state = sqlite.get_event_stage(eid, tenant_id="_default")
+    assert state["completed_stage"] == "KG_COMMITTED"
+    assert sqlite.queue_depth() == 0
+
+    ingest.stage_hook = None
     assert process_event(ingest, eid) == "COMPLETE"
     event = sqlite.get_event(eid)
     assert event is not None and event["status"] == "COMPLETE"
