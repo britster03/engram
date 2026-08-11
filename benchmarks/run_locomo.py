@@ -436,6 +436,7 @@ def _make_manifest(
             "min_depth": args.min_depth,
             "max_reentries": args.max_reentries,
             "retrieval_mode": args.retrieval_mode,
+            "ingest_only": bool(getattr(args, "ingest_only", False)),
             "drain_timeout_s": args.drain_timeout,
             "drain_timeout_policy": (
                 "explicit" if args.drain_timeout is not None
@@ -487,6 +488,7 @@ def _make_manifest(
         "operational": {
             "metrics_scope": "process-global delta; run on an exclusive benchmark stack",
             "conversations": [],
+            "failures": [],
         },
     }
 
@@ -565,6 +567,15 @@ def run(args: argparse.Namespace) -> int:
                         query_timeout_s=args.query_timeout,
                     )
             except EngramError as error:
+                if getattr(args, "ingest_only", False):
+                    manifest["operational"]["failures"].append({
+                        "sample_id": conv.sample_id,
+                        "tenant_id": tenant_id,
+                        "status": "TENANT_SETUP_FAILED",
+                        "error": str(error)[:2_000],
+                    })
+                    _write_json_atomic(manifest_path, manifest)
+                    continue
                 failed = _failure_rows(
                     conv_idx=conv_idx,
                     conv=conv,
@@ -663,8 +674,18 @@ def run(args: argparse.Namespace) -> int:
                         )
                         readiness = client.wait_for_events(event_ids, drain_cfg)
                         memory_ready_s = time.monotonic() - started
-                        overview = client.wait_for_overview_ready(drain_cfg)
-                        total_ready_s = time.monotonic() - started
+                        if getattr(args, "ingest_only", False):
+                            overview = client.consolidation_status()
+                            overview_busy = client._is_busy(overview)
+                            overview = {
+                                **overview,
+                                "overview_ready": not overview_busy,
+                                "waited_s": 0.0,
+                            }
+                            total_ready_s = None
+                        else:
+                            overview = client.wait_for_overview_ready(drain_cfg)
+                            total_ready_s = time.monotonic() - started
                         metrics_after = _metrics_snapshot(client.metrics_text())
                         event_latencies = [
                             latency
@@ -678,6 +699,7 @@ def run(args: argparse.Namespace) -> int:
                             "sample_id": conv.sample_id,
                             "tenant_id": tenant_id,
                             "event_count": len(event_ids),
+                            "memory_ready": bool(readiness.get("memory_ready")),
                             "artifact_count": sum(
                                 int(event.get("artifact_count") or 0)
                                 for event in readiness["events"]
@@ -701,17 +723,31 @@ def run(args: argparse.Namespace) -> int:
                             },
                             "consolidation": overview,
                             "task_amplification_per_pair": (
-                                completed_tasks / len(event_ids) if event_ids else 0.0
+                                None
+                                if getattr(args, "ingest_only", False)
+                                else completed_tasks / len(event_ids)
+                                if event_ids
+                                else 0.0
                             ),
                             "metrics_delta": _metrics_delta(metrics_before, metrics_after),
                         })
                         _write_json_atomic(manifest_path, manifest)
                         print(
                             f"  {len(event_ids)} pairs memory-ready in "
-                            f"{memory_ready_s:.1f}s, overviews ready in {total_ready_s:.1f}s "
+                            f"{memory_ready_s:.1f}s, overview_ready="
+                            f"{bool(overview.get('overview_ready'))} "
                             f"(gated_skip={sum(e['status'] == 'GATED_SKIP' for e in readiness['events'])})"
                         )
                 except (EngramError, IngestFailedError, DrainTimeoutError, ValueError) as error:
+                    if getattr(args, "ingest_only", False):
+                        manifest["operational"]["failures"].append({
+                            "sample_id": conv.sample_id,
+                            "tenant_id": tenant_id,
+                            "status": "INGEST_FAILED",
+                            "error": str(error)[:2_000],
+                        })
+                        _write_json_atomic(manifest_path, manifest)
+                        continue
                     failed = _failure_rows(
                         conv_idx=conv_idx,
                         conv=conv,
@@ -725,6 +761,9 @@ def run(args: argparse.Namespace) -> int:
                             rows.append(row)
                             completed_ids.add(row["result_id"])
                             _append_partial(partial, row)
+                    continue
+
+                if getattr(args, "ingest_only", False):
                     continue
 
                 for question_idx, probe in _selected_questions(
@@ -816,13 +855,29 @@ def run(args: argparse.Namespace) -> int:
                             f"{probe.category_name:>11} :: {probe.question[:60]}"
                         )
 
-    expected_ids = {item["result_id"] for item in expected["questions"]}
+    ingest_only = bool(getattr(args, "ingest_only", False))
+    expected_ids = (
+        set()
+        if ingest_only
+        else {item["result_id"] for item in expected["questions"]}
+    )
     actual_ids = [str(row["result_id"]) for row in rows]
     duplicate_ids = sorted({value for value in actual_ids if actual_ids.count(value) > 1})
     missing_ids = sorted(expected_ids - set(actual_ids))
     unexpected_ids = sorted(set(actual_ids) - expected_ids)
     failed_rows = [row for row in rows if row.get("status") != "COMPLETE"]
-    complete = not (duplicate_ids or missing_ids or unexpected_ids or failed_rows)
+    if ingest_only:
+        ready_conversations = [
+            item
+            for item in manifest["operational"]["conversations"]
+            if item.get("memory_ready") is True
+        ]
+        complete = (
+            len(ready_conversations) == len(conversations)
+            and not manifest["operational"]["failures"]
+        )
+    else:
+        complete = not (duplicate_ids or missing_ids or unexpected_ids or failed_rows)
     summary = summarize(rows)
     summary["operational"] = manifest["operational"]
     summary.update(
@@ -830,7 +885,8 @@ def run(args: argparse.Namespace) -> int:
             "run_id": run_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "complete": complete,
-            "headline_metrics_valid": complete,
+            "mode": "ingest_only" if ingest_only else "qa",
+            "headline_metrics_valid": complete and not ingest_only,
             "expected_count": len(expected_ids),
             "actual_count": len(actual_ids),
             "missing_result_ids": missing_ids,
@@ -856,7 +912,17 @@ def run(args: argparse.Namespace) -> int:
     _write_jsonl_atomic(rows_path, rows)
     _write_json_atomic(summary_path, summary)
     _write_json_atomic(manifest_path, manifest)
-    print_summary(summary, rows_path, summary_path, manifest_path)
+    if ingest_only:
+        verdict = "COMPLETE" if complete else "INCOMPLETE"
+        print("\n" + "=" * 68)
+        print(
+            f"{verdict} INGEST ONLY  memory-ready conversations="
+            f"{len(manifest['operational']['conversations'])}/{len(conversations)}"
+        )
+        print(f"summary:  {summary_path}")
+        print(f"manifest: {manifest_path}")
+    else:
+        print_summary(summary, rows_path, summary_path, manifest_path)
     return 0 if complete else 1
 
 
@@ -1030,12 +1096,17 @@ def main() -> int:
     parser.add_argument("--out", default="benchmarks/results")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--ingest-only",
+        action="store_true",
+        help="ingest and wait for exact event memory readiness, then stop before QA queries",
+    )
     parser.add_argument("--judge", action="store_true", help="enable secondary LLM judge")
     parser.add_argument("--judge-model", default="gemma4:31b")
     args = parser.parse_args()
     if args.context_turns < 0:
         parser.error("--context-turns must be non-negative")
-    if args.retrieval_mode == "forced" and args.min_depth is None:
+    if not args.ingest_only and args.retrieval_mode == "forced" and args.min_depth is None:
         parser.error("--retrieval-mode forced requires an explicit --min-depth")
     if args.min_depth is not None:
         if args.retrieval_mode != "forced":
