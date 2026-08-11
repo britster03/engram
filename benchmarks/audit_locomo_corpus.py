@@ -28,6 +28,26 @@ _CREATION_CUE = re.compile(
 )
 _GIFT_CUE = re.compile(r"\b(?:gave|gift|gifted|given|present|received)\b", re.IGNORECASE)
 _OWNERSHIP = {"drives", "has", "maintains", "owns"}
+_LOCATION_RELATIONS = {
+    "born_in",
+    "lives_in",
+    "located_in",
+    "moved_from",
+    "moved_to",
+    "resides_in",
+    "visited",
+}
+_LOCATION_PLACEHOLDERS = {
+    "current location",
+    "current place",
+    "here",
+    "new location",
+    "new place",
+    "somewhere",
+    "there",
+    "unknown location",
+    "unspecified location",
+}
 
 
 def _counts(rows: list[sqlite3.Row], key: str) -> dict[str, int]:
@@ -308,6 +328,8 @@ def audit(
         obj = " ".join(str(fact.get("object") or "").casefold().split())
         if relation in _OWNERSHIP and obj and obj in captions and obj not in spoken:
             fail("caption_only_ownership", uri)
+        if relation in _LOCATION_RELATIONS and obj in _LOCATION_PLACEHOLDERS:
+            fail("placeholder_location_fact", uri)
         if relation == "created_by":
             if subject in speakers:
                 fail("created_by_direction", uri)

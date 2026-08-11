@@ -93,6 +93,22 @@ _GIFT_CUE = re.compile(
     r"\b(?:gave|gift|gifted|given|present|received)\b",
     re.IGNORECASE,
 )
+_LOCATION_RELATIONS = frozenset(
+    {"born_in", "lives_in", "located_in", "moved_from", "moved_to", "resides_in", "visited"}
+)
+_LOCATION_PLACEHOLDERS = frozenset(
+    {
+        "current location",
+        "current place",
+        "here",
+        "new location",
+        "new place",
+        "somewhere",
+        "there",
+        "unknown location",
+        "unspecified location",
+    }
+)
 
 
 def process_event(ctx: IngestContext, event_id: str) -> str:
@@ -344,7 +360,11 @@ def _prepare_extraction(
     vocab = vocabulary()
     supported_triplets: list[dict[str, Any]] = []
     for raw in raw_triplets:
-        if not isinstance(raw, dict) or _caption_only_ownership(raw, payload):
+        if (
+            not isinstance(raw, dict)
+            or _caption_only_ownership(raw, payload)
+            or _placeholder_fact(raw)
+        ):
             continue
         repaired = _repair_created_by(raw, payload)
         if repaired is not None:
@@ -479,6 +499,13 @@ def _repair_created_by(
         return repaired
 
     return None
+
+
+def _placeholder_fact(triplet: dict[str, Any]) -> bool:
+    """Reject non-identifying graph objects even when the model is confident."""
+    relation = "_".join(str(triplet.get("relation") or "").casefold().split())
+    obj = " ".join(str(triplet.get("object") or "").casefold().split())
+    return relation in _LOCATION_RELATIONS and obj in _LOCATION_PLACEHOLDERS
 
 
 def _source_asserted_at(payload: dict[str, Any]) -> str | None:

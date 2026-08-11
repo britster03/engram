@@ -49,6 +49,7 @@ def test_benchmark_relations_are_controlled_without_embedding_guesswork() -> Non
         "knows_for",
         "makes_feel",
         "married_for",
+        "moved_from",
         "motivated_by",
         "participated_in",
         "received_on",
@@ -61,5 +62,6 @@ def test_benchmark_relations_are_controlled_without_embedding_guesswork() -> Non
     assert vocab.canonicalise("took part in", embed) == "participated_in"
     assert vocab.canonicalise("gifted_on", embed) == "received_on"
     assert vocab.canonicalise("given by", embed) == "gifted_by"
+    assert vocab.canonicalise("moved from", embed) == "moved_from"
     assert vocab.canonicalise("stands for", embed) == "symbolizes"
     assert vocab.canonicalise("reminder_of", embed) == "reminds_of"

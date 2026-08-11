@@ -4,7 +4,7 @@
 # labels that fail to match above 0.85 are preserved verbatim and flagged
 # for manual review via /api/v1/consolidation/status.
 
-version: 5
+version: 6
 relations:
   # Employment / organisational
   - works_at
@@ -22,6 +22,7 @@ relations:
   - resides_in
   - visited
   - born_in
+  - moved_from
   - moved_to
   - from_country
 
@@ -97,6 +98,8 @@ aliases:
   reportsTo: reports_to
   livesIn: lives_in
   "lives in": lives_in
+  movedFrom: moved_from
+  "moved from": moved_from
   locatedIn: located_in
   marriedTo: married_to
   partnerOf: partner_of

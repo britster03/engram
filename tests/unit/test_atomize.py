@@ -255,3 +255,33 @@ def test_prepare_extraction_drops_unsupported_creation() -> None:
     )
 
     assert prepared["triplets"] == []
+
+
+def test_prepare_extraction_drops_placeholder_location_but_keeps_duration() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Caroline has known her friends for four years.",
+            "l0_abstract": "Caroline has known her friends for four years.",
+            "triplets": [
+                {
+                    "subject": "Caroline",
+                    "relation": "moved_to",
+                    "object": "current location",
+                    "confidence": 0.6,
+                },
+                {
+                    "subject": "Caroline",
+                    "relation": "knows_for",
+                    "object": "4 years",
+                    "object_kind": "LITERAL",
+                    "confidence": 0.95,
+                },
+            ],
+        },
+        {},
+    )
+
+    assert [(row["relation"], row["object"]) for row in prepared["triplets"]] == [
+        ("knows_for", "4 years")
+    ]
