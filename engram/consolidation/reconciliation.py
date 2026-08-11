@@ -55,13 +55,12 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["processing_stuck"] += 1
 
-    # 2. GATED_STORE with no extraction and a stale processing lease → requeue.
-    # Extraction is a normal multi-second model call, so an age-free scan races
-    # healthy workers and can expose the same event to another replica.
+    # 2. Any stale GATED_STORE lease → requeue. The durable stage record decides
+    # whether processing resumes at extraction, linking, filesystem, or KG;
+    # requiring the extraction row to be absent strands later crash windows.
+    # An age-free scan would race normal multi-second model calls.
     stuck_gated = conn.execute(
-        "SELECT e.event_id FROM events e "
-        "LEFT JOIN extractions x ON x.event_id = e.event_id "
-        "WHERE e.status = 'GATED_STORE' AND x.event_id IS NULL "
+        "SELECT e.event_id FROM events e WHERE e.status = 'GATED_STORE' "
         "AND julianday('now') - julianday(coalesce(e.processed_at, e.created_at)) "
         "> 5.0/1440"
     ).fetchall()

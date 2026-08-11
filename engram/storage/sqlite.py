@@ -523,6 +523,20 @@ class SqliteStore:
             ).fetchall()
         return [dict(r, payload=json.loads(r["payload"])) for r in rows]
 
+    def release_event_claim(self, event_id: str) -> bool:
+        """Return an interrupted in-flight event to the durable queue.
+
+        This is a lease release, not a retry: committed stage state remains
+        authoritative and retry telemetry must not count orderly shutdown.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE events SET status = 'RECEIVED', processed_at = NULL "
+                "WHERE event_id = ? AND status IN ('PROCESSING', 'GATED_STORE', 'INDEXED')",
+                (event_id,),
+            )
+        return cursor.rowcount > 0
+
     # ------------------------------------------------------------------
     # Extraction storage
     # ------------------------------------------------------------------

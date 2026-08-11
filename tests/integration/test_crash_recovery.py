@@ -237,6 +237,42 @@ def test_fresh_gated_store_is_not_stolen_from_active_worker(cfg: EngramConfig):
     assert refreshed["retry_count"] == 0
 
 
+def test_stale_gated_store_with_extraction_resumes_from_committed_stage(
+    cfg: EngramConfig,
+) -> None:
+    _ingest, sqlite, _, _ = _ctx(cfg)
+    eid = _enqueue_event(sqlite, "s4-extracted", "I own a dog named Rex.", "Cute.", 0)
+    sqlite.save_extraction(
+        eid,
+        resolved_text="User owns a dog named Rex.",
+        triplets=[{
+            "subject": "user",
+            "relation": "owns_pet_named",
+            "object": "Rex",
+            "confidence": 0.95,
+        }],
+        l0_abstract="User owns a dog named Rex.",
+    )
+    with sqlite.transaction() as conn:
+        conn.execute(
+            "UPDATE event_stage_state SET completed_stage = 'EXTRACTED' "
+            "WHERE event_id = ?",
+            (eid,),
+        )
+        conn.execute(
+            "UPDATE events SET status = 'GATED_STORE', "
+            "processed_at = datetime('now', '-10 minutes') WHERE event_id = ?",
+            (eid,),
+        )
+
+    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
+
+    assert counts["gated_store_stuck"] == 1
+    refreshed = sqlite.get_event(eid)
+    assert refreshed is not None
+    assert refreshed["status"] == "RECEIVED"
+
+
 def test_indexed_event_resumes_only_consolidation(cfg: EngramConfig):
     ingest, sqlite, _neo, _fs = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s5", "I moved to Berlin.", "Noted.", 0)

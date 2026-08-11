@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -217,6 +218,36 @@ def test_worker_is_idempotent_on_replay(cfg: EngramConfig):
         assert ev["status"] in {"COMPLETE", "GATED_SKIP"}
     finally:
         worker2.stop(timeout_s=3.0)
+
+
+def test_shutdown_timeout_releases_inflight_claim_without_retry(
+    cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from engram.ingest import durable_worker as durable_module
+
+    worker, sqlite, _neo = _build_worker(cfg, concurrency=1)
+    eid = _enqueue(sqlite, "shutdown-release", 0, "I live in Chicago.", "OK")
+    entered = threading.Event()
+    unblock = threading.Event()
+
+    def _block(*_args, **_kwargs):
+        entered.set()
+        unblock.wait(timeout=5.0)
+        return "COMPLETE"
+
+    monkeypatch.setattr(durable_module, "process_event", _block)
+    worker.start()
+    assert entered.wait(timeout=2.0)
+
+    worker.stop(timeout_s=0.05)
+
+    event = sqlite.get_event(eid)
+    assert event is not None
+    assert event["status"] == "RECEIVED"
+    assert event["retry_count"] == 0
+    unblock.set()
+    for thread in worker._workers:
+        thread.join(timeout=1.0)
 
 
 def test_failed_events_are_marked(cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch):

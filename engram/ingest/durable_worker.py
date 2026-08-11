@@ -105,16 +105,33 @@ class DurableIngestWorker:
         log.info("durable ingest worker started (concurrency=%d)", self.max_concurrent)
 
     def stop(self, *, timeout_s: float = 10.0) -> None:
+        deadline = time.monotonic() + max(0.0, timeout_s)
         self._stop.set()
         if self._poll_thread is not None:
-            self._poll_thread.join(timeout=timeout_s)
+            self._poll_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         # Drain remaining items with sentinels so workers exit cleanly.
         for _ in self._workers:
             with suppress(queue.Full):
                 self._queue.put_nowait("__STOP__")
         for t in self._workers:
-            t.join(timeout=timeout_s)
-        log.info("durable ingest worker stopped")
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = [thread.name for thread in self._workers if thread.is_alive()]
+        if alive:
+            with self._in_flight_lock:
+                interrupted = sorted(self._in_flight)
+            released = [
+                event_id
+                for event_id in interrupted
+                if self.ctx.sqlite.release_event_claim(event_id)
+            ]
+            log.warning(
+                "durable ingest shutdown timed out; released %d claim(s) for replay "
+                "(workers=%s)",
+                len(released),
+                ",".join(alive),
+            )
+        else:
+            log.info("durable ingest worker stopped")
 
     @property
     def is_alive(self) -> bool:
