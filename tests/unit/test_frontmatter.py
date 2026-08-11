@@ -34,7 +34,19 @@ def test_roundtrip_preserves_keys():
     out = m.serialize()
     reparsed = fm.parse(out)
     assert reparsed.frontmatter == m.frontmatter
-    assert reparsed.body.strip() == "body"
+    assert reparsed.body == "body\n"
+
+
+def test_body_serialization_and_hash_use_same_canonical_form():
+    variants = ["body", "body\n", "body\n\n", "\nbody\n\n"]
+    hashes = {fm.content_hash(body) for body in variants}
+    assert len(hashes) == 1
+
+    for body in variants:
+        memory = fm.MemoryFile(frontmatter={"id": "x"}, body=body)
+        reparsed = fm.parse(memory.serialize())
+        assert reparsed.body == "body\n"
+        assert fm.content_hash(reparsed.body) in hashes
 
 
 def test_rejects_missing_delimiter():

@@ -992,7 +992,7 @@ def _stable_id(uri: str) -> str:
 
 
 def _content_hash(body: str) -> str:
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return frontmatter.content_hash(body)
 
 
 def _source_provenance(payload: dict[str, Any]) -> dict[str, Any]:

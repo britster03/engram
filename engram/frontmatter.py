@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +16,23 @@ class FrontmatterError(ValueError):
     """Raised on malformed frontmatter."""
 
 
+def canonicalize_body(body: str) -> str:
+    """Return the stable representation used for storage and content hashes.
+
+    Frontmatter delimiters already supply the line break before the body. A
+    memory body therefore has no leading blank delimiter lines and exactly
+    one terminal newline. Canonicalizing before both serialization and
+    hashing prevents replay identity from depending on incidental newlines.
+    """
+    normalized = body.lstrip("\n").rstrip("\n")
+    return f"{normalized}\n" if normalized else ""
+
+
+def content_hash(body: str) -> str:
+    """Hash the canonical logical body stored beneath frontmatter."""
+    return hashlib.sha256(canonicalize_body(body).encode("utf-8")).hexdigest()
+
+
 @dataclass
 class MemoryFile:
     frontmatter: dict[str, Any] = field(default_factory=dict)
@@ -22,7 +40,7 @@ class MemoryFile:
 
     def serialize(self) -> str:
         fm = yaml.safe_dump(self.frontmatter, sort_keys=False, allow_unicode=True).rstrip()
-        return f"---\n{fm}\n---\n{self.body.lstrip()}\n"
+        return f"---\n{fm}\n---\n{canonicalize_body(self.body)}"
 
 
 def parse(text: str) -> MemoryFile:
