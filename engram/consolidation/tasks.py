@@ -130,7 +130,10 @@ def handle_consolidate_overview(
     now = datetime.now(timezone.utc).isoformat()
     neo4j.merge_node(
         source_uri=dir_uri,
-        properties={"overview_generated_at": now},
+        properties={
+            "node_type": "DIRECTORY",
+            "overview_generated_at": now,
+        },
     )
 
 

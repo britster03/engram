@@ -762,11 +762,20 @@ class SqliteStore:
             ).fetchone()
         return int(row["c"])
 
-    def count_events_by_status(self, status: str) -> int:
-        row = self.get_conn().execute(
-            "SELECT COUNT(*) AS c FROM events WHERE status = ?",
-            (status,),
-        ).fetchone()
+    def count_events_by_status(
+        self, status: str, *, tenant_id: str | None = None
+    ) -> int:
+        params: tuple[str, ...]
+        if tenant_id is None:
+            query = "SELECT COUNT(*) AS c FROM events WHERE status = ?"
+            params = (status,)
+        else:
+            query = (
+                "SELECT COUNT(*) AS c FROM events "
+                "WHERE status = ? AND tenant_id = ?"
+            )
+            params = (status, tenant_id)
+        row = self.get_conn().execute(query, params).fetchone()
         return int(row["c"]) if row else 0
 
     def count_outbox_pending(self) -> int:

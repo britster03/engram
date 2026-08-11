@@ -1,6 +1,7 @@
 import pytest
 
 from engram.retrieval import templates
+from engram.retrieval.orchestrator import _normalize_template_params
 
 
 def test_available_templates_cover_spec():
@@ -40,3 +41,18 @@ def test_hops_clamp_applied():
         {"node_uri": "mem://x", "hops": 99, "relation": "works_at"},
     )
     assert out[0]["hops"] == 4
+
+
+def test_planner_parameter_aliases_normalize_to_template_contract() -> None:
+    assert _normalize_template_params(
+        "t_neighbours_by_relation",
+        {"node_id": "mem://alice", "relation": "works_at"},
+    )["node_uri"] == "mem://alice"
+    assert _normalize_template_params(
+        "t_path_between", {"start_node": "mem://a", "end_node": "mem://b"}
+    ) == {
+        "start_node": "mem://a",
+        "end_node": "mem://b",
+        "src_uri": "mem://a",
+        "dst_uri": "mem://b",
+    }

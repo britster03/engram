@@ -10,6 +10,7 @@ import pytest
 from engram.config import EngramConfig
 from engram.consolidation.tasks import (
     handle_atomize,
+    handle_consolidate_overview,
     handle_integrate,
     handle_normalize,
     handle_temporalize,
@@ -134,3 +135,31 @@ def test_integrate_requests_kg_only_replay(cfg: EngramConfig):
     assert refreshed["status"] == "RECEIVED"
     state = sqlite.get_event_stage(eid, tenant_id="_default")
     assert state["completed_stage"] == "FILESYSTEM_COMMITTED"
+
+
+def test_overview_indexing_creates_a_typed_directory_node(cfg: EngramConfig) -> None:
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    fs.write_atomic(
+        "mem://user/entities/alice/alice.md",
+        "---\nid: alice\nnode_type: ENTITY\nstatus: ACTIVE\n"
+        "created_at: 2026-01-01T00:00:00Z\nschema_version: 1\n---\nAlice\n",
+    )
+    neo = InMemoryKnowledgeGraph()
+
+    from tests.integration.providers import DeterministicCoreProvider
+
+    handle_consolidate_overview(
+        node_id="mem://user/entities/alice",
+        fs=fs,
+        neo4j=neo,  # type: ignore[arg-type]
+        core=DeterministicCoreProvider(),
+        cfg=cfg.consolidation,
+    )
+
+    nodes = neo.graph(depth=1, limit=20)["nodes"]
+    directory = next(
+        node for node in nodes if node["source_uri"] == "mem://user/entities/alice"
+    )
+    assert directory["node_type"] == "DIRECTORY"
+    assert directory["status"] == "ACTIVE"
+    assert directory["id"]

@@ -76,6 +76,7 @@ from engram.logging_setup import configure_logging
 from engram.migrations.runner import run_pending
 from engram.resilience import breaker_snapshot
 from engram.retrieval.orchestrator import run_query
+from engram.tenancy import current_tenant_id
 from engram.tracing import configure_tracing
 from engram.uri import pair_id as pair_id_fn
 
@@ -99,6 +100,9 @@ async def _lifespan(app: FastAPI):
         # first can otherwise kill its leader thread on the first query.
         run_pending(get_config())
         state = get_state()
+        # Retrieval is not safe until the vector/full-text schema is ONLINE.
+        # This is a no-op for the in-memory backend.
+        state.neo4j.ensure_indexes()
     except Exception:
         log.exception("failed to build app state during lifespan startup")
         yield
@@ -256,6 +260,7 @@ def readyz() -> JSONResponse:
     components = {
         "sqlite": True,  # get_state() succeeded → SQLite is writable
         "neo4j": state.neo4j.ping(),
+        "neo4j_indexes": state.neo4j.indexes_ready(),
         "redis": state.session_cache.ping(),
         "filesystem": state.fs.data_dir.exists(),
         "classifier": not state.l0_classifier_status.degraded,
@@ -289,6 +294,7 @@ def health() -> schemas.HealthResponse:
         )
     components["sqlite"] = True
     components["neo4j"] = state.neo4j.ping()
+    components["neo4j_indexes"] = state.neo4j.indexes_ready()
     components["redis"] = state.session_cache.ping()
     components["filesystem"] = state.fs.data_dir.exists()
     components["classifier"] = not state.l0_classifier_status.degraded
@@ -300,7 +306,7 @@ def health() -> schemas.HealthResponse:
     components["reconciliation_worker"] = workers["reconciliation"] in {
         "running", "disabled"
     }
-    failures = _failure_counts(state)
+    failures = _failure_counts(state, tenant_id=current_tenant_id())
     degradation_reasons = [name for name, available in components.items() if not available]
     if failures["events"]:
         degradation_reasons.append("failed_events_present")
@@ -343,17 +349,21 @@ def _worker_status(state: AppState) -> dict[str, str]:
     }
 
 
-def _failure_counts(state: AppState) -> dict[str, int]:
+def _failure_counts(state: AppState, *, tenant_id: str) -> dict[str, int]:
     conn = state.sqlite.get_conn()
     task_row = conn.execute(
-        "SELECT COUNT(*) AS c FROM consolidation_tasks WHERE status = 'FAILED'"
+        "SELECT COUNT(*) AS c FROM consolidation_tasks "
+        "WHERE status = 'FAILED' AND tenant_id = ?",
+        (tenant_id,),
     ).fetchone()
     artifact_row = conn.execute(
         "SELECT COUNT(*) AS c FROM ingest_artifacts "
-        "WHERE filesystem_state = 'FAILED' OR kg_state = 'FAILED'"
+        "WHERE tenant_id = ? AND "
+        "(filesystem_state = 'FAILED' OR kg_state = 'FAILED')",
+        (tenant_id,),
     ).fetchone()
     return {
-        "events": state.sqlite.count_events_by_status("FAILED"),
+        "events": state.sqlite.count_events_by_status("FAILED", tenant_id=tenant_id),
         "consolidation_tasks": int(task_row["c"] if task_row else 0),
         "artifacts": int(artifact_row["c"] if artifact_row else 0),
     }

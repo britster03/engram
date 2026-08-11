@@ -83,6 +83,22 @@ def test_event_lifecycle(tmp_path: Path):
     assert ev["processed_at"] is not None
 
 
+def test_event_status_counts_can_be_tenant_scoped(tmp_path: Path):
+    store = SqliteStore(tmp_path / "ev.db")
+    for tenant_id in ("tenant-a", "tenant-b"):
+        event_id, _ = store.record_event(
+            pair_id=f"failed-{tenant_id}",
+            session_id="s",
+            source="test",
+            event_type="INGEST",
+            payload={},
+            tenant_id=tenant_id,
+        )
+        store.set_event_status(event_id, "FAILED", tenant_id=tenant_id)
+    assert store.count_events_by_status("FAILED") == 2
+    assert store.count_events_by_status("FAILED", tenant_id="tenant-a") == 1
+
+
 def test_get_event_readiness_is_exact_ordered_and_tenant_scoped(tmp_path: Path):
     store = SqliteStore(tmp_path / "ev.db")
     eid_a, _ = store.record_event(

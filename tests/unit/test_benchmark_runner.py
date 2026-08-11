@@ -84,6 +84,25 @@ def test_canary_question_selection_is_seeded_and_category_balanced() -> None:
     assert counts == {category: 2 for category in range(1, 6)}
 
 
+def test_partial_corpus_questions_require_all_evidence_to_be_ingested() -> None:
+    conv = Conversation(
+        sample_id="partial",
+        speaker_a="A",
+        speaker_b="B",
+        turns=[_turn(1), _turn(2), _turn(3), _turn(4)],
+        qa=[
+            QAProbe("available", "a", 4, ["D1:1"], False),
+            QAProbe("partly missing", "b", 1, ["D1:2", "D1:3"], False),
+            QAProbe("adversarial missing", "", 5, ["D1:4"], True),
+            QAProbe("unannotated", "c", 3, [], False),
+        ],
+    )
+
+    selected = _selected_questions(conv, 10, seed=42, limit_pairs=1)
+    assert [(index, probe.question) for index, probe in selected] == [(0, "available")]
+    assert len(_selected_questions(conv, 10, seed=42)) == 4
+
+
 def test_summary_uses_official_metrics_as_primary() -> None:
     rows = [
         {

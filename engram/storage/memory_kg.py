@@ -25,6 +25,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, cast
 
 from engram.tenancy import current_tenant_id
@@ -74,6 +75,9 @@ class InMemoryKnowledgeGraph:
     def ensure_indexes(self) -> None:
         return None
 
+    def indexes_ready(self) -> bool:
+        return True
+
     def ping(self) -> bool:
         return True
 
@@ -106,11 +110,26 @@ class InMemoryKnowledgeGraph:
         with self._lock:
             key = (tid, source_uri)
             existing = self._nodes.get(key, {})
-            merged = {**existing, **properties, "source_uri": source_uri, "tenant_id": tid}
+            default_created_at = str(
+                properties.get("created_at") or datetime.now(timezone.utc).isoformat()
+            )
+            defaults = {
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}:{source_uri}")),
+                "status": "ACTIVE",
+                "schema_version": 1,
+                "created_at": default_created_at,
+            }
+            merged = {
+                **defaults,
+                **existing,
+                **properties,
+                "source_uri": source_uri,
+                "tenant_id": tid,
+            }
             self._nodes[key] = merged
             if parent_uri:
                 parent_key = (tid, parent_uri)
-                self._nodes.setdefault(
+                parent = self._nodes.setdefault(
                     parent_key,
                     {
                         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}:{parent_uri}")),
@@ -118,8 +137,12 @@ class InMemoryKnowledgeGraph:
                         "tenant_id": tid,
                         "node_type": "DIRECTORY",
                         "status": "ACTIVE",
+                        "schema_version": 1,
+                        "created_at": default_created_at,
                     },
                 )
+                if default_created_at < str(parent.get("created_at") or "~"):
+                    parent["created_at"] = default_created_at
                 if not any(
                     e.type == "CONTAINS"
                     and e.subject_uri == parent_uri

@@ -124,7 +124,7 @@ def train(
     args = TrainingArguments(
         output_dir=str(out_dir), num_train_epochs=epochs, learning_rate=lr,
         per_device_train_batch_size=batch_size, gradient_accumulation_steps=grad_accum,
-        warmup_ratio=0.1, lr_scheduler_type="cosine", logging_steps=20, save_steps=500,
+        warmup_steps=0.1, lr_scheduler_type="cosine", logging_steps=20, save_steps=500,
         bf16=True, report_to="none",
     )
     trainer = Trainer(

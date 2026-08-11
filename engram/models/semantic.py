@@ -40,8 +40,28 @@ class ExtractOutput(SemanticModel):
     l0_abstract: str = Field(min_length=1, max_length=2_000)
 
 
+RetrievalCommandName = Literal[
+    "find",
+    "ls",
+    "cat",
+    "overview",
+    "rel",
+    "history",
+    "t_top_k_vector",
+    "t_children_of",
+    "t_neighbours_by_relation",
+    "t_path_between",
+    "t_temporal_filter",
+    "t_history_chain",
+    "t_find_by_uri_prefix",
+    "t_cross_references",
+]
+
+
 class RetrievalCommand(SemanticModel):
-    template: str = Field(min_length=1, max_length=100)
+    # A Literal is carried into the provider-level JSON schema, preventing a
+    # planner from inventing commands that Engram will silently ignore.
+    template: RetrievalCommandName
     params: dict[str, Any] = Field(default_factory=dict)
 
 

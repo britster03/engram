@@ -455,7 +455,7 @@ def _execute_commands(
 
         # --- Filesystem-backed commands ----------------------------------
         if template in ("overview", "t_overview_for", "02_overview_for"):
-            uri = params.get("uri")
+            uri = params.get("uri") or params.get("path")
             if uri and ctx.fs.exists(uri):
                 overview = ctx.fs.read_overview(uri) or ""
                 out.append({
@@ -466,7 +466,7 @@ def _execute_commands(
                 })
             continue
         if template == "cat":
-            uri = params.get("uri")
+            uri = params.get("uri") or params.get("path")
             if uri and ctx.fs.exists(uri) and uri not in seen:
                 body = _read_full_body(ctx, uri) or ""
                 seen.add(uri)
@@ -504,11 +504,12 @@ def _execute_commands(
         aliased = _alias_to_template(template, params)
         if aliased is not None:
             template, params = aliased
+        params = _normalize_template_params(template, params)
 
         try:
             rows = run_template(ctx.neo4j, template, params, timeout_s=timeout)
-        except TemplateError:
-            log.warning("orchestrator received unknown template: %s", template)
+        except TemplateError as err:
+            log.warning("orchestrator rejected template %s: %s", template, err)
             continue
         except Exception:
             log.exception("template %s failed", template)
@@ -549,6 +550,39 @@ def _alias_to_template(
                     {"node_uri": node_uri, "limit": int(params.get("limit", 20))})
         return None
     return None
+
+
+def _normalize_template_params(
+    template: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Normalize bounded planner aliases to each template's typed contract."""
+    normalized = dict(params)
+    if template in {
+        "t_neighbours_by_relation",
+        "t_temporal_filter",
+        "t_history_chain",
+        "t_cross_references",
+    }:
+        normalized.setdefault(
+            "node_uri",
+            normalized.get("node_id") or normalized.get("uri"),
+        )
+    elif template == "t_path_between":
+        normalized.setdefault(
+            "src_uri",
+            normalized.get("start_node") or normalized.get("source_uri"),
+        )
+        normalized.setdefault(
+            "dst_uri",
+            normalized.get("end_node") or normalized.get("destination_uri"),
+        )
+    elif template == "t_children_of":
+        normalized.setdefault("uri", normalized.get("node_uri"))
+    elif template == "t_find_by_uri_prefix":
+        normalized.setdefault(
+            "prefix", normalized.get("uri") or normalized.get("scope")
+        )
+    return {key: value for key, value in normalized.items() if value is not None}
 
 
 # ----------------------------------------------------------------------

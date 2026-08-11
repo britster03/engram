@@ -37,7 +37,12 @@ from engram_client import (
 )
 from judge import OllamaJudge
 from loader import Conversation, Turn, load_locomo
-from metrics import evidence_recall_at_ks, qa_score
+from metrics import (
+    MM_RELEVANCE_EVALUATOR_VERSION,
+    SUMMARY_EVALUATOR_VERSION,
+    evidence_recall_at_ks,
+    qa_score,
+)
 
 _LOCOMO_LICENSE = "CC BY-NC 4.0"
 _LOCOMO_UPSTREAM = "https://github.com/snap-research/locomo"
@@ -123,10 +128,38 @@ def ingest_conversation(
     return event_ids
 
 
+def _ingested_turn_ids(conv: Conversation, *, limit_pairs: int) -> set[str]:
+    """Return the exact source turns present in a partial-corpus run."""
+    included: set[str] = set()
+    for pair_idx, (_session_id, _source_session_id, user, assistant) in enumerate(
+        _session_pairs(conv)
+    ):
+        if limit_pairs and pair_idx >= limit_pairs:
+            break
+        included.add(user.dia_id)
+        if assistant is not None:
+            included.add(assistant.dia_id)
+    return included
+
+
 def _selected_questions(
-    conv: Conversation, limit: int, *, seed: int = 42
+    conv: Conversation,
+    limit: int,
+    *,
+    seed: int = 42,
+    limit_pairs: int = 0,
 ) -> list[tuple[int, Any]]:
     indexed = list(enumerate(conv.qa))
+    if limit_pairs:
+        available = _ingested_turn_ids(conv, limit_pairs=limit_pairs)
+        # A partial-corpus score is valid only when every annotated evidence
+        # turn was actually ingested.  This applies to adversarial probes too:
+        # those ask Engram to reject a speaker-swapped claim from a real turn.
+        indexed = [
+            item
+            for item in indexed
+            if item[1].evidence and set(item[1].evidence).issubset(available)
+        ]
     if not limit or limit >= len(indexed):
         return indexed
     by_category: dict[int, list[tuple[int, Any]]] = defaultdict(list)
@@ -163,7 +196,10 @@ def _expected_manifest(conversations: list[Conversation], args: argparse.Namespa
         }
         for conv in conversations
         for question_idx, probe in _selected_questions(
-            conv, args.limit_questions, seed=args.seed
+            conv,
+            args.limit_questions,
+            seed=args.seed,
+            limit_pairs=args.limit_pairs,
         )
     ]
     return {
@@ -263,7 +299,10 @@ def _failure_rows(
             "judged": False,
         }
         for question_idx, probe in _selected_questions(
-            conv, args.limit_questions, seed=args.seed
+            conv,
+            args.limit_questions,
+            seed=args.seed,
+            limit_pairs=args.limit_pairs,
         )
     ]
 
@@ -302,6 +341,7 @@ def _make_manifest(
             "max_depth": args.max_depth,
             "max_reentries": args.max_reentries,
             "retrieval_forced": True,
+            "ingest_force_store": True,
             "seed": args.seed,
             "runner_sha256": _sha256(Path(__file__)),
             "prompt_hashes": prompt_hashes,
@@ -316,6 +356,28 @@ def _make_manifest(
                 "enabled": args.judge,
                 "provider": "ollama_cloud" if args.judge else None,
                 "model": args.judge_model if args.judge else None,
+            },
+            "evaluators": {
+                "qa_answer": {
+                    "name": "locomo_normalized_partial_match_f1",
+                    "upstream_commit": args.dataset_commit,
+                    "deterministic": True,
+                },
+                "retrieval": {
+                    "name": "evidence_recall_at_5_10_25",
+                    "deterministic": True,
+                },
+                "summary": {
+                    "version": SUMMARY_EVALUATOR_VERSION,
+                    "metrics": ["rouge_1", "rouge_2", "rouge_l", "adapted_fact_score"],
+                    "adapted": True,
+                },
+                "multimodal": {
+                    "version": MM_RELEVANCE_EVALUATOR_VERSION,
+                    "metrics": ["bleu_1", "bleu_2", "rouge_l", "mm_relevance"],
+                    "caption_conditioned": True,
+                    "adapted": True,
+                },
             },
         },
         "expected_work": expected,
@@ -370,7 +432,10 @@ def run(args: argparse.Namespace) -> int:
             expected_for_conv = {
                 f"{conv.sample_id}:q{question_idx}"
                 for question_idx, _ in _selected_questions(
-                    conv, args.limit_questions, seed=args.seed
+                    conv,
+                    args.limit_questions,
+                    seed=args.seed,
+                    limit_pairs=args.limit_pairs,
                 )
             }
             if expected_for_conv and expected_for_conv.issubset(completed_ids):
@@ -447,7 +512,10 @@ def run(args: argparse.Namespace) -> int:
                     continue
 
                 for question_idx, probe in _selected_questions(
-                    conv, args.limit_questions, seed=args.seed
+                    conv,
+                    args.limit_questions,
+                    seed=args.seed,
+                    limit_pairs=args.limit_pairs,
                 ):
                     result_id = f"{conv.sample_id}:q{question_idx}"
                     if result_id in completed_ids:

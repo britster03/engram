@@ -37,7 +37,7 @@ dev = [
     "playwright>=1.49.0",
     "pytest-playwright>=0.6.2",
     "ruff>=0.7.0",
-    "mypy>=1.13.0",
+    "mypy>=1.13.0,<2.0",
     "types-PyYAML>=6.0.12.20250516",
 ]
 training = [

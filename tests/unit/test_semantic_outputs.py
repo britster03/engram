@@ -7,6 +7,7 @@ import pytest
 from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
 from engram.models.semantic import (
     GateWriteOutput,
+    RetrievalCommand,
     complete_validated,
     validate_frontier_output,
 )
@@ -59,3 +60,16 @@ def test_frontier_contract_requires_payload_for_verdict() -> None:
         {"verdict": "NEED_MORE", "reason": "date missing", "suggested_queries": []}
     )
     assert valid.verdict == "NEED_MORE"
+
+
+def test_retrieval_command_schema_rejects_unregistered_templates() -> None:
+    valid = RetrievalCommand.model_validate({
+        "template": "t_neighbours_by_relation",
+        "params": {"node_uri": "mem://user/entities/alice/alice.md"},
+    })
+    assert valid.template == "t_neighbours_by_relation"
+    with pytest.raises(ValueError):
+        RetrievalCommand.model_validate({"template": "t_cat", "params": {}})
+
+    template_schema = RetrievalCommand.model_json_schema()
+    assert "t_cat" not in str(template_schema)

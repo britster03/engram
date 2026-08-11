@@ -12,6 +12,7 @@ import logging
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from neo4j import Driver, GraphDatabase
@@ -71,6 +72,17 @@ INDEX_STATEMENTS = [
     """,
 ]
 
+INDEX_NAMES = {
+    "l0_idx",
+    "l0_text_idx",
+    "uri_prefix_idx",
+    "status_idx",
+    "weight_idx",
+    "tenant_idx",
+    "tenant_status_idx",
+    "node_tenant_source_uri_unique",
+}
+
 
 class Neo4jStore:
     def __init__(self, cfg: KnowledgeGraphConfig) -> None:
@@ -108,15 +120,43 @@ class Neo4jStore:
     # Index / schema bootstrap
     # ------------------------------------------------------------------
 
-    def ensure_indexes(self) -> None:
+    def ensure_indexes(self, *, timeout_seconds: int = 60) -> None:
+        """Create the required schema and fail if it is not query-ready.
+
+        Retrieval depends on ``l0_idx``.  Merely logging a failed CREATE made
+        an otherwise healthy-looking deployment silently return no vector
+        hits, so application startup now treats incomplete schema as fatal.
+        """
         with self.writer().session() as session:
             for stmt in INDEX_STATEMENTS:
-                try:
-                    session.run(stmt)
-                except Exception as err:
-                    # Old Neo4j versions may not support particular index syntaxes.
-                    # We surface the error as a warning; `engram init` reports it.
-                    log.warning("index statement failed: %s", err)
+                session.run(stmt).consume()
+            session.run(
+                "CALL db.awaitIndexes($timeout_seconds)",
+                timeout_seconds=timeout_seconds,
+            ).consume()
+        unavailable = self.unavailable_indexes()
+        if unavailable:
+            details = ", ".join(
+                f"{name}={state}" for name, state in sorted(unavailable.items())
+            )
+            raise RuntimeError(f"required Neo4j indexes are unavailable: {details}")
+
+    def unavailable_indexes(self) -> dict[str, str]:
+        """Return missing or non-ONLINE required schema by name."""
+        with self.reader().session() as session:
+            rows = session.run("SHOW INDEXES YIELD name, state RETURN name, state")
+            states = {str(row["name"]): str(row["state"]) for row in rows}
+        return {
+            name: states.get(name, "MISSING")
+            for name in INDEX_NAMES
+            if states.get(name) != "ONLINE"
+        }
+
+    def indexes_ready(self) -> bool:
+        try:
+            return not self.unavailable_indexes()
+        except Exception:
+            return False
 
     def ping(self) -> bool:
         try:
@@ -151,14 +191,27 @@ class Neo4jStore:
         """MERGE on (tenant_id, source_uri); SET all properties; create CONTAINS edge from parent."""
         tid = tenant_id or current_tenant_id()
         props = {**properties, "tenant_id": tid}
+        default_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}:{source_uri}"))
+        default_created_at = str(
+            properties.get("created_at") or datetime.now(timezone.utc).isoformat()
+        )
         query = (
             "MERGE (n:Node {tenant_id: $tenant_id, source_uri: $source_uri}) "
             "SET n += $props "
+            "SET n.id = coalesce(n.id, $default_id), "
+            "n.status = coalesce(n.status, 'ACTIVE'), "
+            "n.schema_version = coalesce(n.schema_version, 1), "
+            "n.created_at = coalesce(n.created_at, $default_created_at) "
             "RETURN n"
         )
         with self.writer().session() as session:
             result = session.run(
-                query, tenant_id=tid, source_uri=source_uri, props=props,
+                query,
+                tenant_id=tid,
+                source_uri=source_uri,
+                props=props,
+                default_id=default_id,
+                default_created_at=default_created_at,
             ).single()
             node = dict(result["n"]) if result else {}
             if parent_uri:
@@ -166,14 +219,21 @@ class Neo4jStore:
                 session.run(
                     "MERGE (p:Node {tenant_id: $tenant_id, source_uri: $parent_uri}) "
                     "ON CREATE SET p.tenant_id = $tenant_id, p.status = 'ACTIVE', "
-                    "p.node_type = 'DIRECTORY', p.schema_version = 1, p.id = $parent_id "
+                    "p.node_type = 'DIRECTORY', p.schema_version = 1, p.id = $parent_id, "
+                    "p.created_at = $default_created_at "
                     "SET p.node_type = coalesce(p.node_type, 'DIRECTORY'), "
-                    "p.id = coalesce(p.id, $parent_id) "
+                    "p.id = coalesce(p.id, $parent_id), "
+                    "p.status = coalesce(p.status, 'ACTIVE'), "
+                    "p.schema_version = coalesce(p.schema_version, 1), "
+                    "p.created_at = CASE "
+                    "WHEN p.created_at IS NULL OR $default_created_at < p.created_at "
+                    "THEN $default_created_at ELSE p.created_at END "
                     "MERGE (c:Node {tenant_id: $tenant_id, source_uri: $child_uri}) "
                     "MERGE (p)-[r:CONTAINS]->(c) SET r.tenant_id = $tenant_id",
                     tenant_id=tid,
                     parent_uri=parent_uri,
                     parent_id=parent_id,
+                    default_created_at=default_created_at,
                     child_uri=source_uri,
                 )
         return node
