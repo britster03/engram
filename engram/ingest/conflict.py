@@ -38,6 +38,7 @@ class ConflictDecision:
     case: str                       # "DUPLICATE" | "CONTRADICTION" | "CO_EXISTENCE"
     existing_edge_id: str | None
     reason: str
+    existing_assertion_uri: str | None = None
 
 
 def classify(
@@ -81,11 +82,13 @@ def classify(
             return ConflictDecision(
                 "DUPLICATE", edge.get("edge_id"),
                 f"object cosine {obj_cos:.2f} > {DUPLICATE_OBJECT_COS}",
+                existing_assertion_uri=edge.get("assertion_uri"),
             )
         if obj_cos < 0.5:
             return ConflictDecision(
                 "CONTRADICTION", edge.get("edge_id"),
                 f"object cosine {obj_cos:.2f} — different object",
+                existing_assertion_uri=edge.get("assertion_uri"),
             )
         # 0.5 ≤ obj_cos ≤ 0.95 — ambiguous
         ambiguous_candidates.append((edge, obj_cos))
@@ -131,6 +134,15 @@ def classify(
             validated.case,
             validated.existing_edge_id,
             validated.reason or "core-model-dedup",
+            existing_assertion_uri=next(
+                (
+                    str(edge.get("assertion_uri"))
+                    for edge, _score in ambiguous_candidates
+                    if edge.get("edge_id") == validated.existing_edge_id
+                    and edge.get("assertion_uri")
+                ),
+                None,
+            ),
         )
     except Exception:
         log.warning("dedup core call failed; defaulting to CO_EXISTENCE", exc_info=True)
@@ -145,19 +157,24 @@ def apply_decision(
     object_uri: str,
     relation_label: str,
     properties: dict[str, Any] | None = None,
+    incoming_assertion_uri: str | None = None,
 ) -> None:
     """Mutate Neo4j according to the decision (§6.5)."""
     props = dict(properties or {})
     now = str(props.get("created_at") or datetime.now(timezone.utc).isoformat())
     if decision.case == "DUPLICATE":
         _touch_edge(neo4j, decision.existing_edge_id, now=now)
+        if incoming_assertion_uri and decision.existing_assertion_uri:
+            neo4j.merge_edge(
+                subject_uri=incoming_assertion_uri,
+                object_uri=decision.existing_assertion_uri,
+                relation_label="duplicate_of",
+                edge_type="DUPLICATE_OF",
+                properties={"created_at": now},
+            )
         return
     if decision.case == "CONTRADICTION" and decision.existing_edge_id:
-        old_object = _supersede_edge(neo4j, decision.existing_edge_id, now=now)
-        # §6.5.1: mark the old object HISTORICAL if no ACTIVE edges
-        # still reference it as subject or object.
-        if old_object:
-            _mark_orphan_historical(neo4j, old_object, now=now)
+        _supersede_edge(neo4j, decision.existing_edge_id, now=now)
     props.setdefault("status", "ACTIVE")
     props.setdefault("created_at", now)
     neo4j.merge_edge(
@@ -167,19 +184,24 @@ def apply_decision(
         edge_type="RELATES_TO",
         properties=props,
     )
-    # Write a SUPERSEDES edge from new → old for history navigation (§6.4)
-    if decision.case == "CONTRADICTION" and decision.existing_edge_id:
-        try:
-            neo4j.run_template(
-                "MATCH (s:Node {tenant_id: $tenant_id, source_uri: $s_uri}), "
-                "(o:Node {tenant_id: $tenant_id, source_uri: $o_uri}) "
-                "MERGE (s)-[e:SUPERSEDES {edge_id: $eid}]->(o) "
-                "SET e.created_at = $now, e.tenant_id = $tenant_id",
-                {"s_uri": subject_uri, "o_uri": object_uri,
-                 "eid": decision.existing_edge_id, "now": now},
-            )
-        except Exception:
-            log.debug("SUPERSEDES edge write failed", exc_info=True)
+    # History belongs to immutable assertions, never to entity identities.
+    if (
+        decision.case == "CONTRADICTION"
+        and incoming_assertion_uri
+        and decision.existing_assertion_uri
+    ):
+        _mark_assertion_historical(
+            neo4j,
+            decision.existing_assertion_uri,
+            now=now,
+        )
+        neo4j.merge_edge(
+            subject_uri=incoming_assertion_uri,
+            object_uri=decision.existing_assertion_uri,
+            relation_label="supersedes",
+            edge_type="SUPERSEDES",
+            properties={"created_at": now},
+        )
 
 
 def _fetch_active_edges(neo4j: Neo4jStore, subject_uri: str) -> list[dict]:
@@ -190,7 +212,8 @@ def _fetch_active_edges(neo4j: Neo4jStore, subject_uri: str) -> list[dict]:
             "WHERE r.tenant_id = $tenant_id "
             "AND r.status = 'ACTIVE' AND o.status = 'ACTIVE' "
             "RETURN elementId(r) AS edge_id, r.relation_label AS relation_label, "
-            "o.source_uri AS object_uri, o.l0_abstract AS object_abstract",
+            "o.source_uri AS object_uri, o.l0_abstract AS object_abstract, "
+            "r.assertion_uri AS assertion_uri",
             {"uri": subject_uri},
             timeout_s=5,
         )
@@ -211,7 +234,7 @@ def _touch_edge(neo4j: Neo4jStore, edge_id: Any, *, now: str) -> None:
 
 
 def _supersede_edge(neo4j: Neo4jStore, edge_id: Any, *, now: str) -> str | None:
-    """Mark the edge HISTORICAL and return its object source_uri (for orphan check)."""
+    """Mark the derived edge HISTORICAL and return its former object URI."""
     try:
         rows = neo4j.run_template(
             "MATCH (s:Node {tenant_id: $tenant_id})-[r:RELATES_TO]->"
@@ -229,20 +252,22 @@ def _supersede_edge(neo4j: Neo4jStore, edge_id: Any, *, now: str) -> str | None:
         return None
 
 
-def _mark_orphan_historical(neo4j: Neo4jStore, object_uri: str, *, now: str) -> None:
-    """§6.5.1: a node with no ACTIVE relationship edges becomes HISTORICAL."""
+def _mark_assertion_historical(
+    neo4j: Neo4jStore,
+    assertion_uri: str,
+    *,
+    now: str,
+) -> None:
+    """Retire the superseded assertion while preserving entity identity."""
     try:
         neo4j.run_template(
             "MATCH (n:Node {tenant_id: $tenant_id, source_uri: $uri}) "
-            "OPTIONAL MATCH (n)-[r:RELATES_TO]-(:Node {tenant_id: $tenant_id}) "
-            "WHERE r.tenant_id = $tenant_id AND coalesce(r.status, 'ACTIVE') = 'ACTIVE' "
-            "WITH n, count(r) AS active_edges "
-            "WHERE active_edges = 0 AND n.status = 'ACTIVE' "
+            "WHERE n.node_type = 'FACT' "
             "SET n.status = 'HISTORICAL', n.superseded_at = $now",
-            {"uri": object_uri, "now": now},
+            {"uri": assertion_uri, "now": now},
         )
     except Exception:
-        log.debug("orphan check failed for %s", object_uri, exc_info=True)
+        log.debug("assertion retirement failed for %s", assertion_uri, exc_info=True)
 
 
 def _cos(a: list[float], b: list[float]) -> float:

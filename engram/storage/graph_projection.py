@@ -49,6 +49,8 @@ def project_memory_node(
         "content_hash": str(fm.get("content_hash") or ""),
     }
     for key in (
+        "source_event_id",
+        "source_episode_uri",
         "source_session_id",
         "source_turn_ids",
         "source_conversation_id",
@@ -83,7 +85,14 @@ def project_memory_node(
 
     fact = fm.get("fact")
     if isinstance(fact, dict):
-        for key in ("subject", "relation", "object", "subject_uri", "object_uri"):
+        for key in (
+            "subject",
+            "relation",
+            "object",
+            "object_kind",
+            "subject_uri",
+            "object_uri",
+        ):
             if fact.get(key) is not None:
                 props[f"fact_{key}"] = str(fact[key])
     return props

@@ -244,6 +244,26 @@ def test_rebuild_matches_duplicate_contradiction_and_history(cfg: EngramConfig):
         for edge in graph.edges
         if edge.get("tenant_id") == "history-tenant"
     )
+    supersedes = [
+        edge
+        for edge in graph.edges
+        if edge.get("tenant_id") == "history-tenant"
+        and edge.get("type") == "SUPERSEDES"
+    ]
+    assert all("/facts/" in edge["source"] and "/facts/" in edge["target"] for edge in supersedes)
+    fact_nodes = {
+        uri: node
+        for uri, node in graph.iter_nodes(tenant_id="history-tenant")
+        if node.get("node_type") == "FACT"
+    }
+    assert len(fact_nodes) == 3
+    assert any(node.get("status") == "HISTORICAL" for node in fact_nodes.values())
+    entity_nodes = [
+        node
+        for _uri, node in graph.iter_nodes(tenant_id="history-tenant")
+        if node.get("node_type") == "ENTITY"
+    ]
+    assert all(node.get("status") == "ACTIVE" for node in entity_nodes)
     rebuild(
         cfg,
         tenant_ids=["history-tenant"],

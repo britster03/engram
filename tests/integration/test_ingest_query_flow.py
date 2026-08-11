@@ -60,6 +60,31 @@ class LowConfidenceCoreProvider(DeterministicCoreProvider):
         )
 
 
+class LiteralFactCoreProvider(DeterministicCoreProvider):
+    def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        from engram.models.core import CompletionResult
+
+        prompt = str(kwargs.get("system_prompt") or "")
+        if prompt.startswith("[GATE]"):
+            return CompletionResult(output={"store": True, "reason": "fact"}, raw_text="{}")
+        if prompt.startswith("[EXTRACT]"):
+            return CompletionResult(
+                output={
+                    "resolved_text": "The user is a software engineer.",
+                    "l0_abstract": "The user is a software engineer.",
+                    "triplets": [{
+                        "subject": "user",
+                        "relation": "has_role",
+                        "object": "software engineer",
+                        "object_kind": "LITERAL",
+                        "confidence": 0.95,
+                    }],
+                },
+                raw_text="{}",
+            )
+        return super().complete(**kwargs)
+
+
 @pytest.fixture
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> EngramConfig:
     monkeypatch.setenv("ENGRAM_API_KEY", "test-key")
@@ -233,3 +258,46 @@ def test_low_confidence_triplet_writes_fact_node(cfg: EngramConfig):
         edge for edge in neo.edges
         if edge["type"] == "RELATES_TO" and edge["relation_label"] == "may_move_to"
     ]
+
+
+def test_high_confidence_literal_is_preserved_as_fact_without_phantom_entity(
+    cfg: EngramConfig,
+):
+    ingest_ctx, _, sqlite, neo = _build_contexts(cfg)
+    ingest_ctx.core = LiteralFactCoreProvider()  # type: ignore[assignment]
+    session_id = "sess-literal-fact"
+    event_id, _ = sqlite.record_event(
+        pair_id=pair_id_fn(session_id, 0, 1),
+        session_id=session_id,
+        source="test",
+        event_type="INGEST",
+        payload={
+            "turn_pair": {
+                "user": {
+                    "content": "I am a software engineer.",
+                    "turn_idx": 0,
+                    "external_id": "D1:1",
+                },
+                "assistant": {
+                    "content": "Noted.",
+                    "turn_idx": 1,
+                    "external_id": "D1:2",
+                },
+            },
+        },
+    )
+
+    assert process_event(ingest_ctx, event_id) == "COMPLETE"
+
+    facts = [node for node in neo.nodes.values() if node.get("node_type") == "FACT"]
+    assert len(facts) == 1
+    assert facts[0]["status"] == "ACTIVE"
+    assert facts[0]["fact_object_kind"] == "LITERAL"
+    assert facts[0]["source_turn_ids"] == ["D1:1", "D1:2"]
+    assert "mem://user/entities/software-engineer/software-engineer.md" not in neo.nodes
+    assert not [edge for edge in neo.edges if edge["type"] == "RELATES_TO"]
+    assert any(
+        edge["type"] == "REFERENCES"
+        and edge["relation_label"] == "assertion"
+        for edge in neo.edges
+    )

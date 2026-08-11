@@ -43,6 +43,7 @@ def test_duplicate_short_circuits():
             "relation_label": "works_at",
             "object_uri": "mem://user/entities/meta/meta.md",
             "object_abstract": "Meta",
+            "assertion_uri": "mem://user/facts/event-a/0_works-at_meta.md",
         }
     ]
     neo = StaticNeo(edges=edges)
@@ -57,6 +58,7 @@ def test_duplicate_short_circuits():
     )
     assert decision.case == "DUPLICATE"
     assert decision.existing_edge_id == 1
+    assert decision.existing_assertion_uri == "mem://user/facts/event-a/0_works-at_meta.md"
     assert "$tenant_id" in neo.queries[0][0]
 
 
@@ -108,22 +110,36 @@ def test_apply_decision_for_duplicate_noop_and_contradiction_supersedes():
     # DUPLICATE → only a touch, no new edge
     apply_decision(
         neo4j=neo,  # type: ignore[arg-type]
-        decision=ConflictDecision("DUPLICATE", existing_edge_id=7, reason="dup"),
+        decision=ConflictDecision(
+            "DUPLICATE",
+            existing_edge_id=7,
+            reason="dup",
+            existing_assertion_uri="mem://facts/old",
+        ),
         subject_uri="mem://a",
         object_uri="mem://b",
         relation_label="works_at",
+        incoming_assertion_uri="mem://facts/new",
     )
     assert "touch" in calls
+    assert "merge:DUPLICATE_OF:duplicate_of" in calls
     assert all(c != "merge:RELATES_TO:works_at" for c in calls)
     calls.clear()
     # CONTRADICTION → supersede old, merge new
     apply_decision(
         neo4j=neo,  # type: ignore[arg-type]
-        decision=ConflictDecision("CONTRADICTION", existing_edge_id=7, reason="diff"),
+        decision=ConflictDecision(
+            "CONTRADICTION",
+            existing_edge_id=7,
+            reason="diff",
+            existing_assertion_uri="mem://facts/old",
+        ),
         subject_uri="mem://a",
         object_uri="mem://c",
         relation_label="works_at",
+        incoming_assertion_uri="mem://facts/new",
     )
     assert "supersede" in calls
     assert "merge:RELATES_TO:works_at" in calls
+    assert "merge:SUPERSEDES:supersedes" in calls
     assert all("$tenant_id" in query for query in neo.queries)

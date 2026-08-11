@@ -34,6 +34,7 @@ from engram.config import EngramConfig
 from engram.ingest.atomize import atomize_triplets
 from engram.ingest.conflict import apply_decision, classify
 from engram.ingest.entity_linker import resolve as entity_resolve
+from engram.ingest.facts import fact_sentence, fact_uri
 from engram.models.core import CoreModelError, CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.models.semantic import ExtractOutput, GateWriteOutput, complete_validated
@@ -418,10 +419,10 @@ def _restore_entity_links(
     seen: set[str] = set()
     for idx, trip in enumerate(extraction.get("triplets", [])):
         linked = by_idx.get(idx)
-        for key, uri_key in (
-            ("subject", "subject_node_id"),
-            ("object", "object_node_id"),
-        ):
+        keys = [("subject", "subject_node_id")]
+        if trip.get("object_kind") != "LITERAL":
+            keys.append(("object", "object_node_id"))
+        for key, uri_key in keys:
             display_name = str(trip.get(key) or "").strip()
             slug = slugify(display_name, separator="-", lowercase=True)
             if not slug or slug in seen:
@@ -704,8 +705,8 @@ def _fact_uris_for(extraction: dict[str, Any], event_id: str) -> dict[int, str]:
             confidence = float(trip.get("confidence", 0.0))
         except (TypeError, ValueError):
             continue
-        if 0.3 <= confidence < 0.6:
-            result[idx] = _low_confidence_fact_uri(event_id, idx, trip)
+        if confidence >= 0.3:
+            result[idx] = fact_uri(event_id, idx, trip)
     return result
 
 
@@ -717,7 +718,7 @@ def _write_fact_files(
     *,
     created_at: str,
 ) -> dict[int, str]:
-    """Commit low-confidence FACT files before any KG mutation occurs."""
+    """Commit one immutable FACT file per accepted atomized assertion."""
     slug_to_uri = {slug: uri for slug, _, uri in entity_records}
     result: dict[int, str] = {}
     for idx, trip in enumerate(extraction.get("triplets", [])):
@@ -725,15 +726,15 @@ def _write_fact_files(
             confidence = float(trip.get("confidence", 0.0))
         except (TypeError, ValueError):
             continue
-        if not 0.3 <= confidence < 0.6:
+        if confidence < 0.3:
             continue
         subject_slug = slugify(str(trip.get("subject") or ""), separator="-", lowercase=True)
         object_slug = slugify(str(trip.get("object") or ""), separator="-", lowercase=True)
         subject_uri = slug_to_uri.get(subject_slug)
         object_uri = slug_to_uri.get(object_slug)
-        if not subject_uri or not object_uri:
+        if not subject_uri:
             continue
-        result[idx] = _write_low_confidence_fact_file(
+        result[idx] = _write_fact_file(
             ctx=ctx,
             event_id=event_id,
             triplet_idx=idx,
@@ -756,7 +757,7 @@ def _index_neo4j(
     *,
     fact_uris: dict[int, str],
 ) -> None:
-    """Merge episode + entity nodes and apply conflict-resolved RELATES_TO edges."""
+    """Index immutable FACT claims plus conflict-resolved traversal edges."""
     # Episode node
     source = _source_provenance(payload)
     episode_memory = frontmatter.parse(ctx.fs.read(episode_uri))
@@ -800,23 +801,26 @@ def _index_neo4j(
         o_slug = slugify(o_raw, separator="-", lowercase=True)
         s_uri = slug_to_uri.get(s_slug)
         o_uri = slug_to_uri.get(o_slug)
-        if not (s_uri and o_uri):
-            continue
-        if conf < 0.6:
-            fact_uri = fact_uris.get(idx)
-            if fact_uri is None:
-                raise RuntimeError(f"missing committed FACT artifact for triplet {idx}")
-            _write_low_confidence_fact(
-                ctx=ctx,
-                event_id=event_id,
-                triplet_idx=idx,
-                triplet=trip,
-                subject_uri=s_uri,
-                object_uri=o_uri,
-                confidence=conf,
-                now=now,
-                expected_uri=fact_uri,
-            )
+        if not s_uri:
+            raise RuntimeError(f"missing subject entity for triplet {idx}")
+        assertion_uri = fact_uris.get(idx)
+        if assertion_uri is None:
+            raise RuntimeError(f"missing committed FACT artifact for triplet {idx}")
+        _index_fact_node(
+            ctx=ctx,
+            event_id=event_id,
+            triplet_idx=idx,
+            triplet=trip,
+            episode_uri=episode_uri,
+            subject_uri=s_uri,
+            object_uri=o_uri,
+            confidence=conf,
+            now=now,
+            expected_uri=assertion_uri,
+        )
+        # Low-confidence and literal assertions remain first-class FACT nodes
+        # but do not create a derived entity-to-entity traversal edge.
+        if conf < 0.6 or o_uri is None:
             continue
         decision = classify(
             neo4j=ctx.neo4j,
@@ -839,7 +843,9 @@ def _index_neo4j(
                 "created_at": now,
                 "ingest_event_id": event_id,
                 "source_turn_ids": source["source_turn_ids"],
+                "assertion_uri": assertion_uri,
             },
+            incoming_assertion_uri=assertion_uri,
         )
         # Cross-reference from episode to subject entity (REFERENCES edge)
         ctx.neo4j.merge_edge(
@@ -855,31 +861,33 @@ def _index_neo4j(
         )
 
 
-def _write_low_confidence_fact(
+def _index_fact_node(
     *,
     ctx: IngestContext,
     event_id: str,
     triplet_idx: int,
     triplet: dict[str, Any],
+    episode_uri: str,
     subject_uri: str,
-    object_uri: str,
+    object_uri: str | None,
     confidence: float,
     now: str,
     expected_uri: str,
 ) -> str:
-    """Index a previously committed LOW_CONFIDENCE FACT artifact."""
+    """Index a previously committed immutable FACT and its provenance links."""
     event = ctx.sqlite.get_event(event_id) or {}
     source = _source_provenance(event.get("payload") or {})
-    rel = str(triplet.get("relation") or "related_to")
-    subject = str(triplet.get("subject") or "")
-    obj = str(triplet.get("object") or "")
-    uri = _low_confidence_fact_uri(event_id, triplet_idx, triplet)
+    uri = fact_uri(event_id, triplet_idx, triplet)
     if uri != expected_uri or not ctx.fs.exists(uri):
         raise RuntimeError(f"FACT artifact missing or changed for triplet {triplet_idx}")
-    sentence = f"{subject} {rel} {obj}".strip()
+    sentence = fact_sentence(triplet)
 
     fact_memory = frontmatter.parse(ctx.fs.read(uri))
-    abstract = f"Low-confidence fact: {sentence}"
+    abstract = (
+        f"Low-confidence fact: {sentence}"
+        if confidence < 0.6
+        else sentence
+    )
     ctx.neo4j.merge_node(
         source_uri=uri,
         parent_uri=uri_mod.parent_uri(uri),
@@ -888,6 +896,18 @@ def _write_low_confidence_fact(
             l0_abstract=abstract,
             l0_embedding=ctx.embed.embed(abstract),
         ),
+    )
+    ctx.neo4j.merge_edge(
+        subject_uri=episode_uri,
+        object_uri=uri,
+        relation_label="assertion",
+        edge_type="REFERENCES",
+        properties={
+            "created_at": now,
+            "ingest_event_id": event_id,
+            "confidence": confidence,
+            "source_turn_ids": source["source_turn_ids"],
+        },
     )
     ctx.neo4j.merge_edge(
         subject_uri=uri,
@@ -901,63 +921,54 @@ def _write_low_confidence_fact(
             "source_turn_ids": source["source_turn_ids"],
         },
     )
-    ctx.neo4j.merge_edge(
-        subject_uri=uri,
-        object_uri=object_uri,
-        relation_label="object",
-        edge_type="REFERENCES",
-        properties={
-            "created_at": now,
-            "ingest_event_id": event_id,
-            "confidence": confidence,
-            "source_turn_ids": source["source_turn_ids"],
-        },
-    )
+    if object_uri is not None:
+        ctx.neo4j.merge_edge(
+            subject_uri=uri,
+            object_uri=object_uri,
+            relation_label="object",
+            edge_type="REFERENCES",
+            properties={
+                "created_at": now,
+                "ingest_event_id": event_id,
+                "confidence": confidence,
+                "source_turn_ids": source["source_turn_ids"],
+            },
+        )
     return uri
 
 
-def _low_confidence_fact_uri(
-    event_id: str,
-    triplet_idx: int,
-    triplet: dict[str, Any],
-) -> str:
-    rel = str(triplet.get("relation") or "related_to")
-    obj = str(triplet.get("object") or "")
-    rel_slug = slugify(rel, separator="-", lowercase=True)[:40] or "fact"
-    obj_slug = slugify(obj, separator="-", lowercase=True)[:40] or "object"
-    return f"mem://user/facts/{event_id}/{triplet_idx}_{rel_slug}_{obj_slug}.md"
-
-
-def _write_low_confidence_fact_file(
+def _write_fact_file(
     *,
     ctx: IngestContext,
     event_id: str,
     triplet_idx: int,
     triplet: dict[str, Any],
     subject_uri: str,
-    object_uri: str,
+    object_uri: str | None,
     confidence: float,
     created_at: str,
 ) -> str:
-    uri = _low_confidence_fact_uri(event_id, triplet_idx, triplet)
+    uri = fact_uri(event_id, triplet_idx, triplet)
     if ctx.fs.exists(uri):
         return uri
     event = ctx.sqlite.get_event(event_id) or {}
     session_id = event.get("session_id")
     source = _source_provenance(event.get("payload") or {})
-    rel = str(triplet.get("relation") or "related_to")
+    rel = str(triplet.get("relation_canonical") or triplet.get("relation") or "related_to")
     subject = str(triplet.get("subject") or "")
     obj = str(triplet.get("object") or "")
-    sentence = f"{subject} {rel} {obj}".strip()
-    body = f"{sentence}\n\nConfidence: {confidence:.2f}\n"
+    sentence = fact_sentence(triplet)
+    body = f"{sentence}\n"
     fm = {
         "id": _stable_id(uri),
         "tenant_id": current_tenant_id(),
         "node_type": "FACT",
-        "status": "LOW_CONFIDENCE",
+        "status": "LOW_CONFIDENCE" if confidence < 0.6 else "ACTIVE",
         "created_at": created_at,
         "updated_at": created_at,
         "content_hash": _content_hash(body),
+        "source_event_id": event_id,
+        "source_episode_uri": f"mem://user/episodes/{event_id}.md",
         "source_session_id": session_id,
         "source_turn_ids": source["source_turn_ids"],
         "schema_version": 1,
@@ -965,6 +976,7 @@ def _write_low_confidence_fact_file(
             "subject": subject,
             "relation": rel,
             "object": obj,
+            "object_kind": str(triplet.get("object_kind") or "ENTITY"),
             "subject_uri": subject_uri,
             "object_uri": object_uri,
         },

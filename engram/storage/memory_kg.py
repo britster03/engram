@@ -282,6 +282,7 @@ class InMemoryKnowledgeGraph:
                             "relation_label": edge.relation_label,
                             "object_uri": edge.object_uri,
                             "object_abstract": obj.get("l0_abstract"),
+                            "assertion_uri": edge.props.get("assertion_uri"),
                         }
                     )
                 return conflict_rows
@@ -305,32 +306,11 @@ class InMemoryKnowledgeGraph:
                         return [{"object_uri": edge.object_uri}]
                 return []
 
-            if "ACTIVE_EDGES" in cypher_upper and uri:
-                active = any(
-                    edge.tenant_id == tid
-                    and edge.type == "RELATES_TO"
-                    and edge.props.get("status") == "ACTIVE"
-                    and uri in {edge.subject_uri, edge.object_uri}
-                    for edge in self._edges
-                )
+            if "SET N.STATUS = 'HISTORICAL'" in cypher_upper and uri:
                 node = self._nodes.get((tid, uri))
-                if node is not None and not active and node.get("status") == "ACTIVE":
+                if node is not None and node.get("node_type") == "FACT":
                     node["status"] = "HISTORICAL"
                     node["superseded_at"] = params.get("now")
-                return []
-
-            if "MERGE (S)-[E:SUPERSEDES" in cypher_upper:
-                subject_uri = params.get("s_uri")
-                object_uri = params.get("o_uri")
-                if subject_uri and object_uri:
-                    self.merge_edge(
-                        subject_uri=str(subject_uri),
-                        object_uri=str(object_uri),
-                        relation_label="supersedes",
-                        edge_type="SUPERSEDES",
-                        tenant_id=str(tid),
-                        properties={"created_at": params.get("now")},
-                    )
                 return []
 
             # t_children_of — CONTAINS traversal

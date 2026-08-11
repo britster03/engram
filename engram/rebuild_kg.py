@@ -11,6 +11,7 @@ from engram import frontmatter
 from engram import uri as uri_mod
 from engram.config import EngramConfig
 from engram.ingest.conflict import apply_decision, classify
+from engram.ingest.facts import fact_uri
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore, is_generated_memory_path
 from engram.storage.graph_projection import memory_l0_abstract, project_memory_node
@@ -122,6 +123,11 @@ def rebuild(
             embed=embed,
             sqlite=sqlite,
             tenant_ids=requested,
+            assertion_uris={
+                (tenant_id, source_uri)
+                for tenant_id, _root, source_uri, memory in validated
+                if memory.frontmatter.get("node_type") == "FACT"
+            },
         )
     finally:
         if owned_graph:
@@ -142,6 +148,25 @@ def _rebuild_fact_references(
         event_id = str((fm.get("provenance") or {}).get("ingest_event_id") or "")
         source_turn_ids = list(fm.get("source_turn_ids") or [])
         confidence = float((fm.get("provenance") or {}).get("confidence") or 0.0)
+        episode_uri = str(
+            fm.get("source_episode_uri")
+            or (f"mem://user/episodes/{event_id}.md" if event_id else "")
+        )
+        if episode_uri:
+            graph.merge_edge(
+                subject_uri=episode_uri,
+                object_uri=source_uri,
+                relation_label="assertion",
+                edge_type="REFERENCES",
+                tenant_id=tenant_id,
+                properties={
+                    "created_at": str(fm.get("created_at") or ""),
+                    "ingest_event_id": event_id,
+                    "confidence": confidence,
+                    "source_turn_ids": source_turn_ids,
+                },
+            )
+            written += 1
         for role in ("subject", "object"):
             target = fact.get(f"{role}_uri")
             if not target:
@@ -169,6 +194,7 @@ def _rebuild_assertions(
     embed: Any,
     sqlite: SqliteStore,
     tenant_ids: list[str],
+    assertion_uris: set[tuple[str, str]],
 ) -> int:
     placeholders = ",".join("?" for _ in tenant_ids)
     rows = sqlite.get_conn().execute(
@@ -212,6 +238,12 @@ def _rebuild_assertions(
                 subject_uri, object_uri = links.get(idx, (None, None))
                 if not subject_uri or not object_uri:
                     continue
+                candidate_assertion_uri = fact_uri(event_id, idx, trip)
+                assertion_uri = (
+                    candidate_assertion_uri
+                    if (tenant_id, candidate_assertion_uri) in assertion_uris
+                    else None
+                )
                 decision = classify(
                     neo4j=graph,
                     embed=embed,
@@ -233,7 +265,13 @@ def _rebuild_assertions(
                         "created_at": str(row["created_at"]),
                         "ingest_event_id": event_id,
                         "source_turn_ids": source_turn_ids,
+                        **(
+                            {"assertion_uri": assertion_uri}
+                            if assertion_uri is not None
+                            else {}
+                        ),
                     },
+                    incoming_assertion_uri=assertion_uri,
                 )
                 if decision.case != "DUPLICATE":
                     written += 1
