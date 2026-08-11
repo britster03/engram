@@ -129,7 +129,7 @@ async def _lifespan(app: FastAPI):
     _ingest_worker = start_durable_ingest(
         cfg=state.cfg, sqlite=state.sqlite, fs=state.fs, neo4j=state.neo4j,
         core=state.core, embed=state.embed,
-        max_concurrent=state.cfg.consolidation.max_concurrent_tasks,
+        max_concurrent=state.cfg.event_ledger.ingest_worker_concurrency,
         poll_interval_seconds=1.0,
     )
     log.info("durable ingest worker started")

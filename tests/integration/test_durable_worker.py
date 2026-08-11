@@ -56,11 +56,20 @@ def _build_worker(cfg: EngramConfig, *, concurrency: int = 2) -> tuple[DurableIn
     return worker, sqlite, neo
 
 
-def _enqueue(sqlite: SqliteStore, session_id: str, idx: int, user: str, asst: str) -> str:
+def _enqueue(
+    sqlite: SqliteStore,
+    session_id: str,
+    idx: int,
+    user: str,
+    asst: str,
+    *,
+    force_store: bool = False,
+) -> str:
     pid = pair_id_fn(session_id, idx * 2, idx * 2 + 1)
     eid, _ = sqlite.record_event(
         pair_id=pid, session_id=session_id, source="test", event_type="INGEST",
         payload={
+            "force_store": force_store,
             "turn_pair": {
                 "user": {"content": user, "turn_idx": idx * 2},
                 "assistant": {"content": asst, "turn_idx": idx * 2 + 1},
@@ -68,6 +77,36 @@ def _enqueue(sqlite: SqliteStore, session_id: str, idx: int, user: str, asst: st
         },
     )
     return eid
+
+
+def test_force_store_bypasses_semantic_write_gate(
+    cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from engram.ingest import worker as ingest_worker
+
+    worker, sqlite, _neo = _build_worker(cfg, concurrency=1)
+    eid = _enqueue(
+        sqlite,
+        "corpus-import",
+        0,
+        "A factual turn that the caller requires Engram to preserve.",
+        "Acknowledged.",
+        force_store=True,
+    )
+
+    def _unexpected_gate(*_args, **_kwargs):
+        raise AssertionError("force_store must not call the write gate")
+
+    monkeypatch.setattr(ingest_worker, "_call_gate", _unexpected_gate)
+    worker.start()
+    try:
+        _wait_for_terminal(sqlite, [eid])
+    finally:
+        worker.stop(timeout_s=3.0)
+
+    assert sqlite.get_event(eid)["status"] == "COMPLETE"
+    stage = sqlite.get_event_stage(eid, tenant_id="_default")
+    assert stage["gate_output"]["reason"] == "authenticated force_store override"
 
 
 def _wait_for_terminal(sqlite: SqliteStore, event_ids: list[str], *, timeout_s: float = 5.0) -> None:

@@ -114,6 +114,7 @@ def ingest_conversation(
             assistant_image_query=assistant.image_query if assistant is not None else None,
             session_context=_rolling_context(prior_turns, max_turns=context_turns),
             source="locomo",
+            force_store=True,
         )
         event_ids.append(str(response["event_id"]))
         prior_turns.append(user)

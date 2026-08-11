@@ -65,6 +65,7 @@ class CoreModelConfig(BaseModel):
     temperature: float = 0.1
     max_tokens: int = 2048
     timeout_seconds: int = 30
+    min_request_interval_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
 
 
 class FrontierLlmConfig(BaseModel):
@@ -77,6 +78,7 @@ class FrontierLlmConfig(BaseModel):
     api_key: str | None = None
     temperature: float = 0.3
     max_tokens: int = 4096
+    min_request_interval_seconds: float = Field(default=0.0, ge=0.0, le=60.0)
 
 
 class FilesystemConfig(BaseModel):
@@ -101,6 +103,7 @@ class EventLedgerConfig(BaseModel):
     backend: Literal["sqlite"] = "sqlite"
     path: str = "./data/event_ledger.db"
     reconciliation_interval_seconds: int = 60
+    ingest_worker_concurrency: int = Field(default=1, ge=1, le=64)
 
 
 class ConsolidationConfig(BaseModel):

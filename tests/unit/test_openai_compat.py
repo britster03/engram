@@ -88,7 +88,36 @@ def test_ollama_cloud_core_complete_returns_parsed_json():
     assert result.tokens_out == 5
     payload = provider._post_chat.call_args.args[0]
     assert payload["model"] == "gpt-oss:20b"
+    assert payload["think"] is False
     assert payload["format"] == "json"
+
+
+def test_ollama_cloud_marks_rate_limits_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import engram.models.providers.ollama_cloud as ollama_cloud
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+
+    provider = OllamaCloudCoreProvider(CoreModelConfig(
+        provider="ollama_cloud",
+        api_key="ollama-test-key",
+        min_request_interval_seconds=0,
+    ))
+    request = httpx.Request("POST", "https://ollama.com/api/chat")
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": "0"},
+        request=request,
+    )
+    provider._client.post = MagicMock(return_value=response)
+    sleep = MagicMock()
+    monkeypatch.setattr(ollama_cloud.time, "sleep", sleep)
+
+    undecorated = provider._post_chat.__wrapped__  # type: ignore[attr-defined]
+    with pytest.raises(ollama_cloud._RetryableOllamaStatus):
+        undecorated(provider, {"model": "gpt-oss:20b"})
+
+    sleep.assert_called_once_with(0.0)
 
 
 def test_openai_compat_complete_returns_parsed_json():

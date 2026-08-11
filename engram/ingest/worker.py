@@ -101,16 +101,19 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     # --- Step 2: Write-path gate -----------------------------------------
     if not _stage_at_least(stage, "GATED"):
         with _Timed("gate"), tracing.span("ingest.gate", event_id=event_id):
-            try:
-                gate = _call_gate(
-                    ctx, turn_pair, session_summary=payload.get("session_summary")
-                )
-            except CoreModelError as err:
-                ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
-                raise
-            metrics_mod.core_model_calls.labels(
-                task="gate_write", provider=ctx.cfg.core_model.provider
-            ).inc()
+            if payload.get("force_store") is True:
+                gate = {"store": True, "reason": "authenticated force_store override"}
+            else:
+                try:
+                    gate = _call_gate(
+                        ctx, turn_pair, session_summary=payload.get("session_summary")
+                    )
+                except CoreModelError as err:
+                    ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
+                    raise
+                metrics_mod.core_model_calls.labels(
+                    task="gate_write", provider=ctx.cfg.core_model.provider
+                ).inc()
         ctx.sqlite.advance_event_stage(
             event_id, "GATED", tenant_id=event_tenant, gate_output=gate
         )
@@ -121,7 +124,10 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     if not gate.get("store", False):
         ctx.sqlite.advance_event_stage(event_id, "GATED_SKIP", tenant_id=event_tenant)
         ctx.sqlite.set_event_status(
-            event_id, "GATED_SKIP", error_message=gate.get("reason"), tenant_id=event_tenant
+            event_id,
+            "GATED_SKIP",
+            error_message=str(gate.get("reason") or ""),
+            tenant_id=event_tenant,
         )
         _after_stage(ctx, "GATED_SKIP")
         return "GATED_SKIP"
@@ -330,11 +336,23 @@ def _prepare_extraction(
         if not (subject and relation and obj) or confidence < 0.3:
             continue
         trip = dict(raw)
+        object_kind = str(raw.get("object_kind") or "").upper()
+        object_norm = obj.casefold().strip()
+        relation_norm = relation.casefold().strip()
+        relation_tail = relation_norm.removeprefix("feels_")
+        if (
+            object_norm in {"true", "false", "yes", "no", "none", "null", "unknown"}
+            or (relation_norm.startswith("feels_") and object_norm == relation_tail)
+        ):
+            object_kind = "LITERAL"
+        elif object_kind not in {"ENTITY", "LITERAL"}:
+            object_kind = "ENTITY"
         trip.update(
             {
                 "subject": subject,
                 "relation": relation,
                 "object": obj,
+                "object_kind": object_kind,
                 "confidence": confidence,
             }
         )
@@ -527,7 +545,10 @@ def _resolve_entities(
     seen: set[str] = set()
     items: list[tuple[str, str]] = []
     for trip in triplets:
-        for key in ("subject", "object"):
+        keys = ["subject"]
+        if trip.get("object_kind") != "LITERAL":
+            keys.append("object")
+        for key in keys:
             raw = trip.get(key)
             if not raw or not isinstance(raw, str):
                 continue

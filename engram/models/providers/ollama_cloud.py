@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any
 
@@ -23,12 +24,21 @@ from engram.resilience import resilient
 
 log = logging.getLogger(__name__)
 
+
+class _RetryableOllamaStatus(httpx.HTTPStatusError):
+    """HTTP status that is safe to retry without changing the request."""
+
+
+_THROTTLE_LOCK = threading.Lock()
+_LAST_REQUEST_AT = 0.0
+
 _RETRYABLE = (
     httpx.ConnectError,
     httpx.ReadTimeout,
     httpx.WriteTimeout,
     httpx.PoolTimeout,
     httpx.RemoteProtocolError,
+    _RetryableOllamaStatus,
 )
 
 _CORE_SYSTEM_SUFFIX = (
@@ -51,7 +61,14 @@ _FRONTIER_SYSTEM = (
 
 
 class _OllamaCloudBase:
-    def __init__(self, *, api_base: str | None, api_key: str | None, timeout: float) -> None:
+    def __init__(
+        self,
+        *,
+        api_base: str | None,
+        api_key: str | None,
+        timeout: float,
+        min_request_interval_seconds: float,
+    ) -> None:
         if not api_key:
             raise RuntimeError("OLLAMA_API_KEY is required for provider='ollama_cloud'")
         base = (api_base or "https://ollama.com/api").rstrip("/")
@@ -60,17 +77,46 @@ class _OllamaCloudBase:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
+        self._min_request_interval = min_request_interval_seconds
+
+    def _throttle(self) -> None:
+        """Apply one process-wide pace across core and frontier cloud calls."""
+        global _LAST_REQUEST_AT
+        if self._min_request_interval <= 0:
+            return
+        with _THROTTLE_LOCK:
+            delay = self._min_request_interval - (time.monotonic() - _LAST_REQUEST_AT)
+            if delay > 0:
+                time.sleep(delay)
+            _LAST_REQUEST_AT = time.monotonic()
 
     @resilient(
         breaker="ollama_cloud_chat",
-        failure_threshold=5, cool_down=30.0, max_attempts=3,
-        initial_delay=0.5, max_delay=8.0,
+        failure_threshold=5, cool_down=30.0, max_attempts=4,
+        initial_delay=2.0, max_delay=15.0,
         retry_on=_RETRYABLE,
         log_context="ollama_cloud.chat",
     )
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._throttle()
         resp = self._client.post("/chat", json=payload)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as err:
+            if resp.status_code not in {408, 429, 500, 502, 503, 504}:
+                raise
+            # Provider tiers may return Retry-After. Waiting here makes the
+            # subsequent decorator retry respect it instead of immediately
+            # contributing another failure to the shared circuit breaker.
+            raw_retry_after = resp.headers.get("Retry-After", "")
+            try:
+                retry_after = float(raw_retry_after)
+            except ValueError:
+                retry_after = 5.0
+            time.sleep(max(0.0, min(retry_after, 60.0)))
+            raise _RetryableOllamaStatus(
+                str(err), request=err.request, response=err.response
+            ) from err
         data = resp.json()
         if not isinstance(data, dict):
             raise CoreModelError("ollama cloud returned a non-object response")
@@ -98,6 +144,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
             api_base=cfg.api_base,
             api_key=cfg.api_key,
             timeout=float(cfg.timeout_seconds),
+            min_request_interval_seconds=cfg.min_request_interval_seconds,
         )
 
     def complete(
@@ -124,6 +171,9 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
+            # Thinking-capable models can otherwise spend the entire bounded
+            # output budget in ``message.thinking`` and return empty content.
+            "think": False,
             "format": "json",
             "options": options,
         }
@@ -168,7 +218,12 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
 
     def __init__(self, cfg: FrontierLlmConfig) -> None:
         self.cfg = cfg
-        super().__init__(api_base=cfg.api_base, api_key=cfg.api_key, timeout=60.0)
+        super().__init__(
+            api_base=cfg.api_base,
+            api_key=cfg.api_key,
+            timeout=60.0,
+            min_request_interval_seconds=cfg.min_request_interval_seconds,
+        )
 
     def answer(
         self,
@@ -189,6 +244,7 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
                 {"role": "user", "content": user_text},
             ],
             "stream": False,
+            "think": False,
             "format": "json",
             "options": {
                 "temperature": self.cfg.temperature,

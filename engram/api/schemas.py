@@ -67,6 +67,10 @@ class IngestRequest(BaseModel):
     source: str = Field(default="client", max_length=32)
     session_summary: str | None = Field(default=None, max_length=MAX_SESSION_SUMMARY_LENGTH)
     session_context: str | None = Field(default=None, max_length=MAX_SESSION_CONTEXT_LENGTH)
+    # Explicit corpus-import override. Authenticated callers can require every
+    # supplied source turn to survive ingestion; ordinary product traffic keeps
+    # the semantic write gate.
+    force_store: bool = False
 
     def effective_pair(self) -> TurnPair:
         if self.turn_pair is not None:

@@ -21,11 +21,13 @@ data:
       model_path: "gpt-oss:20b"
       api_base: "https://ollama.com/api"
       api_key: ${OLLAMA_API_KEY}
+      min_request_interval_seconds: 3.2
     frontier_llm:
       provider: "ollama_cloud"
       model_path: "gpt-oss:20b"
       api_base: "https://ollama.com/api"
       api_key: ${OLLAMA_API_KEY}
+      min_request_interval_seconds: 3.2
     filesystem:
       data_dir: "/var/lib/engram/mem"
     knowledge_graph:
@@ -37,6 +39,7 @@ data:
       reader_password: ${NEO4J_ADMIN_PASSWORD}
     event_ledger:
       path: "/var/lib/engram/event_ledger.db"
+      ingest_worker_concurrency: 1
     consolidation:
       max_concurrent_tasks: {{ .Values.config.consolidation.max_concurrent_tasks }}
       max_backlog: {{ .Values.config.consolidation.max_backlog }}

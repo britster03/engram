@@ -26,9 +26,21 @@ Produce three outputs:
    remembering from this exchange.
 
 2. `triplets`: atomic subject-relation-object facts extracted from
-   `resolved_text`. Use snake_case relation labels (works_at, lives_in,
-   reports_to, started_on, owns, manages, working_on, references,
-   prefers, decided_to, has_deadline, located_in, depends_on).
+   `resolved_text`. Prefer these controlled snake_case relations when they
+   express the fact accurately: works_at, worked_at, employed_by, reports_to,
+   manages, founded, invested_in, partners_with, lives_in, located_in,
+   resides_in, visited, born_in, moved_to, related_to, married_to, partner_of,
+   parent_of, child_of, sibling_of, friend_of, contributes_to, owns,
+   maintains, uses, built_with, depends_on, references, mentions, started_on,
+   ended_on, scheduled_for, happened_at, achieved, took_place_in, prefers,
+   likes, dislikes, avoids, interested_in, has, owns_pet_named, drives, reads,
+   and watches. Use a new precise relation only when none fits.
+
+   Set `object_kind` to `ENTITY` for a person, place, organization, project,
+   event, artifact, or named/concrete concept that should have stable identity.
+   Set it to `LITERAL` for booleans, numbers, dates, durations, sentiments,
+   adjectives, and scalar property values. Never create an entity named
+   "true", "false", or an adjective such as "excited".
 
    Distinguish two kinds of facts and assign confidence accordingly:
 
@@ -78,7 +90,8 @@ Output schema:
   "resolved_text": "string",
   "triplets": [
     { "subject": "string", "relation": "snake_case_label",
-      "object": "string", "confidence": 0.0-1.0 }
+      "object": "string", "object_kind": "ENTITY" | "LITERAL",
+      "confidence": 0.0-1.0 }
   ],
   "l0_abstract": "one sentence"
 }

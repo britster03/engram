@@ -31,6 +31,7 @@ class ExtractedTriplet(SemanticModel):
     relation: str = Field(min_length=1, max_length=200, pattern=r"^[a-z0-9_]+$")
     object: str = Field(min_length=1, max_length=2_000)
     confidence: float = Field(ge=0.0, le=1.0)
+    object_kind: Literal["ENTITY", "LITERAL"] | None = None
 
 
 class ExtractOutput(SemanticModel):

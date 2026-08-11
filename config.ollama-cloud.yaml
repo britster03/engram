@@ -25,6 +25,7 @@ core_model:
   temperature: 0.1
   max_tokens: 2048
   timeout_seconds: 60
+  min_request_interval_seconds: 3.2
 
 frontier_llm:
   provider: "ollama_cloud"
@@ -33,6 +34,7 @@ frontier_llm:
   api_key: ${OLLAMA_API_KEY}
   temperature: 0.3
   max_tokens: 4096
+  min_request_interval_seconds: 3.2
 
 filesystem:
   data_dir: "./data/mem"
@@ -54,6 +56,7 @@ event_ledger:
   backend: "sqlite"
   path: "./data/event_ledger.db"
   reconciliation_interval_seconds: 60
+  ingest_worker_concurrency: 1
 
 consolidation:
   poll_interval_seconds: 10

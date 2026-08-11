@@ -178,6 +178,7 @@ class EngramClient:
         assistant_image_query: str | None = None,
         session_context: str | None = None,
         source: str = "locomo",
+        force_store: bool = False,
     ) -> dict[str, Any]:
         """POST one user/assistant turn pair. Returns the 202 body (event_id...).
 
@@ -210,7 +211,12 @@ class EngramClient:
                 image_query=assistant_image_query,
             ),
         }
-        body = {"session_id": session_id, "turn_pair": turn_pair, "source": source}
+        body = {
+            "session_id": session_id,
+            "turn_pair": turn_pair,
+            "source": source,
+            "force_store": force_store,
+        }
         if session_context is not None:
             body["session_context"] = session_context
         resp = self._http.post("/api/v1/ingest", json=body)

@@ -50,6 +50,7 @@ def test_ingest_conversation_preserves_ids_images_and_prior_only_context() -> No
     assert client.calls[0]["session_context"] is None
     assert client.calls[0]["user_external_id"] == "D1:1"
     assert client.calls[0]["user_image_caption"] == "a bicycle"
+    assert client.calls[0]["force_store"] is True
     second_context = client.calls[1]["session_context"]
     assert "turn 1" in second_context and "turn 2" in second_context
     assert "turn 3" not in second_context and "turn 4" not in second_context
