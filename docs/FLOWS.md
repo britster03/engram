@@ -67,8 +67,8 @@
 
 | Stuck state | Detection | Recovery action |
 |---|---|---|
-| `events.status = RECEIVED` for > 5 min | Ingest worker crashed before step 2 | Requeue; step 2 is idempotent |
-| `events.status = GATED_STORE` with no `extractions` row | Crashed during step 3 | Re-run step 3; the pair payload is in the ledger |
+| `events.status = RECEIVED` | Durable queue backlog | Leave claimable; worker readiness detects a stopped poller without manufacturing retries |
+| `events.status = GATED_STORE` with no `extractions` row for > 5 min | Crashed during step 3 | Re-run step 3; the pair payload is in the ledger |
 | `fs_outbox.state = WRITTEN` for > 2 min | Crashed between steps 5 and 6 | Re-run step 6. MERGE on `source_uri` is safe. |
 | `fs_outbox.state = INDEX_FAILED` with `retry_count < 3` | Neo4j transient failure | Exponential backoff retry |
 | `events.status = INDEXED` with no consolidation tasks for parent | Crashed between steps 6 and 7 | Re-run step 7. Unique index deduplicates. |

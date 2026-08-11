@@ -38,14 +38,10 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     }
     conn = ctx.sqlite.get_conn()
 
-    # 1. events.status = RECEIVED and > 5 minutes old → requeue
-    stuck_received = conn.execute(
-        "SELECT event_id FROM events WHERE status = 'RECEIVED' "
-        "AND julianday('now') - julianday(created_at) > 5.0/1440"
-    ).fetchall()
-    for row in stuck_received:
-        _requeue_event(ctx.sqlite, row["event_id"])
-        counts["received_stuck"] += 1
+    # RECEIVED is already the durable worker's claimable state. Old rows can
+    # simply be queue backlog; rewriting them only inflates retry telemetry and
+    # cannot make them more claimable. Worker health/readiness is responsible
+    # for detecting a stopped poller.
 
     # 1b. events.status = PROCESSING and claim age > 5 minutes → replay.
     # The durable worker uses PROCESSING as a shared claim state. If its
@@ -59,11 +55,15 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["processing_stuck"] += 1
 
-    # 2. events.status = GATED_STORE with no extraction → requeue
+    # 2. GATED_STORE with no extraction and a stale processing lease → requeue.
+    # Extraction is a normal multi-second model call, so an age-free scan races
+    # healthy workers and can expose the same event to another replica.
     stuck_gated = conn.execute(
         "SELECT e.event_id FROM events e "
         "LEFT JOIN extractions x ON x.event_id = e.event_id "
-        "WHERE e.status = 'GATED_STORE' AND x.event_id IS NULL"
+        "WHERE e.status = 'GATED_STORE' AND x.event_id IS NULL "
+        "AND julianday('now') - julianday(coalesce(e.processed_at, e.created_at)) "
+        "> 5.0/1440"
     ).fetchall()
     for row in stuck_gated:
         _requeue_event(ctx.sqlite, row["event_id"])

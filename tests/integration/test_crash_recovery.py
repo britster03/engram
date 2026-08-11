@@ -167,11 +167,10 @@ def test_crash_after_every_committed_stage_resumes_without_model_replay(
     )
 
 
-def test_reconciliation_requeues_received_stuck(cfg: EngramConfig):
+def test_reconciliation_leaves_old_received_backlog_claimable(cfg: EngramConfig):
     _ingest, sqlite, _, _ = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s2", "I live in Chicago.", "Got it.", 0)
-    # Force the event's created_at into the past so the reconciliation worker
-    # classifies it as stuck.
+    # RECEIVED is already claimable. Age alone must not manufacture a retry.
     with sqlite.transaction() as conn:
         conn.execute(
             "UPDATE events SET created_at = datetime('now', '-15 minutes') "
@@ -179,11 +178,11 @@ def test_reconciliation_requeues_received_stuck(cfg: EngramConfig):
             (eid,),
         )
     counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
-    assert counts["received_stuck"] == 1
+    assert counts["received_stuck"] == 0
     refreshed = sqlite.get_event(eid)
     assert refreshed is not None
     assert refreshed["status"] == "RECEIVED"
-    assert refreshed["retry_count"] == 1
+    assert refreshed["retry_count"] == 0
 
 
 def test_reconciliation_retries_index_failed(cfg: EngramConfig):
@@ -207,12 +206,35 @@ def test_gated_store_without_extraction_requeues(cfg: EngramConfig):
     _ingest, sqlite, _, _ = _ctx(cfg)
     eid = _enqueue_event(sqlite, "s4", "I own a dog named Rex.", "Cute.", 0)
     with sqlite.transaction() as conn:
-        conn.execute("UPDATE events SET status = 'GATED_STORE' WHERE event_id = ?", (eid,))
+        conn.execute(
+            "UPDATE events SET status = 'GATED_STORE', "
+            "processed_at = datetime('now', '-10 minutes') WHERE event_id = ?",
+            (eid,),
+        )
     counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
     assert counts["gated_store_stuck"] == 1
     refreshed = sqlite.get_event(eid)
     assert refreshed is not None
     assert refreshed["status"] == "RECEIVED"
+
+
+def test_fresh_gated_store_is_not_stolen_from_active_worker(cfg: EngramConfig):
+    _ingest, sqlite, _, _ = _ctx(cfg)
+    eid = _enqueue_event(sqlite, "s4-active", "I own a dog named Rex.", "Cute.", 0)
+    with sqlite.transaction() as conn:
+        conn.execute(
+            "UPDATE events SET status = 'GATED_STORE', processed_at = datetime('now') "
+            "WHERE event_id = ?",
+            (eid,),
+        )
+
+    counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
+
+    assert counts["gated_store_stuck"] == 0
+    refreshed = sqlite.get_event(eid)
+    assert refreshed is not None
+    assert refreshed["status"] == "GATED_STORE"
+    assert refreshed["retry_count"] == 0
 
 
 def test_indexed_event_resumes_only_consolidation(cfg: EngramConfig):
