@@ -1,7 +1,7 @@
-"""E2E tests for Engram API endpoints.
+"""E2E tests for Engram REST API endpoints.
 
-Since admin UI pages (/admin/*) are NOT mounted in the app,
-these tests verify the REST API endpoints directly.
+Admin UI behavior is covered by the dedicated browser tests; this module keeps
+the API/auth contract independently observable.
 """
 import os
 

@@ -1,9 +1,4 @@
-"""Selenium base fixtures for E2E testing.
-
-NOTE: Admin UI routes (/admin/*) are NOT mounted in the app.
-These fixtures provide a driver but tests MUST NOT navigate to /admin/*.
-Instead, use for testing static HTML or API+JS behavior if mounted later.
-"""
+"""Selenium base fixtures for mounted Admin UI E2E testing."""
 import pytest
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -44,9 +39,5 @@ def selenium_driver():
 
 @pytest.fixture(scope="function")
 def admin_logged_in_driver(selenium_driver):
-    """NOTE: /admin/* routes are NOT mounted.
-    
-    Returns the basic driver. Tests should authenticate via
-    the API endpoints directly if needed.
-    """
+    """Return the browser; individual tests perform explicit Admin auth."""
     yield selenium_driver
