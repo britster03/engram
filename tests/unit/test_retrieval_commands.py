@@ -35,19 +35,29 @@ def _context(tmp_path: Path) -> OrchestratorContext:
     )
 
 
-def _write_memory(ctx: OrchestratorContext, uri: str, body: str) -> None:
-    content = MemoryFile(
-        frontmatter={
-            "id": "memory-1",
-            "node_type": "DOCUMENT",
-            "status": "ACTIVE",
-            "created_at": "2026-08-11T00:00:00Z",
-            "schema_version": 1,
-            "provenance": {
-                "confidence": 0.95,
-                "source_turn_ids": ["D1:1", "D1:2"],
-            },
+def _write_memory(
+    ctx: OrchestratorContext,
+    uri: str,
+    body: str,
+    *,
+    node_type: str = "DOCUMENT",
+    source_episode_uri: str | None = None,
+) -> None:
+    frontmatter = {
+        "id": "memory-1",
+        "node_type": node_type,
+        "status": "ACTIVE",
+        "created_at": "2026-08-11T00:00:00Z",
+        "schema_version": 1,
+        "provenance": {
+            "confidence": 0.95,
+            "source_turn_ids": ["D1:1", "D1:2"],
         },
+    }
+    if source_episode_uri is not None:
+        frontmatter["source_episode_uri"] = source_episode_uri
+    content = MemoryFile(
+        frontmatter=frontmatter,
         body=body,
     ).serialize()
     ctx.fs.write_atomic(uri, content)
@@ -107,3 +117,38 @@ def test_cat_adds_a_new_hit_with_full_body(tmp_path: Path) -> None:
         "full_body": "Complete source body.\n",
         "retrieval_level": "L1_cat",
     }]
+
+
+def test_fact_context_includes_authoritative_source_episode_first(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    episode_uri = "mem://user/episodes/event-3.md"
+    fact_uri = "mem://user/facts/event-3/0_reminds-of_art.md"
+    _write_memory(
+        ctx,
+        episode_uri,
+        "Summary omitted the reason.\n\n## Source turns\nThe exact reason was art and self-expression.",
+    )
+    _write_memory(
+        ctx,
+        fact_uri,
+        "the bowl started_on a birthday",
+        node_type="FACT",
+        source_episode_uri=episode_uri,
+    )
+    trace: dict[str, Any] = {"selected_sources": []}
+
+    blocks = _format_ltm_blocks(
+        ctx,
+        [{"source_uri": fact_uri, "retrieval_level": "L1"}],
+        "L1",
+        trace=trace,
+    )
+
+    assert len(blocks) == 2
+    assert "art and self-expression" in blocks[0]
+    assert "started_on" in blocks[1]
+    assert [row["source_uri"] for row in trace["selected_sources"]] == [
+        episode_uri,
+        fact_uri,
+    ]
+    assert "art and self-expression" not in str(trace)

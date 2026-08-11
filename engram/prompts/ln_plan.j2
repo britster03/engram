@@ -20,6 +20,9 @@ Use these exact parameters:
 - `t_history_chain` / `t_cross_references`: `node_uri`, optional `limit`
 - `overview` / `cat`: `uri`
 All storage locations must be `mem://` URIs. Never emit raw Cypher.
+`t_cross_references` traverses provenance in either direction, so use it from
+an ENTITY or FACT to recover the authoritative source episode when exact
+wording, a reason, date, quantity, or list member is needed.
 
 User query:
 {{ query }}

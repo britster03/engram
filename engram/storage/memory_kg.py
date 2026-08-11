@@ -351,13 +351,21 @@ class InMemoryKnowledgeGraph:
             # t_cross_references
             if "REFERENCES" in cypher_upper and uri:
                 out = []
+                seen_reference_uris: set[str] = set()
                 for e in self._edges:
-                    if (e.type == "REFERENCES" and e.subject_uri == uri
-                            and e.tenant_id == tid):
-                        node = self._nodes.get((tid, e.object_uri))
+                    if e.type != "REFERENCES" or e.tenant_id != tid:
+                        continue
+                    adjacent_uri = None
+                    if e.subject_uri == uri:
+                        adjacent_uri = e.object_uri
+                    elif e.object_uri == uri:
+                        adjacent_uri = e.subject_uri
+                    if adjacent_uri and adjacent_uri not in seen_reference_uris:
+                        node = self._nodes.get((tid, adjacent_uri))
                         if node and node.get("status") == "ACTIVE":
+                            seen_reference_uris.add(adjacent_uri)
                             out.append({
-                                "source_uri": e.object_uri,
+                                "source_uri": adjacent_uri,
                                 "node_type": node.get("node_type"),
                                 "relation": e.props.get("relation_label") or e.relation_label,
                                 "l0_abstract": node.get("l0_abstract"),

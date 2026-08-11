@@ -2,6 +2,7 @@ import pytest
 
 from engram.retrieval import templates
 from engram.retrieval.orchestrator import _normalize_template_params
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
 
 
 def test_available_templates_cover_spec():
@@ -61,3 +62,41 @@ def test_planner_parameter_aliases_normalize_to_template_contract() -> None:
     )
     assert alternate["src_uri"] == "mem://a"
     assert alternate["dst_uri"] == "mem://b"
+
+
+def test_cross_references_are_bidirectional_for_source_provenance() -> None:
+    graph = InMemoryKnowledgeGraph()
+    episode_uri = "mem://user/episodes/event-1.md"
+    fact_uri = "mem://user/facts/event-1/0.md"
+    entity_uri = "mem://user/entities/alice/alice.md"
+    for uri, node_type in (
+        (episode_uri, "DOCUMENT"),
+        (fact_uri, "FACT"),
+        (entity_uri, "ENTITY"),
+    ):
+        graph.merge_node(
+            source_uri=uri,
+            properties={"node_type": node_type, "status": "ACTIVE"},
+        )
+    graph.merge_edge(
+        subject_uri=episode_uri,
+        object_uri=fact_uri,
+        relation_label="assertion",
+        edge_type="REFERENCES",
+    )
+    graph.merge_edge(
+        subject_uri=fact_uri,
+        object_uri=entity_uri,
+        relation_label="subject",
+        edge_type="REFERENCES",
+    )
+
+    entity_adjacent = templates.run_template(
+        graph, "t_cross_references", {"node_uri": entity_uri}
+    )
+    fact_adjacent = templates.run_template(
+        graph, "t_cross_references", {"node_uri": fact_uri}
+    )
+
+    assert [row["source_uri"] for row in entity_adjacent] == [fact_uri]
+    assert {row["source_uri"] for row in fact_adjacent} == {episode_uri, entity_uri}

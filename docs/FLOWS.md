@@ -31,6 +31,7 @@
                   ┌─────────────────────────────┐
                   │  Step 5 — filesystem write   │ atomic temp+rename+fsync
                   │  (AUTHORITATIVE)             │ → fs_outbox (WRITTEN)
+                  │  — preserve original turns   │ beneath retrieval summary
                   │  — validate reserved keys    │
                   └─────────────────────────────┘
                               │

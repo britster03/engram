@@ -801,12 +801,30 @@ def _format_ltm_blocks(
         if cascade_depth in ("L4",)
         else ctx.cfg.retrieval.overview_budget_tokens
     )
-    spent = 0
-    blocks: list[str] = []
-    for r in results:
-        source_uri = r.get("source_uri")
+    # A planner can touch the same URI at several levels (for example an L1
+    # vector hit followed by an L3 overview or L4 cat). Keep one, choosing the
+    # richest representation without changing the candidate's rank.
+    ordered_uris: list[str] = []
+    selected_rows: dict[str, tuple[int, dict[str, Any]]] = {}
+    for result in results:
+        source_uri = result.get("source_uri")
         if not source_uri:
             continue
+        richness = 3 if "full_body" in result else 2 if result.get("overview") else 1
+        if source_uri not in selected_rows:
+            ordered_uris.append(source_uri)
+            selected_rows[source_uri] = (richness, result)
+        elif richness > selected_rows[source_uri][0]:
+            selected_rows[source_uri] = (richness, result)
+
+    spent = 0
+    blocks: list[str] = []
+    emitted: set[str] = set()
+
+    def append_row(r: dict[str, Any], source_uri: str) -> None:
+        nonlocal spent
+        if source_uri in emitted:
+            return
         if "full_body" in r:
             body = r["full_body"]
             level = r.get("retrieval_level", "L4")
@@ -823,10 +841,10 @@ def _format_ltm_blocks(
             level = r.get("retrieval_level", cascade_depth)
         status, confidence, temporal = _status_for(ctx, source_uri)
         if status == "HISTORICAL":
-            continue
+            return
         tokens = _est_tokens(body)
         if spent + tokens > budget:
-            continue
+            return
         annotation = _annotate(
             status,
             confidence,
@@ -835,6 +853,7 @@ def _format_ltm_blocks(
             temporal=temporal,
         )
         blocks.append(f"{annotation}\n{body.strip()}")
+        emitted.add(source_uri)
         if trace is not None and len(trace["selected_sources"]) < 100:
             trace["selected_sources"].append(
                 {
@@ -844,7 +863,33 @@ def _format_ltm_blocks(
                 }
             )
         spent += tokens
+
+    for source_uri in ordered_uris:
+        r = selected_rows[source_uri][1]
+        source_episode_uri = _source_episode_uri_for(ctx, source_uri)
+        if source_episode_uri and ctx.fs.exists(source_episode_uri):
+            append_row(
+                {
+                    "source_uri": source_episode_uri,
+                    "full_body": _read_full_body(ctx, source_episode_uri) or "",
+                    "retrieval_level": f"{r.get('retrieval_level', cascade_depth)}_source",
+                },
+                source_episode_uri,
+            )
+        append_row(r, source_uri)
     return blocks
+
+
+def _source_episode_uri_for(ctx: OrchestratorContext, source_uri: str) -> str | None:
+    """Return the authoritative source episode for a derived FACT memory."""
+    try:
+        memory = frontmatter.parse(ctx.fs.read(source_uri))
+    except (OSError, FrontmatterError):
+        return None
+    if memory.frontmatter.get("node_type") != "FACT":
+        return None
+    value = memory.frontmatter.get("source_episode_uri")
+    return str(value) if value else None
 
 
 def _read_full_body(ctx: OrchestratorContext, source_uri: str) -> str | None:

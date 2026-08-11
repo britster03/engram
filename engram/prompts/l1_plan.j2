@@ -31,6 +31,8 @@ Allowed commands and exact parameter names:
 - `t_temporal_filter`: `node_uri`, optional `from`, `until`, `limit`
 - `t_history_chain` / `t_cross_references`: `node_uri`, optional `limit`
 Use only these names. Never invent a `t_cat` or raw-Cypher command.
+`t_cross_references` is bidirectional provenance traversal: from an ENTITY or
+FACT it can recover the source episode containing exact evidence.
 
 {% if memory_hit %}
 L0 memory-hit preview (from §3.1.2 fallback):

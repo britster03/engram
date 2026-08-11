@@ -86,7 +86,15 @@ provenance:
 ---
 L0 abstract sentence goes here on the first body line.
 
-Full resolved text follows as normal Markdown.
+## Resolved memory
+
+The model's coreference-resolved retrieval summary goes here.
+
+## Source turns
+
+The original source turns, speakers, external IDs, timestamps, captions, and
+tool payloads follow verbatim. The summaries and FACTs are useful derivatives;
+this source section is the lossless authoritative evidence for exact answers.
 ```
 
 The first body line is the **L0 abstract** — it's what gets embedded for the
@@ -136,7 +144,7 @@ Every `.md` file becomes a `:Node` with a fixed property set.
 | `IS_PART_OF` | Inverse of CONTAINS | `(alice) -[IS_PART_OF]→ (user/entities/)` |
 | `RELATES_TO` | Semantic relationship (extracted) | `(Alice) -[RELATES_TO {label: "works_at"}]→ (Meta)` |
 | `SUPERSEDES` | New version replaces old | `(new_fact) -[SUPERSEDES]→ (old_fact)` |
-| `REFERENCES` | Cross-reference between nodes | `(meeting_notes) -[REFERENCES]→ (project_atlas)` |
+| `REFERENCES` | Provenance/cross-reference between nodes; retrieval traverses it in either direction | `(episode) -[REFERENCES]→ (fact) -[REFERENCES]→ (entity)` |
 
 Edge properties on every type:
 

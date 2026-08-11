@@ -17,6 +17,7 @@ boundary instead of rerunning gate, extraction, or entity linking.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -588,7 +589,8 @@ def _write_episode(
     payload = event.get("payload") or {}
     provenance = _source_provenance(payload)
     created_at = str(event.get("created_at") or datetime.now(timezone.utc).isoformat())
-    body = f"{extraction['l0_abstract']}\n\n{extraction['resolved_text']}\n"
+    source_records = _source_turn_records(payload)
+    body = _episode_body(payload, extraction)
     fm = {
         "id": _stable_id(uri),
         "tenant_id": current_tenant_id(),
@@ -610,6 +612,11 @@ def _write_episode(
             "phrase": "source turn timestamp",
         },
         "schema_version": 1,
+        "document": {
+            "source_kind": "turn_group" if payload.get("turn_group") else "turn_pair",
+            "source_turn_count": len(source_records),
+            "source_content_preserved": True,
+        },
         "provenance": {
             "extractor": "core_model_v1",
             "confidence": 0.9,
@@ -622,6 +629,52 @@ def _write_episode(
     mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
     path = ctx.fs.write_atomic(uri, mf.serialize())
     return uri, str(path)
+
+
+def _episode_body(payload: dict[str, Any], extraction: dict[str, Any]) -> str:
+    """Render a lossless source episode beneath its retrieval summaries.
+
+    The Core extraction is deliberately useful for vector lookup, but it is a
+    lossy derivative and cannot be the authoritative record. Exact names,
+    dates, lists, reasons, and multimodal captions remain available here even
+    when the extractor does not promote them into a FACT.
+    """
+    abstract = str(extraction.get("l0_abstract") or "").strip()
+    resolved = str(extraction.get("resolved_text") or "").strip()
+    sections = [abstract]
+    if resolved:
+        sections.append(f"## Resolved memory\n\n{resolved}")
+
+    rendered_turns: list[str] = []
+    for role, turn in _source_turn_records(payload):
+        label_parts = [
+            str(turn.get("external_id") or role),
+            str(turn.get("speaker") or role),
+        ]
+        if turn.get("timestamp"):
+            label_parts.append(str(turn["timestamp"]))
+        lines = [f"### {' · '.join(dict.fromkeys(label_parts))}"]
+        content = str(turn.get("content") or "").strip()
+        if content:
+            lines.append(content)
+        for field, heading in (
+            ("image_caption", "Image caption"),
+            ("image_query", "Image query"),
+        ):
+            if turn.get(field):
+                lines.append(f"{heading}: {turn[field]}")
+        for field, heading in (
+            ("image_urls", "Image URLs"),
+            ("tool_calls", "Tool calls"),
+            ("tool_results", "Tool results"),
+        ):
+            if turn.get(field):
+                encoded = json.dumps(turn[field], ensure_ascii=False, sort_keys=True)
+                lines.append(f"{heading}: {encoded}")
+        rendered_turns.append("\n\n".join(lines))
+    if rendered_turns:
+        sections.append("## Source turns\n\n" + "\n\n".join(rendered_turns))
+    return "\n\n".join(section for section in sections if section).strip() + "\n"
 
 
 def _write_entity(
@@ -1006,10 +1059,29 @@ def _content_hash(body: str) -> str:
     return frontmatter.content_hash(body)
 
 
-def _source_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+def _source_turn_records(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     pair = payload.get("turn_pair") or payload.get("turn_group") or payload
-    turns = [pair.get("user"), pair.get("assistant")]
-    records = [turn for turn in turns if isinstance(turn, dict)]
+    if not isinstance(pair, dict):
+        return []
+    records: list[tuple[str, dict[str, Any]]] = []
+    user = pair.get("user")
+    if isinstance(user, dict):
+        records.append(("user", user))
+    intermediate = pair.get("intermediate")
+    if isinstance(intermediate, list):
+        records.extend(
+            (f"intermediate-{index}", turn)
+            for index, turn in enumerate(intermediate, start=1)
+            if isinstance(turn, dict)
+        )
+    assistant = pair.get("assistant")
+    if isinstance(assistant, dict):
+        records.append(("assistant", assistant))
+    return records
+
+
+def _source_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+    records = [turn for _role, turn in _source_turn_records(payload)]
 
     def unique(field: str) -> list[str]:
         return list(dict.fromkeys(str(row[field]) for row in records if row.get(field)))

@@ -208,6 +208,10 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
         kg_episode = neo.nodes[episode_uri]
         assert kg_episode["id"] == memory.frontmatter["id"]
         assert kg_episode["source_turn_ids"] == memory.frontmatter["source_turn_ids"]
+        assert memory.frontmatter["document"]["source_content_preserved"] is True
+        assert "## Source turns" in memory.body
+        assert user_msg in memory.body
+        assert asst_msg in memory.body
 
     # KG should have episode nodes and some entity nodes.
     episode_count = sum(1 for n in neo.nodes.values() if n.get("node_type") == "DOCUMENT")

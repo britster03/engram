@@ -25,6 +25,11 @@ Produce three outputs:
    `resolved_text` stands alone as the canonical record of what is worth
    remembering from this exchange.
 
+   Be lossless about storable details: preserve stated names, dates, durations,
+   frequencies, quantities, list members, reasons, provenance, and descriptive
+   clauses even when only one of them belongs in `l0_abstract`. Do not collapse
+   several source details into a broader summary.
+
 2. `triplets`: atomic subject-relation-object facts extracted from
    `resolved_text`. Prefer these controlled snake_case relations when they
    express the fact accurately: works_at, worked_at, employed_by, reports_to,
