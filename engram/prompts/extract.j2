@@ -78,6 +78,12 @@ Produce three outputs:
    ("User is working on the Henderson acquisition contract."), not
    describe the surface task ("User asked for a contract summary.").
 
+Multimodal source rule: text marked `[Image caption: ...]` is observable
+evidence attached to that speaker's turn, not decoration. Preserve salient
+caption content in `resolved_text`, the abstract, and triplets when it may be
+queried later. A caption describes what was shared; do not infer who created,
+owns, or experienced it unless the dialogue or preceding context says so.
+
 Preceding session context:
 {{ session_context or "(none)" }}
 

@@ -342,6 +342,8 @@ def _make_manifest(
             "max_reentries": args.max_reentries,
             "retrieval_forced": True,
             "ingest_force_store": True,
+            "corpus_run_id": args.corpus_run_id or run_id,
+            "corpus_reused": bool(args.corpus_run_id),
             "seed": args.seed,
             "runner_sha256": _sha256(Path(__file__)),
             "prompt_hashes": prompt_hashes,
@@ -428,7 +430,8 @@ def run(args: argparse.Namespace) -> int:
     runtime_config_recorded = False
     with judge_context as judge, partial_path.open("a", encoding="utf-8") as partial:
         for conv_idx, conv in enumerate(conversations):
-            tenant_id = f"{args.tenant_prefix}-{run_id}-c{conv_idx}"
+            corpus_run_id = args.corpus_run_id or run_id
+            tenant_id = f"{args.tenant_prefix}-{corpus_run_id}-c{conv_idx}"
             expected_for_conv = {
                 f"{conv.sample_id}:q{question_idx}"
                 for question_idx, _ in _selected_questions(
@@ -442,13 +445,21 @@ def run(args: argparse.Namespace) -> int:
                 continue
             print(f"\n[conv {conv_idx}] {conv.sample_id} tenant={tenant_id}")
             try:
-                client = EngramClient.create_tenant(
-                    base_url=base_url,
-                    admin_key=admin_key,
-                    tenant_id=tenant_id,
-                    display_name=conv.sample_id,
-                    query_timeout_s=args.query_timeout,
-                )
+                if args.corpus_run_id:
+                    client = EngramClient.bind_existing_tenant(
+                        base_url=base_url,
+                        admin_key=admin_key,
+                        tenant_id=tenant_id,
+                        query_timeout_s=args.query_timeout,
+                    )
+                else:
+                    client = EngramClient.create_tenant(
+                        base_url=base_url,
+                        admin_key=admin_key,
+                        tenant_id=tenant_id,
+                        display_name=conv.sample_id,
+                        query_timeout_s=args.query_timeout,
+                    )
             except EngramError as error:
                 failed = _failure_rows(
                     conv_idx=conv_idx,
@@ -482,19 +493,22 @@ def run(args: argparse.Namespace) -> int:
                         manifest["runner"]["query_force_retrieval"] = True
                         _write_json_atomic(manifest_path, manifest)
                         runtime_config_recorded = True
-                    started = time.monotonic()
-                    event_ids = ingest_conversation(
-                        client,
-                        conv,
-                        limit_pairs=args.limit_pairs,
-                        context_turns=args.context_turns,
-                    )
-                    readiness = client.wait_for_events(event_ids, drain_cfg)
-                    print(
-                        f"  {len(event_ids)} pairs memory-ready in "
-                        f"{time.monotonic() - started:.1f}s "
-                        f"(gated_skip={sum(e['status'] == 'GATED_SKIP' for e in readiness['events'])})"
-                    )
+                    if args.corpus_run_id:
+                        print(f"  reusing memory-ready corpus from {args.corpus_run_id}")
+                    else:
+                        started = time.monotonic()
+                        event_ids = ingest_conversation(
+                            client,
+                            conv,
+                            limit_pairs=args.limit_pairs,
+                            context_turns=args.context_turns,
+                        )
+                        readiness = client.wait_for_events(event_ids, drain_cfg)
+                        print(
+                            f"  {len(event_ids)} pairs memory-ready in "
+                            f"{time.monotonic() - started:.1f}s "
+                            f"(gated_skip={sum(e['status'] == 'GATED_SKIP' for e in readiness['events'])})"
+                        )
                 except (EngramError, IngestFailedError, DrainTimeoutError, ValueError) as error:
                     failed = _failure_rows(
                         conv_idx=conv_idx,
@@ -715,6 +729,11 @@ def main() -> int:
     parser.add_argument("--drain-timeout", type=float, default=600.0)
     parser.add_argument("--query-timeout", type=float, default=300.0)
     parser.add_argument("--tenant-prefix", default="locomo")
+    parser.add_argument(
+        "--corpus-run-id",
+        default=None,
+        help="reuse an existing versioned corpus tenant and skip ingestion",
+    )
     parser.add_argument("--out", default="benchmarks/results")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--resume", action="store_true")

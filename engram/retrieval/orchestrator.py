@@ -637,13 +637,19 @@ def _format_ltm_blocks(
         else:
             body = r.get("l0_abstract") or ""
             level = r.get("retrieval_level", cascade_depth)
-        status, confidence = _status_for(ctx, source_uri)
+        status, confidence, temporal = _status_for(ctx, source_uri)
         if status == "HISTORICAL":
             continue
         tokens = _est_tokens(body)
         if spent + tokens > budget:
             continue
-        annotation = _annotate(status, confidence, source_uri, level=level)
+        annotation = _annotate(
+            status,
+            confidence,
+            source_uri,
+            level=level,
+            temporal=temporal,
+        )
         blocks.append(f"{annotation}\n{body.strip()}")
         if trace is not None and len(trace["selected_sources"]) < 100:
             trace["selected_sources"].append(
@@ -666,23 +672,40 @@ def _read_full_body(ctx: OrchestratorContext, source_uri: str) -> str | None:
         return None
 
 
-def _status_for(ctx: OrchestratorContext, source_uri: str) -> tuple[str, Any]:
+def _status_for(
+    ctx: OrchestratorContext, source_uri: str
+) -> tuple[str, Any, dict[str, Any]]:
     try:
         raw = ctx.fs.read(source_uri)
         mf = frontmatter.parse(raw)
+        temporal = mf.frontmatter.get("temporal")
         return (
             str(mf.frontmatter.get("status", "ACTIVE")),
             mf.frontmatter.get("provenance", {}).get("confidence"),
+            temporal if isinstance(temporal, dict) else {},
         )
     except (OSError, FrontmatterError):
-        return ("ACTIVE", None)
+        return ("ACTIVE", None, {})
 
 
-def _annotate(status: str, confidence: Any, source_uri: str, *, level: str) -> str:
+def _annotate(
+    status: str,
+    confidence: Any,
+    source_uri: str,
+    *,
+    level: str,
+    temporal: dict[str, Any] | None = None,
+) -> str:
     status_tag = f"[{status}]"
     if status == "LOW_CONFIDENCE" and confidence is not None:
         status_tag = f"[LOW_CONFIDENCE: {float(confidence):.2f}]"
-    return f"{status_tag} (source: {source_uri}) (level: {level})"
+    time_tags = []
+    for key in ("asserted_at", "valid_from", "valid_until"):
+        value = (temporal or {}).get(key)
+        if value:
+            time_tags.append(f"{key}: {str(value)[:64]}")
+    time_suffix = f" ({'; '.join(time_tags)})" if time_tags else ""
+    return f"{status_tag} (source: {source_uri}) (level: {level}){time_suffix}"
 
 
 def _assemble_msc(

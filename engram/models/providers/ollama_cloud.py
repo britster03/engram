@@ -57,6 +57,12 @@ _FRONTIER_SYSTEM = (
     '  "suggested_queries": ["focused vector query"],\n'
     '  "suggested_depth": "L1" | "L2" | "L3" | "L4"\n'
     "}\n"
+    "When answering, return the shortest span that directly answers the query: usually "
+    "a name, noun phrase, date, number, or compact list. Do not preface, restate the "
+    "question, explain your reasoning, or add facts beyond the answer. Preserve wording "
+    "from the memory when possible. Resolve relative dates from memory timestamps. If the "
+    "query's premise is unsupported or conflicts with memory (including the wrong person), "
+    "set answer exactly to 'No information available.' instead of correcting the premise.\n"
 )
 
 

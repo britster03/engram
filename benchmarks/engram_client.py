@@ -152,6 +152,46 @@ class EngramClient:
             query_timeout_s=query_timeout_s,
         )
 
+    @classmethod
+    def bind_existing_tenant(
+        cls,
+        *,
+        base_url: str,
+        admin_key: str,
+        tenant_id: str,
+        timeout_s: float = 60.0,
+        query_timeout_s: float = 300.0,
+    ) -> EngramClient:
+        """Mint a key only after proving the versioned corpus tenant exists."""
+        admin_http = httpx.Client(
+            base_url=base_url.rstrip("/"),
+            headers={"Authorization": f"Bearer {admin_key}"},
+            timeout=timeout_s,
+        )
+        try:
+            tenant_resp = admin_http.get(f"/api/v1/admin/tenants/{tenant_id}")
+            if tenant_resp.status_code != 200:
+                raise EngramError(
+                    f"reused corpus tenant {tenant_id} is unavailable: "
+                    f"{tenant_resp.status_code} {tenant_resp.text}"
+                )
+            key_resp = admin_http.post(f"/api/v1/admin/tenants/{tenant_id}/keys")
+            if key_resp.status_code != 200:
+                raise EngramError(
+                    f"mint-key for corpus tenant {tenant_id} failed: "
+                    f"{key_resp.status_code} {key_resp.text}"
+                )
+            api_key = str(key_resp.json()["api_key"])
+        finally:
+            admin_http.close()
+        return cls(
+            base_url=base_url,
+            api_key=api_key,
+            tenant_id=tenant_id,
+            timeout_s=timeout_s,
+            query_timeout_s=query_timeout_s,
+        )
+
     # -- ingest ------------------------------------------------------------
 
     def ingest_pair(
