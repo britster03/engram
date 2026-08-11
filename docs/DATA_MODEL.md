@@ -203,9 +203,10 @@ gating, extraction, entity linking, or filesystem writes.
 ### `ingest_artifacts` — artifact-level filesystem/KG readiness
 
 Every episode, entity, and low-confidence FACT required by an event records
-its type, URI, stable frontmatter ID, content hash, filesystem state, KG state,
-attempts, and error. `/api/v1/events/status` derives `memory_ready` from all
-required artifact rows plus the committed KG stage.
+its type, URI, stable frontmatter ID, content hash, source session/turn IDs,
+confidence, extractor version, filesystem state, KG state, attempts, and
+error. `/api/v1/events/status` derives `memory_ready` from all required
+artifact rows plus the committed KG stage.
 
 ### `fs_outbox` — legacy event-level compatibility handoff
 

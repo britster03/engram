@@ -18,6 +18,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,10 @@ CREATE TABLE IF NOT EXISTS ingest_artifacts (
     source_uri      TEXT NOT NULL,
     artifact_id     TEXT NOT NULL,
     content_hash    TEXT NOT NULL,
+    source_session_id TEXT,
+    source_turn_ids TEXT NOT NULL DEFAULT '[]',
+    confidence      REAL,
+    extractor_version TEXT,
     required        INTEGER NOT NULL DEFAULT 1,
     filesystem_state TEXT NOT NULL DEFAULT 'PENDING',
     kg_state        TEXT NOT NULL DEFAULT 'PENDING',
@@ -229,13 +234,14 @@ class SqliteStore:
     ) -> tuple[str, bool]:
         """Insert an event atomically. Returns (event_id, is_new)."""
         event_id = f"evt-{uuid.uuid4().hex[:12]}"
+        created_at = datetime.now(timezone.utc).isoformat()
         try:
             with self.transaction() as conn:
                 conn.execute(
                     "INSERT INTO events (event_id, pair_id, tenant_id, session_id, "
-                    "source, event_type, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "source, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (event_id, pair_id, tenant_id, session_id, source, event_type,
-                     json.dumps(payload)),
+                     json.dumps(payload), created_at),
                 )
                 conn.execute(
                     "INSERT INTO event_stage_state "
@@ -561,6 +567,10 @@ class SqliteStore:
         source_uri: str,
         artifact_id: str,
         content_hash: str,
+        source_session_id: str | None = None,
+        source_turn_ids: list[str] | None = None,
+        confidence: float | None = None,
+        extractor_version: str | None = None,
         filesystem_state: str = "COMMITTED",
         required: bool = True,
     ) -> None:
@@ -578,10 +588,14 @@ class SqliteStore:
             conn.execute(
                 "INSERT INTO ingest_artifacts "
                 "(event_id, tenant_id, artifact_type, source_uri, artifact_id, content_hash, "
+                "source_session_id, source_turn_ids, confidence, extractor_version, "
                 "required, filesystem_state, kg_state, attempt_count, error_message) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, NULL) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 1, NULL) "
                 "ON CONFLICT(event_id, source_uri) DO UPDATE SET "
                 "filesystem_state = excluded.filesystem_state, required = excluded.required, "
+                "source_session_id = excluded.source_session_id, "
+                "source_turn_ids = excluded.source_turn_ids, "
+                "confidence = excluded.confidence, extractor_version = excluded.extractor_version, "
                 "attempt_count = ingest_artifacts.attempt_count + 1, error_message = NULL, "
                 "updated_at = datetime('now')",
                 (
@@ -591,6 +605,10 @@ class SqliteStore:
                     source_uri,
                     artifact_id,
                     content_hash,
+                    source_session_id,
+                    json.dumps(source_turn_ids or []),
+                    confidence,
+                    extractor_version,
                     1 if required else 0,
                     filesystem_state,
                 ),

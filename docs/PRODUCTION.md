@@ -254,7 +254,8 @@ at `http://<host>:3000` (default admin/admin — change immediately).
    the container (health probe). `/livez` still returns 200 so Kubernetes
    (if used) doesn't kill the pod.
 2. Restart Neo4j. On recovery, the breakers auto-close.
-3. If corruption is suspected: `engram rebuild-kg`.
+3. If corruption is suspected: validate with `engram rebuild-kg --tenant
+   TENANT_ID --dry-run`, then run the same command without `--dry-run`.
 
 ### Consolidation queue saturated
 

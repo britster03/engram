@@ -148,7 +148,7 @@ def apply_decision(
 ) -> None:
     """Mutate Neo4j according to the decision (§6.5)."""
     props = dict(properties or {})
-    now = datetime.now(timezone.utc).isoformat()
+    now = str(props.get("created_at") or datetime.now(timezone.utc).isoformat())
     if decision.case == "DUPLICATE":
         _touch_edge(neo4j, decision.existing_edge_id, now=now)
         return

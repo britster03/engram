@@ -9,6 +9,7 @@ cannot accidentally observe each other's data.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -125,6 +126,16 @@ class Neo4jStore:
         except Exception:
             return False
 
+    def delete_tenant_data(self, tenant_ids: list[str]) -> None:
+        """Delete only the explicitly resolved tenant scopes."""
+        if not tenant_ids:
+            raise ValueError("tenant_ids must not be empty")
+        with self.writer().session() as session:
+            session.run(
+                "MATCH (n:Node) WHERE n.tenant_id IN $tenant_ids DETACH DELETE n",
+                tenant_ids=tenant_ids,
+            ).consume()
+
     # ------------------------------------------------------------------
     # Node upsert — writes after filesystem commit (§5.4.6)
     # ------------------------------------------------------------------
@@ -151,13 +162,18 @@ class Neo4jStore:
             ).single()
             node = dict(result["n"]) if result else {}
             if parent_uri:
+                parent_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}:{parent_uri}"))
                 session.run(
                     "MERGE (p:Node {tenant_id: $tenant_id, source_uri: $parent_uri}) "
-                    "ON CREATE SET p.tenant_id = $tenant_id, p.status = 'ACTIVE' "
+                    "ON CREATE SET p.tenant_id = $tenant_id, p.status = 'ACTIVE', "
+                    "p.node_type = 'DIRECTORY', p.schema_version = 1, p.id = $parent_id "
+                    "SET p.node_type = coalesce(p.node_type, 'DIRECTORY'), "
+                    "p.id = coalesce(p.id, $parent_id) "
                     "MERGE (c:Node {tenant_id: $tenant_id, source_uri: $child_uri}) "
-                    "MERGE (p)-[:CONTAINS]->(c)",
+                    "MERGE (p)-[r:CONTAINS]->(c) SET r.tenant_id = $tenant_id",
                     tenant_id=tid,
                     parent_uri=parent_uri,
+                    parent_id=parent_id,
                     child_uri=source_uri,
                 )
         return node

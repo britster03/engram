@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -209,12 +210,19 @@ def test_artifact_identity_is_immutable_and_readiness_is_aggregated(tmp_path: Pa
         source_uri="mem://user/episodes/e.md",
         artifact_id="stable-id",
         content_hash="abc",
+        source_session_id="session-1",
+        source_turn_ids=["D1:1", "D1:2"],
+        confidence=0.9,
+        extractor_version="core-v1",
     )
     store.mark_event_artifacts_kg(eid, "COMMITTED")
     rows = store.get_event_readiness([eid], tenant_id="_default")
     assert rows[0]["artifact_count"] == 1
     assert rows[0]["filesystem_ready_count"] == 1
     assert rows[0]["kg_ready_count"] == 1
+    artifact = store.list_ingest_artifacts(eid, tenant_id="_default")[0]
+    assert json.loads(artifact["source_turn_ids"]) == ["D1:1", "D1:2"]
+    assert artifact["extractor_version"] == "core-v1"
     with pytest.raises(RuntimeError, match="identity changed"):
         store.upsert_ingest_artifact(
             event_id=eid,

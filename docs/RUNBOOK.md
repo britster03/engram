@@ -67,18 +67,22 @@ docker compose up -d
 
 # 3. Init + rebuild Neo4j from the filesystem
 python -m engram.cli init
-python -m engram.cli rebuild-kg
+python -m engram.cli rebuild-kg --tenant TENANT_ID --dry-run
+python -m engram.cli rebuild-kg --tenant TENANT_ID
 ```
 
-`rebuild-kg` walks every `.md` in `./data/mem`, re-inserts the node with
-its embedding, re-establishes CONTAINS edges, and (pass 2) replays
-RELATES_TO edges from the `extractions` + `linked_entities` tables in
-SQLite.
+`rebuild-kg` validates every source memory before mutation, then replaces only
+the explicitly named tenant scope. It re-inserts stable node projections,
+CONTAINS edges, low-confidence FACT references, and higher-confidence
+relationships from SQLite. A global rebuild requires
+`--all-tenants --confirm-global`; always run it with
+`--all-tenants --dry-run` first.
 
 ### Partial — Neo4j is corrupted, SQLite + filesystem healthy
 
 ```bash
-python -m engram.cli rebuild-kg
+python -m engram.cli rebuild-kg --tenant TENANT_ID --dry-run
+python -m engram.cli rebuild-kg --tenant TENANT_ID
 ```
 
 ### Partial — Redis is gone

@@ -36,6 +36,7 @@ from engram.ingest.entity_linker import resolve as entity_resolve
 from engram.models.core import CoreModelError, CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
+from engram.storage.graph_projection import project_memory_node
 from engram.storage.sqlite import SqliteStore
 from engram.tenancy import (
     DEFAULT_TENANT_ID,
@@ -433,9 +434,15 @@ def _record_artifacts(
     tenant_id: str,
 ) -> None:
     """Register every required memory file using its authoritative identity."""
+    event = ctx.sqlite.get_event(event_id, tenant_id=tenant_id) or {}
+    event_provenance = _source_provenance(event.get("payload") or {})
     for uri in dict.fromkeys(uris):
         memory = frontmatter.parse(ctx.fs.read(uri))
         fm = memory.frontmatter
+        provenance_value = fm.get("provenance")
+        provenance: dict[str, Any] = (
+            dict(provenance_value) if isinstance(provenance_value, dict) else {}
+        )
         ctx.sqlite.upsert_ingest_artifact(
             event_id=event_id,
             tenant_id=tenant_id,
@@ -443,6 +450,18 @@ def _record_artifacts(
             source_uri=uri,
             artifact_id=str(fm["id"]),
             content_hash=str(fm.get("content_hash") or _content_hash(memory.body)),
+            source_session_id=str(event["session_id"]) if event.get("session_id") else None,
+            source_turn_ids=event_provenance["source_turn_ids"],
+            confidence=(
+                float(provenance["confidence"])
+                if provenance.get("confidence") is not None
+                else None
+            ),
+            extractor_version=(
+                str(provenance["extractor"])
+                if provenance.get("extractor") is not None
+                else None
+            ),
         )
 
 
@@ -718,56 +737,33 @@ def _index_neo4j(
     """Merge episode + entity nodes and apply conflict-resolved RELATES_TO edges."""
     # Episode node
     source = _source_provenance(payload)
-    episode_fm = frontmatter.parse(ctx.fs.read(episode_uri)).frontmatter
+    episode_memory = frontmatter.parse(ctx.fs.read(episode_uri))
+    episode_fm = episode_memory.frontmatter
     now = str(episode_fm["created_at"])
     episode_emb = ctx.embed.embed(extraction["l0_abstract"])
     ctx.neo4j.merge_node(
         source_uri=episode_uri,
         parent_uri="mem://user/episodes",
-        properties={
-            "id": episode_fm["id"],
-            "node_type": "DOCUMENT",
-            "status": "ACTIVE",
-            "l0_abstract": extraction["l0_abstract"],
-            "l0_embedding": episode_emb,
-            "retrieval_weight": 1.0,
-            "created_at": episode_fm["created_at"],
-            "last_accessed_at": now,
-            "access_count": 0,
-            "schema_version": 1,
-            "content_hash": episode_fm.get("content_hash"),
-            "source_session_id": episode_fm.get("source_session_id"),
-            "source_turn_ids": source["source_turn_ids"],
-            "source_conversation_id": source["source_conversation_id"],
-            "source_session_ids": source["source_session_ids"],
-            "source_speakers": source["source_speakers"],
-            "source_timestamps": source["source_timestamps"],
-            "provenance_ingest_event_id": event_id,
-        },
+        properties=project_memory_node(
+            episode_memory,
+            l0_abstract=extraction["l0_abstract"],
+            l0_embedding=episode_emb,
+        ),
     )
     # Entity nodes
     slug_to_uri: dict[str, str] = {}
     for slug, display_name, ent_uri in entity_records:
         if slug not in slug_to_uri:
             emb = ctx.embed.embed(display_name)
-            entity_fm = frontmatter.parse(ctx.fs.read(ent_uri)).frontmatter
+            entity_memory = frontmatter.parse(ctx.fs.read(ent_uri))
             ctx.neo4j.merge_node(
                 source_uri=ent_uri,
                 parent_uri=f"mem://user/entities/{slug}",
-                properties={
-                    "id": entity_fm["id"],
-                    "node_type": "ENTITY",
-                    "status": "ACTIVE",
-                    "l0_abstract": display_name,
-                    "l0_embedding": emb,
-                    "retrieval_weight": 1.0,
-                    "created_at": entity_fm["created_at"],
-                    "last_accessed_at": now,
-                    "access_count": 0,
-                    "schema_version": 1,
-                    "content_hash": entity_fm.get("content_hash"),
-                    "source_turn_ids": entity_fm.get("source_turn_ids", []),
-                },
+                properties=project_memory_node(
+                    entity_memory,
+                    l0_abstract=display_name,
+                    l0_embedding=emb,
+                ),
             )
             slug_to_uri[slug] = ent_uri
     # Semantic edges — run the conflict classifier per triplet
@@ -851,7 +847,6 @@ def _write_low_confidence_fact(
 ) -> str:
     """Index a previously committed LOW_CONFIDENCE FACT artifact."""
     event = ctx.sqlite.get_event(event_id) or {}
-    session_id = event.get("session_id")
     source = _source_provenance(event.get("payload") or {})
     rel = str(triplet.get("relation") or "related_to")
     subject = str(triplet.get("subject") or "")
@@ -861,28 +856,16 @@ def _write_low_confidence_fact(
         raise RuntimeError(f"FACT artifact missing or changed for triplet {triplet_idx}")
     sentence = f"{subject} {rel} {obj}".strip()
 
-    fact_fm = frontmatter.parse(ctx.fs.read(uri)).frontmatter
+    fact_memory = frontmatter.parse(ctx.fs.read(uri))
     abstract = f"Low-confidence fact: {sentence}"
     ctx.neo4j.merge_node(
         source_uri=uri,
         parent_uri=uri_mod.parent_uri(uri),
-        properties={
-            "id": fact_fm["id"],
-            "node_type": "FACT",
-            "status": "LOW_CONFIDENCE",
-            "l0_abstract": abstract,
-            "l0_embedding": ctx.embed.embed(abstract),
-            "retrieval_weight": 1.0,
-            "created_at": fact_fm["created_at"],
-            "last_accessed_at": now,
-            "access_count": 0,
-            "schema_version": 1,
-            "confidence": confidence,
-            "source_session_id": session_id,
-            "source_turn_ids": source["source_turn_ids"],
-            "content_hash": fact_fm.get("content_hash"),
-            "provenance_ingest_event_id": event_id,
-        },
+        properties=project_memory_node(
+            fact_memory,
+            l0_abstract=abstract,
+            l0_embedding=ctx.embed.embed(abstract),
+        ),
     )
     ctx.neo4j.merge_edge(
         subject_uri=uri,

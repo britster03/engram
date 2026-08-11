@@ -66,10 +66,26 @@ _SMOKE_CORPUS = [
 ]
 
 
-def cmd_rebuild_kg(_args: argparse.Namespace) -> int:
+def cmd_rebuild_kg(args: argparse.Namespace) -> int:
     from engram.config import get_config
     from engram.rebuild_kg import rebuild
-    stats = rebuild(get_config())
+
+    if args.all_tenants and not args.dry_run and not args.confirm_global:
+        print(
+            "global rebuild requires --confirm-global (run --dry-run first)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        stats = rebuild(
+            get_config(),
+            tenant_ids=args.tenant,
+            dry_run=args.dry_run,
+            allow_global=args.all_tenants,
+        )
+    except (ValueError, RuntimeError) as err:
+        print(f"rebuild refused: {err}", file=sys.stderr)
+        return 2
     print(json.dumps(stats, indent=2))
     return 0
 
@@ -216,7 +232,24 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("init", help="Create Neo4j indexes and SQLite schemas")
     sub.add_parser("health", help="Print component readiness")
     sub.add_parser("smoke", help="Run an end-to-end ingest + query test")
-    sub.add_parser("rebuild-kg", help="Rebuild Neo4j from the filesystem (§2.3)")
+    rebuild_p = sub.add_parser(
+        "rebuild-kg", help="Safely rebuild explicit Neo4j tenant scopes (§2.3)"
+    )
+    rebuild_scope = rebuild_p.add_mutually_exclusive_group(required=True)
+    rebuild_scope.add_argument(
+        "--tenant", action="append", help="Tenant ID to rebuild (repeatable)"
+    )
+    rebuild_scope.add_argument(
+        "--all-tenants", action="store_true", help="Resolve every filesystem tenant"
+    )
+    rebuild_p.add_argument(
+        "--dry-run", action="store_true", help="Validate and print scope without mutation"
+    )
+    rebuild_p.add_argument(
+        "--confirm-global",
+        action="store_true",
+        help="Required for a non-dry global rebuild",
+    )
     sub.add_parser("decay", help="Run the daily decay pass (§10.3)")
     sub.add_parser("migrate", help="Run pending schema migrations (§13.5)")
 

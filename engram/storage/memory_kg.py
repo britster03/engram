@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -76,6 +77,16 @@ class InMemoryKnowledgeGraph:
     def ping(self) -> bool:
         return True
 
+    def delete_tenant_data(self, tenant_ids: list[str]) -> None:
+        if not tenant_ids:
+            raise ValueError("tenant_ids must not be empty")
+        selected = set(tenant_ids)
+        with self._lock:
+            self._nodes = {
+                key: value for key, value in self._nodes.items() if key[0] not in selected
+            }
+            self._edges = [edge for edge in self._edges if edge.tenant_id not in selected]
+
     def close(self) -> None:
         return None
 
@@ -102,6 +113,7 @@ class InMemoryKnowledgeGraph:
                 self._nodes.setdefault(
                     parent_key,
                     {
+                        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}:{parent_uri}")),
                         "source_uri": parent_uri,
                         "tenant_id": tid,
                         "node_type": "DIRECTORY",
@@ -227,6 +239,77 @@ class InMemoryKnowledgeGraph:
         cypher_upper = cypher.upper()
 
         with self._lock:
+            # Conflict-classifier projection of active semantic edges.
+            if "RETURN ELEMENTID(R) AS EDGE_ID" in cypher_upper and uri:
+                conflict_rows: list[dict[str, Any]] = []
+                for existing_edge_idx, edge in enumerate(self._edges):
+                    if (
+                        edge.type != "RELATES_TO"
+                        or edge.subject_uri != uri
+                        or edge.tenant_id != tid
+                        or edge.props.get("status") != "ACTIVE"
+                    ):
+                        continue
+                    obj = self._nodes.get((tid, edge.object_uri)) or {}
+                    if obj.get("status") != "ACTIVE":
+                        continue
+                    conflict_rows.append(
+                        {
+                            "edge_id": existing_edge_idx,
+                            "relation_label": edge.relation_label,
+                            "object_uri": edge.object_uri,
+                            "object_abstract": obj.get("l0_abstract"),
+                        }
+                    )
+                return conflict_rows
+
+            if "SET R.LAST_ACCESSED_AT" in cypher_upper:
+                target_edge_id = params.get("eid")
+                if isinstance(target_edge_id, int) and 0 <= target_edge_id < len(self._edges):
+                    edge = self._edges[target_edge_id]
+                    if edge.tenant_id == tid:
+                        edge.props["last_accessed_at"] = params.get("now")
+                        edge.props["access_count"] = int(edge.props.get("access_count", 0)) + 1
+                return []
+
+            if "SET R.STATUS = 'HISTORICAL'" in cypher_upper:
+                target_edge_id = params.get("eid")
+                if isinstance(target_edge_id, int) and 0 <= target_edge_id < len(self._edges):
+                    edge = self._edges[target_edge_id]
+                    if edge.tenant_id == tid:
+                        edge.props["status"] = "HISTORICAL"
+                        edge.props["superseded_at"] = params.get("now")
+                        return [{"object_uri": edge.object_uri}]
+                return []
+
+            if "ACTIVE_EDGES" in cypher_upper and uri:
+                active = any(
+                    edge.tenant_id == tid
+                    and edge.type == "RELATES_TO"
+                    and edge.props.get("status") == "ACTIVE"
+                    and uri in {edge.subject_uri, edge.object_uri}
+                    for edge in self._edges
+                )
+                node = self._nodes.get((tid, uri))
+                if node is not None and not active and node.get("status") == "ACTIVE":
+                    node["status"] = "HISTORICAL"
+                    node["superseded_at"] = params.get("now")
+                return []
+
+            if "MERGE (S)-[E:SUPERSEDES" in cypher_upper:
+                subject_uri = params.get("s_uri")
+                object_uri = params.get("o_uri")
+                if subject_uri and object_uri:
+                    self.merge_edge(
+                        subject_uri=str(subject_uri),
+                        object_uri=str(object_uri),
+                        relation_label="supersedes",
+                        edge_type="SUPERSEDES",
+                        tenant_id=str(tid),
+                        properties={"created_at": params.get("now")},
+                    )
+                return []
+
             # t_children_of — CONTAINS traversal
             if "CONTAINS" in cypher_upper and uri and "SHORTESTPATH" not in cypher_upper:
                 out: list[dict[str, Any]] = []
