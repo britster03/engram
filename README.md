@@ -127,7 +127,7 @@ uvicorn engram.api.app:app --host 127.0.0.1 --port 8000
 ```
 
 The provider alias is `ollama_cloud`, the default base is
-`https://ollama.com/api`, and the default cloud model is `kimi-k2.7-code:cloud`.
+`https://ollama.com/api`, and the default cloud model is `gpt-oss:20b`.
 Local Ollama remains the `ollama` provider and maps to
 `http://localhost:11434/v1`.
 

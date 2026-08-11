@@ -22,7 +22,7 @@ def test_ollama_cloud_core_json_smoke():
     provider = OllamaCloudCoreProvider(
         CoreModelConfig(
             provider="ollama_cloud",
-            model_path="kimi-k2.7-code:cloud",
+            model_path="gpt-oss:20b",
             api_base="https://ollama.com/api",
             api_key=api_key,
             max_tokens=128,

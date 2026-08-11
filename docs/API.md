@@ -42,8 +42,8 @@ cascade / model settings.
 ```json
 {
   "retrieval": { "max_depth": "L4", "max_reentries": 2, ... },
-  "core_model": { "provider": "ollama_cloud", "model_path": "kimi-k2.7-code:cloud" },
-  "frontier_llm": { "provider": "ollama_cloud", "model_path": "kimi-k2.7-code:cloud" }
+  "core_model": { "provider": "ollama_cloud", "model_path": "gpt-oss:20b" },
+  "frontier_llm": { "provider": "ollama_cloud", "model_path": "gpt-oss:20b" }
 }
 ```
 

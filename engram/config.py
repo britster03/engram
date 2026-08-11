@@ -59,7 +59,7 @@ class CoreModelConfig(BaseModel):
         "local", "openai", "openai_compat", "ollama", "ollama_cloud",
         "groq", "gemini", "openrouter", "together", "deepseek",
     ] = "ollama_cloud"
-    model_path: str = "kimi-k2.7-code:cloud"
+    model_path: str = "gpt-oss:20b"
     api_base: str | None = None
     api_key: str | None = None
     temperature: float = 0.1
@@ -72,7 +72,7 @@ class FrontierLlmConfig(BaseModel):
         "openai", "openai_compat", "ollama", "ollama_cloud",
         "groq", "gemini", "openrouter", "together", "deepseek",
     ] = "ollama_cloud"
-    model_path: str = "kimi-k2.7-code:cloud"
+    model_path: str = "gpt-oss:20b"
     api_base: str | None = None
     api_key: str | None = None
     temperature: float = 0.3

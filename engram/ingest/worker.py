@@ -31,6 +31,7 @@ from engram import frontmatter, prompts, tracing
 from engram import metrics as metrics_mod
 from engram import uri as uri_mod
 from engram.config import EngramConfig
+from engram.ingest.atomize import atomize_triplets
 from engram.ingest.conflict import apply_decision, classify
 from engram.ingest.entity_linker import resolve as entity_resolve
 from engram.models.core import CoreModelError, CoreModelProvider
@@ -315,9 +316,10 @@ def _prepare_extraction(
     asserted_at = _source_asserted_at(payload)
     normalized: list[dict[str, Any]] = []
     vocab = vocabulary()
-    for raw in raw_triplets:
-        if not isinstance(raw, dict):
-            continue
+    candidate_triplets = atomize_triplets(
+        [dict(raw) for raw in raw_triplets if isinstance(raw, dict)]
+    )
+    for raw in candidate_triplets:
         subject = str(raw.get("subject") or "").strip()
         relation = str(raw.get("relation") or "").strip()
         obj = str(raw.get("object") or "").strip()

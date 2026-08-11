@@ -73,6 +73,7 @@ from engram.deps import (
 from engram.ingest.durable_worker import DurableIngestWorker
 from engram.ingest.durable_worker import start_background as start_durable_ingest
 from engram.logging_setup import configure_logging
+from engram.migrations.runner import run_pending
 from engram.resilience import breaker_snapshot
 from engram.retrieval.orchestrator import run_query
 from engram.tracing import configure_tracing
@@ -93,6 +94,10 @@ async def _lifespan(app: FastAPI):
     """Start workers on boot, signal them to stop on shutdown."""
     global _cons_handle, _recon_handle, _ingest_worker
     try:
+        # Schema migrations must precede every worker. ``CREATE TABLE IF NOT
+        # EXISTS`` cannot add columns to an older ledger, and starting a worker
+        # first can otherwise kill its leader thread on the first query.
+        run_pending(get_config())
         state = get_state()
     except Exception:
         log.exception("failed to build app state during lifespan startup")

@@ -23,6 +23,7 @@ from engram import frontmatter, prompts
 from engram import metrics as metrics_mod
 from engram import uri as uri_mod
 from engram.config import ConsolidationConfig
+from engram.ingest.atomize import atomize_triplets
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.models.semantic import OverviewOutput, complete_validated
@@ -185,9 +186,6 @@ def handle_refresh_directory(
 # ATOMIZE / NORMALIZE / TEMPORALIZE / INTEGRATE (§7.3)
 # ----------------------------------------------------------------------
 
-_COMPOUND_TOKEN = re.compile(r"\s+and\s+|\s+&\s+", re.IGNORECASE)
-
-
 def handle_atomize(
     *,
     node_id: str,
@@ -210,16 +208,7 @@ def handle_atomize(
         if row is None:
             continue
         triplets: list[dict[str, Any]] = json.loads(row["triplets"])
-        atomic: list[dict[str, Any]] = []
-        for trip in triplets:
-            pieces = _COMPOUND_TOKEN.split(str(trip.get("object", "")))
-            if len(pieces) <= 1:
-                atomic.append(trip)
-                continue
-            for piece in pieces:
-                piece = piece.strip(" ,.;:")
-                if piece:
-                    atomic.append({**trip, "object": piece})
+        atomic = atomize_triplets(triplets)
         if len(atomic) != len(triplets):
             with sqlite.transaction() as conn:
                 conn.execute(

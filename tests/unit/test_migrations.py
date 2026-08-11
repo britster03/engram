@@ -44,6 +44,42 @@ def test_run_pending_is_idempotent(cfg: EngramConfig):
     assert summary_2["current_version"] == summary_1["current_version"]
 
 
+def test_run_pending_upgrades_existing_v3_consolidation_table(cfg: EngramConfig):
+    conn = sqlite3.connect(cfg.event_ledger.path)
+    conn.executescript(
+        """
+        CREATE TABLE consolidation_tasks (
+            task_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT '_default',
+            node_id TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            priority INTEGER NOT NULL DEFAULT 5,
+            scheduled_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO meta (key, value) VALUES ('schema_version', '3');
+        """
+    )
+    conn.close()
+
+    summary = run_pending(cfg)
+    assert summary["current_version"] >= 6
+    upgraded = sqlite3.connect(cfg.event_ledger.path)
+    columns = {row[1] for row in upgraded.execute("PRAGMA table_info(consolidation_tasks)")}
+    upgraded.close()
+    assert {"not_before", "generation", "claimed_generation", "child_signature"} <= columns
+
+
 def test_migration_removes_global_event_pair_uniqueness(cfg: EngramConfig):
     conn = sqlite3.connect(cfg.event_ledger.path)
     conn.executescript(

@@ -56,7 +56,7 @@ def test_build_core_accepts_local_provider_without_loading_model():
 
 def test_build_core_accepts_ollama_cloud_provider(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test-key")
-    cfg = CoreModelConfig(provider="ollama_cloud", model_path="kimi-k2.7-code:cloud")
+    cfg = CoreModelConfig(provider="ollama_cloud", model_path="gpt-oss:20b")
     p = build_core_provider(cfg)
     from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
 
@@ -72,7 +72,7 @@ def test_ollama_cloud_core_complete_returns_parsed_json():
         provider="ollama_cloud",
         api_base="https://ollama.com/api",
         api_key="ollama-test-key",
-        model_path="kimi-k2.7-code:cloud",
+        model_path="gpt-oss:20b",
     )
     provider = OllamaCloudCoreProvider(cfg)
     provider._post_chat = MagicMock(return_value={
@@ -87,7 +87,7 @@ def test_ollama_cloud_core_complete_returns_parsed_json():
     assert result.tokens_in == 7
     assert result.tokens_out == 5
     payload = provider._post_chat.call_args.args[0]
-    assert payload["model"] == "kimi-k2.7-code:cloud"
+    assert payload["model"] == "gpt-oss:20b"
     assert payload["format"] == "json"
 
 

@@ -650,7 +650,7 @@ def main() -> int:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--judge", action="store_true", help="enable secondary LLM judge")
-    parser.add_argument("--judge-model", default="kimi-k2.7-code:cloud")
+    parser.add_argument("--judge-model", default="gpt-oss:20b")
     args = parser.parse_args()
     if args.context_turns < 0:
         parser.error("--context-turns must be non-negative")

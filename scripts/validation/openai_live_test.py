@@ -9,7 +9,7 @@ Prerequisites:
 
 Usage:
     python scripts/validation/openai_live_test.py
-    python scripts/validation/openai_live_test.py --model kimi-k2.7-code:cloud
+    python scripts/validation/openai_live_test.py --model gpt-oss:20b
     python scripts/validation/openai_live_test.py --provider openai \
         --model gpt-4o-mini --api-key-env OPENAI_API_KEY
     python scripts/validation/openai_live_test.py --provider groq \
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--provider", default="ollama_cloud",
                         help="core_model.provider (ollama_cloud | ollama | openai | groq | gemini)")
-    parser.add_argument("--model",   default="kimi-k2.7-code:cloud",
+    parser.add_argument("--model",   default="gpt-oss:20b",
                         help="model identifier for both core + frontier")
     parser.add_argument("--api-key-env", default=None,
                         help="environment variable containing the provider API key")
