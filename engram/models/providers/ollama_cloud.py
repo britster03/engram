@@ -18,6 +18,7 @@ import httpx
 from engram.config import CoreModelConfig, FrontierLlmConfig
 from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
+from engram.models.semantic import validate_frontier_output
 from engram.resilience import resilient
 
 log = logging.getLogger(__name__)
@@ -181,7 +182,7 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
         if not allow_need_more:
             sys_text += "\n\nThis is the final call. Emit ANSWER with a best-effort answer."
         user_text = f"<msc>\n{msc}\n</msc>\n\n<user_query>\n{user_query}\n</user_query>"
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.cfg.model_path,
             "messages": [
                 {"role": "system", "content": sys_text},
@@ -195,20 +196,42 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
             },
         }
         started = time.perf_counter()
-        try:
-            data = self._post_chat(payload)
-        except httpx.HTTPError as err:
-            raise CoreModelError(f"ollama cloud API error: {err}") from err
-        raw_text = self._message_content(data)
-        parsed = CoreModelProvider.extract_json(raw_text)
-        if not isinstance(parsed, dict) or parsed.get("verdict") not in {"ANSWER", "NEED_MORE"}:
-            raise CoreModelError(f"frontier returned invalid verdict: {raw_text[:200]!r}")
+        parsed = None
+        for attempt in range(2):
+            try:
+                data = self._post_chat(payload)
+                raw_text = self._message_content(data)
+                parsed = validate_frontier_output(
+                    CoreModelProvider.extract_json(raw_text)
+                )
+                break
+            except httpx.HTTPError as err:
+                raise CoreModelError(f"ollama cloud API error: {err}") from err
+            except CoreModelError:
+                if attempt:
+                    raise
+                payload = {
+                    **payload,
+                    "messages": [
+                        *payload["messages"],
+                        {
+                            "role": "user",
+                            "content": (
+                                "The prior response violated the schema. Return one "
+                                "corrected JSON object only."
+                            ),
+                        },
+                    ],
+                    "options": {**payload["options"], "temperature": 0.0},
+                }
+        if parsed is None:  # pragma: no cover - loop guarantees a value or raises
+            raise CoreModelError("frontier returned no validated output")
         return FrontierVerdict(
-            verdict=parsed["verdict"],
-            answer=parsed.get("answer"),
-            reason=parsed.get("reason"),
-            suggested_queries=parsed.get("suggested_queries") or [],
-            suggested_depth=parsed.get("suggested_depth"),
+            verdict=parsed.verdict,
+            answer=parsed.answer,
+            reason=parsed.reason,
+            suggested_queries=parsed.suggested_queries,
+            suggested_depth=parsed.suggested_depth,
             tokens_in=data.get("prompt_eval_count"),
             tokens_out=data.get("eval_count"),
             latency_ms=(time.perf_counter() - started) * 1000,

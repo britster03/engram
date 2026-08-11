@@ -100,6 +100,8 @@ class QueryRequest(BaseModel):
     max_reentries: int | None = Field(default=None, ge=0, le=5)
     stream: bool = False
     include_trace: bool = False
+    # Benchmark/diagnostic override. It can only add retrieval, never suppress it.
+    force_retrieval: bool = False
 
 
 class QueryResponse(BaseModel):
@@ -152,9 +154,16 @@ class ChatCompletionResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     components: dict[str, bool]
+    classifier: dict[str, Any] | None = None
+    workers: dict[str, str] = Field(default_factory=dict)
+    failures: dict[str, int] = Field(default_factory=dict)
+    degradation_reasons: list[str] = Field(default_factory=list)
+    benchmark_ready: bool = False
 
 
 class ConfigResponse(BaseModel):
     retrieval: dict[str, Any]
     core_model: dict[str, Any]
     frontier_llm: dict[str, Any]
+    classifier: dict[str, Any]
+    embedding: dict[str, Any]

@@ -18,6 +18,7 @@ from typing import Any
 from engram import prompts
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.semantic import EntityLinkOutput, complete_validated
 from engram.storage.neo4j_store import Neo4jStore
 
 log = logging.getLogger(__name__)
@@ -83,14 +84,16 @@ def resolve(
                 for c in filtered
             ],
         )
-        result = core.complete(
+        validated, _result = complete_validated(
+            core,
+            task="entity_link",
+            schema=EntityLinkOutput,
             system_prompt=prompt,
             user_prompt="Return the disambiguation JSON.",
         )
-        out = result.output if isinstance(result.output, dict) else {}
-        matched = out.get("matched_id")
-        conf = float(out.get("confidence", 0.0))
-        reason = str(out.get("reason", ""))
+        matched = validated.matched_id
+        conf = validated.confidence
+        reason = validated.reason
         # Defensive validation: the model must return a string that matches
         # one of the candidate source_uris. Small models sometimes copy the
         # prompt's example shape ("mem://.../alice/") instead of a real

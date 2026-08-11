@@ -10,7 +10,8 @@ api:
 
 gating:
   configuration: "dual"                       # "dual" | "unified"
-  classifier_path: "./models/engram-gate-v1"  # unused in Phase 0 (regex-only)
+  classifier_mode: "off"                      # "off" | "shadow" | "active"
+  classifier_path: "./models/engram-gate-v1"
   embedding_model_path: "BAAI/bge-small-en-v1.5"
   classification_threshold: 0.3
   device: "cpu"                               # "cpu" | "cuda"
@@ -58,7 +59,6 @@ event_ledger:
   reconciliation_interval_seconds: 60
 
 consolidation:
-  db_path: "./data/consolidation.db"
   poll_interval_seconds: 10
   max_concurrent_tasks: 4
   overview_max_tokens: 2048

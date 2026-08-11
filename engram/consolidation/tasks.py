@@ -25,6 +25,7 @@ from engram import uri as uri_mod
 from engram.config import ConsolidationConfig
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.semantic import OverviewOutput, complete_validated
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
@@ -105,17 +106,15 @@ def handle_consolidate_overview(
             children_relations=children_relations,
             overview_max_tokens=cfg.overview_max_tokens,
         )
-        result = core.complete(
+        validated, _result = complete_validated(
+            core,
+            task="overview",
+            schema=OverviewOutput,
             system_prompt=prompt,
             user_prompt="Return the overview as Markdown.",
         )
         metrics_mod.overview_model_calls.labels(tenant_id=current_tenant_id()).inc()
-        if isinstance(result.output, dict) and "overview" in result.output:
-            text = str(result.output["overview"])
-        elif isinstance(result.output, str):
-            text = result.output
-        else:
-            text = result.raw_text
+        text = validated.overview
     fs.write_atomic(
         f"{dir_uri.rstrip('/')}/overview.md",
         text if text.endswith("\n") else text + "\n",

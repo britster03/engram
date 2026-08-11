@@ -61,7 +61,6 @@ data:
       reconciliation_interval_seconds: 60
 
     consolidation:
-      db_path: "/var/lib/engram/consolidation.db"
       poll_interval_seconds: 10
       max_concurrent_tasks: 4
       overview_max_tokens: 2048

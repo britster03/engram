@@ -19,6 +19,19 @@ class FakeNeo:
         return [self._hit] if self._hit else []
 
 
+class FixedClassifier:
+    def __init__(self, probability: float, *, raises: bool = False) -> None:
+        self.probability = probability
+        self.raises = raises
+        self.calls = 0
+
+    def predict(self, _query: str) -> float:
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("broken model")
+        return self.probability
+
+
 def test_skip_returns_continue_unconditionally():
     decision = run_l0_gate(
         "hello",
@@ -75,3 +88,63 @@ def test_bypass_on_standalone_query():
     )
     assert decision.decision == "BYPASS"
     assert decision.reason == "no_match"
+
+
+def test_off_mode_never_calls_classifier():
+    classifier = FixedClassifier(0.99, raises=True)
+    decision = run_l0_gate(
+        "What is 2 + 2?",
+        classifier=classifier,
+        embed=FakeEmbed(),
+        neo4j=FakeNeo(),  # type: ignore[arg-type]
+        classifier_mode="off",
+    )
+    assert decision.decision == "BYPASS"
+    assert classifier.calls == 0
+
+
+def test_shadow_mode_records_probability_without_routing():
+    classifier = FixedClassifier(0.99)
+    decision = run_l0_gate(
+        "What is 2 + 2?",
+        classifier=classifier,
+        embed=FakeEmbed(),
+        neo4j=FakeNeo(),  # type: ignore[arg-type]
+        classifier_mode="shadow",
+    )
+    assert decision.decision == "BYPASS"
+    assert decision.classifier_probability == 0.99
+    assert classifier.calls == 1
+
+
+def test_active_mode_classifier_routes_to_retrieval():
+    decision = run_l0_gate(
+        "What is 2 + 2?",
+        classifier=FixedClassifier(0.8),
+        embed=FakeEmbed(),
+        neo4j=FakeNeo(),  # type: ignore[arg-type]
+        classifier_mode="active",
+    )
+    assert decision.decision == "CONTINUE"
+    assert decision.reason == "classifier:0.80"
+
+
+def test_active_unavailable_or_broken_classifier_fails_open():
+    unavailable = run_l0_gate(
+        "What is 2 + 2?",
+        classifier=FixedClassifier(0.0),
+        embed=FakeEmbed(),
+        neo4j=FakeNeo(),  # type: ignore[arg-type]
+        classifier_mode="active",
+        classifier_available=False,
+    )
+    broken = run_l0_gate(
+        "What is 2 + 2?",
+        classifier=FixedClassifier(0.0, raises=True),
+        embed=FakeEmbed(),
+        neo4j=FakeNeo(),  # type: ignore[arg-type]
+        classifier_mode="active",
+    )
+    assert unavailable.decision == broken.decision == "CONTINUE"
+    assert "fail_open" in unavailable.reason
+    assert "fail_open" in broken.reason

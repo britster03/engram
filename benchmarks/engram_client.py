@@ -341,6 +341,7 @@ class EngramClient:
         max_reentries: int | None = None,
         session_context: str | None = None,
         include_trace: bool = True,
+        force_retrieval: bool = True,
     ) -> dict[str, Any]:
         """POST a question. Returns {answer, retrieval_metadata, ...}.
 
@@ -356,6 +357,7 @@ class EngramClient:
         if session_context is not None:
             body["session_context"] = session_context
         body["include_trace"] = include_trace
+        body["force_retrieval"] = force_retrieval
         # Longer per-request timeout than the client default: a query drives the
         # full cascade + several LLM calls. A transport error (incl. timeout) is
         # wrapped as EngramError so callers catch it uniformly and one slow query
@@ -376,6 +378,13 @@ class EngramClient:
         resp = self._http.get("/api/v1/health")
         if resp.status_code != 200:
             raise EngramError(f"health failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def configuration(self) -> dict[str, Any]:
+        """Return the authenticated, non-secret effective runtime configuration."""
+        resp = self._http.get("/api/v1/config")
+        if resp.status_code != 200:
+            raise EngramError(f"config failed: {resp.status_code} {resp.text}")
         return resp.json()
 
 

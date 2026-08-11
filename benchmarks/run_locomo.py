@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import platform
+import random
 import subprocess
 import sys
 import time
@@ -121,9 +122,34 @@ def ingest_conversation(
     return event_ids
 
 
-def _selected_questions(conv: Conversation, limit: int) -> list[tuple[int, Any]]:
+def _selected_questions(
+    conv: Conversation, limit: int, *, seed: int = 42
+) -> list[tuple[int, Any]]:
     indexed = list(enumerate(conv.qa))
-    return indexed[:limit] if limit else indexed
+    if not limit or limit >= len(indexed):
+        return indexed
+    by_category: dict[int, list[tuple[int, Any]]] = defaultdict(list)
+    for item in indexed:
+        by_category[int(item[1].category)].append(item)
+    for category, items in by_category.items():
+        stable_seed = int.from_bytes(
+            hashlib.sha256(
+                f"{seed}:{conv.sample_id}:{category}".encode()
+            ).digest()[:8],
+            "big",
+        )
+        random.Random(stable_seed).shuffle(items)
+    selected: list[tuple[int, Any]] = []
+    categories = sorted(by_category)
+    while len(selected) < limit:
+        made_progress = False
+        for category in categories:
+            if by_category[category] and len(selected) < limit:
+                selected.append(by_category[category].pop())
+                made_progress = True
+        if not made_progress:
+            break
+    return selected
 
 
 def _expected_manifest(conversations: list[Conversation], args: argparse.Namespace) -> dict:
@@ -135,7 +161,9 @@ def _expected_manifest(conversations: list[Conversation], args: argparse.Namespa
             "category": probe.category,
         }
         for conv in conversations
-        for question_idx, probe in _selected_questions(conv, args.limit_questions)
+        for question_idx, probe in _selected_questions(
+            conv, args.limit_questions, seed=args.seed
+        )
     ]
     return {
         "conversations": [conv.sample_id for conv in conversations],
@@ -233,7 +261,9 @@ def _failure_rows(
             "judge_correct": None,
             "judged": False,
         }
-        for question_idx, probe in _selected_questions(conv, args.limit_questions)
+        for question_idx, probe in _selected_questions(
+            conv, args.limit_questions, seed=args.seed
+        )
     ]
 
 
@@ -244,6 +274,10 @@ def _make_manifest(
     data_path: Path,
     expected: dict[str, Any],
 ) -> dict[str, Any]:
+    prompt_files = sorted((Path(__file__).parents[1] / "engram" / "prompts").glob("*"))
+    prompt_hashes = {
+        path.name: _sha256(path) for path in prompt_files if path.is_file()
+    }
     return {
         "schema_version": 1,
         "run_id": run_id,
@@ -267,6 +301,9 @@ def _make_manifest(
             "max_depth": args.max_depth,
             "max_reentries": args.max_reentries,
             "retrieval_forced": True,
+            "seed": args.seed,
+            "runner_sha256": _sha256(Path(__file__)),
+            "prompt_hashes": prompt_hashes,
             "context_policy": {
                 "name": "prior_turn_tail",
                 "version": 1,
@@ -325,12 +362,15 @@ def run(args: argparse.Namespace) -> int:
     judge_context = (
         OllamaJudge(model=args.judge_model) if args.judge else nullcontext(None)
     )
+    runtime_config_recorded = False
     with judge_context as judge, partial_path.open("a", encoding="utf-8") as partial:
         for conv_idx, conv in enumerate(conversations):
             tenant_id = f"{args.tenant_prefix}-{run_id}-c{conv_idx}"
             expected_for_conv = {
                 f"{conv.sample_id}:q{question_idx}"
-                for question_idx, _ in _selected_questions(conv, args.limit_questions)
+                for question_idx, _ in _selected_questions(
+                    conv, args.limit_questions, seed=args.seed
+                )
             }
             if expected_for_conv and expected_for_conv.issubset(completed_ids):
                 continue
@@ -361,6 +401,21 @@ def run(args: argparse.Namespace) -> int:
 
             with client:
                 try:
+                    if not runtime_config_recorded:
+                        runtime_config = client.configuration()
+                        canonical = json.dumps(
+                            runtime_config, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8")
+                        manifest["runtime_config"] = runtime_config
+                        manifest["runtime_config_sha256"] = hashlib.sha256(
+                            canonical
+                        ).hexdigest()
+                        manifest["runner"]["effective_l0_skip"] = bool(
+                            (runtime_config.get("retrieval") or {}).get("l0_skip")
+                        )
+                        manifest["runner"]["query_force_retrieval"] = True
+                        _write_json_atomic(manifest_path, manifest)
+                        runtime_config_recorded = True
                     started = time.monotonic()
                     event_ids = ingest_conversation(
                         client,
@@ -390,7 +445,9 @@ def run(args: argparse.Namespace) -> int:
                             _append_partial(partial, row)
                     continue
 
-                for question_idx, probe in _selected_questions(conv, args.limit_questions):
+                for question_idx, probe in _selected_questions(
+                    conv, args.limit_questions, seed=args.seed
+                ):
                     result_id = f"{conv.sample_id}:q{question_idx}"
                     if result_id in completed_ids:
                         continue
@@ -401,6 +458,7 @@ def run(args: argparse.Namespace) -> int:
                             max_depth=args.max_depth,
                             max_reentries=args.max_reentries,
                             include_trace=True,
+                            force_retrieval=True,
                         )
                         answer = str(response.get("answer", ""))
                         metadata = response.get("retrieval_metadata") or {}
@@ -582,6 +640,7 @@ def main() -> int:
     parser.add_argument("--limit-questions", type=int, default=0, help="0 = all per conv")
     parser.add_argument("--limit-pairs", type=int, default=0, help="0 = all")
     parser.add_argument("--context-turns", type=int, default=12)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-depth", default="L4")
     parser.add_argument("--max-reentries", type=int, default=1)
     parser.add_argument("--drain-timeout", type=float, default=600.0)

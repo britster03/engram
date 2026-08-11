@@ -38,6 +38,7 @@ class ApiConfig(BaseModel):
 
 class GatingConfig(BaseModel):
     configuration: Literal["dual", "unified"] = "dual"
+    classifier_mode: Literal["off", "shadow", "active"] = "off"
     classifier_path: str = "./models/engram-gate-v1"
     embedding_model_path: str = "BAAI/bge-small-en-v1.5"
     classification_threshold: float = 0.3
@@ -103,7 +104,6 @@ class EventLedgerConfig(BaseModel):
 
 
 class ConsolidationConfig(BaseModel):
-    db_path: str = "./data/consolidation.db"
     poll_interval_seconds: int = 10
     max_concurrent_tasks: int = 4
     overview_max_tokens: int = 2048

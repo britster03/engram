@@ -22,6 +22,7 @@ from typing import Any
 from engram import prompts
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.semantic import ConflictOutput, complete_validated
 from engram.storage.neo4j_store import Neo4jStore
 
 log = logging.getLogger(__name__)
@@ -119,18 +120,17 @@ def classify(
                 for e, _ in ambiguous_candidates
             ],
         )
-        result = core.complete(
+        validated, _result = complete_validated(
+            core,
+            task="dedup",
+            schema=ConflictOutput,
             system_prompt=prompt,
             user_prompt="Return the dedup JSON.",
         )
-        out = result.output if isinstance(result.output, dict) else {}
-        case = str(out.get("case", "CO_EXISTENCE"))
-        if case not in {"DUPLICATE", "CONTRADICTION", "CO_EXISTENCE"}:
-            case = "CO_EXISTENCE"
         return ConflictDecision(
-            case,
-            out.get("existing_edge_id"),
-            str(out.get("reason", "core-model-dedup")),
+            validated.case,
+            validated.existing_edge_id,
+            validated.reason or "core-model-dedup",
         )
     except Exception:
         log.warning("dedup core call failed; defaulting to CO_EXISTENCE", exc_info=True)

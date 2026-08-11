@@ -16,6 +16,7 @@ from engram import frontmatter, prompts
 from engram import uri as uri_mod
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.semantic import SessionCompactOutput, complete_validated
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.neo4j_store import Neo4jStore
@@ -181,14 +182,16 @@ def compact_session(
         turn_history=turn_history,
         compaction_budget=2000,
     )
-    result = core.complete(
+    validated, _result = complete_validated(
+        core,
+        task="session_compact",
+        schema=SessionCompactOutput,
         system_prompt=prompt,
         user_prompt="Return the compaction JSON.",
     )
-    out = result.output if isinstance(result.output, dict) else {}
-    compact_block = out.get("compacted") or ""
-    key_facts = out.get("key_facts") or []
-    key_entities = out.get("key_entities") or []
+    compact_block = validated.compacted
+    key_facts = validated.key_facts
+    key_entities = validated.key_entities
     state.compacted = (
         (state.compacted + "\n" + compact_block) if state.compacted else compact_block
     )
@@ -268,15 +271,17 @@ def _summarize_for_commit(
         compaction_budget=3000,
     )
     try:
-        result = core.complete(
+        validated, _result = complete_validated(
+            core,
+            task="session_compact",
+            schema=SessionCompactOutput,
             system_prompt=prompt,
             user_prompt="Return the final session summary JSON.",
         )
-        out = result.output if isinstance(result.output, dict) else {}
         return (
-            str(out.get("compacted") or ""),
-            list(out.get("key_facts") or []),
-            list(out.get("key_entities") or []),
+            validated.compacted,
+            validated.key_facts,
+            validated.key_entities,
         )
     except Exception:
         log.exception("session commit summary failed; falling back to raw render")

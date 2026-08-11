@@ -116,6 +116,17 @@ class DurableIngestWorker:
             t.join(timeout=timeout_s)
         log.info("durable ingest worker stopped")
 
+    @property
+    def is_alive(self) -> bool:
+        """Whether the poller and all worker threads are currently alive."""
+        return bool(
+            self._poll_thread
+            and self._poll_thread.is_alive()
+            and self._workers
+            and all(thread.is_alive() for thread in self._workers)
+            and not self._stop.is_set()
+        )
+
     # ------------------------------------------------------------------
     # Poll loop
     # ------------------------------------------------------------------

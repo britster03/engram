@@ -18,6 +18,7 @@ from slugify import slugify
 from engram import frontmatter, prompts
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.semantic import UnmergeOutput, complete_validated
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
@@ -57,12 +58,14 @@ def unmerge(
         merged_node={"source_uri": merged_uri, "l0_abstract": merged_abstract},
         source_extractions=extractions,
     )
-    result = core.complete(
+    validated, _result = complete_validated(
+        core,
+        task="unmerge",
+        schema=UnmergeOutput,
         system_prompt=prompt,
         user_prompt="Return the split JSON.",
     )
-    out = result.output if isinstance(result.output, dict) else {}
-    splits = out.get("splits") or []
+    splits = validated.model_dump(mode="json")["splits"]
     if not splits:
         # Disambiguation returned nothing — keep original but flag for review.
         return UnmergeResult(merged_uri=merged_uri, split_uris=[])

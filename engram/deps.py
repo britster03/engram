@@ -8,7 +8,7 @@ status without failing startup).
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from engram.audit import AuditLog
 from engram.cache import EmbeddingCache, OverviewCache, build_cache
@@ -18,6 +18,8 @@ from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.models.frontier import FrontierLLMProvider
 from engram.models.providers import build_providers
+from engram.retrieval.l0_classifier import ClassifierStatus, load_l0_classifier
+from engram.retrieval.l0_gate import AlwaysClass0Classifier, L0Classifier
 from engram.retrieval.orchestrator import OrchestratorContext
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
@@ -41,6 +43,12 @@ class AppState:
     audit: AuditLog
     embedding_cache: EmbeddingCache
     overview_cache: OverviewCache
+    l0_classifier: L0Classifier = field(default_factory=AlwaysClass0Classifier)
+    l0_classifier_status: ClassifierStatus = field(
+        default_factory=lambda: ClassifierStatus(
+            mode="off", loaded=False, degraded=False, configured_path=None
+        )
+    )
 
 
 _lock = threading.Lock()
@@ -65,6 +73,7 @@ def build_state(cfg: EngramConfig | None = None) -> AppState:
     embed_cache = EmbeddingCache(build_cache(redis_url, namespace="embeddings"))
     overview_cache = OverviewCache(build_cache(redis_url, namespace="overviews"))
     embed = EmbeddingService.get(cfg.gating, cache=embed_cache)
+    l0_classifier, l0_classifier_status = load_l0_classifier(cfg.gating)
 
     tenant_registry = TenantRegistry(cfg.event_ledger.path)
     tenant_registry.ensure_default(legacy_api_key=cfg.api.api_key)
@@ -82,6 +91,8 @@ def build_state(cfg: EngramConfig | None = None) -> AppState:
         audit=audit,
         embedding_cache=embed_cache,
         overview_cache=overview_cache,
+        l0_classifier=l0_classifier,
+        l0_classifier_status=l0_classifier_status,
     )
 
 
@@ -120,4 +131,6 @@ def make_orchestrator_context(state: AppState) -> OrchestratorContext:
         core=state.core,
         frontier=state.frontier,
         embed=state.embed,
+        l0_classifier=state.l0_classifier,
+        l0_classifier_status=state.l0_classifier_status,
     )

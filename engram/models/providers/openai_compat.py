@@ -40,6 +40,7 @@ except ImportError as err:  # pragma: no cover
 from engram.config import CoreModelConfig, FrontierLlmConfig
 from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
+from engram.models.semantic import validate_frontier_output
 from engram.resilience import resilient
 
 log = logging.getLogger(__name__)
@@ -238,29 +239,36 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
         )
         user_text = f"<msc>\n{msc}\n</msc>\n\n<user_query>\n{user_query}\n</user_query>"
         started = time.perf_counter()
-        try:
-            resp = self._call_chat(system=system_text, user=user_text)
-        except openai.APIError as err:
-            raise CoreModelError(f"openai-compat frontier API error: {err}") from err
+        repair_user = user_text
+        parsed = None
+        for attempt in range(2):
+            try:
+                resp = self._call_chat(system=system_text, user=repair_user)
+                raw_text = resp.choices[0].message.content or ""
+                parsed = validate_frontier_output(
+                    CoreModelProvider.extract_json(raw_text)
+                )
+                break
+            except openai.APIError as err:
+                raise CoreModelError(f"openai-compat frontier API error: {err}") from err
+            except CoreModelError:
+                if attempt:
+                    raise
+                repair_user = (
+                    f"{user_text}\n\nThe prior response violated the schema. "
+                    "Return one corrected JSON object only."
+                )
+        if parsed is None:  # pragma: no cover - loop guarantees a value or raises
+            raise CoreModelError("frontier returned no validated output")
         latency_ms = (time.perf_counter() - started) * 1000
-        raw_text = resp.choices[0].message.content or ""
-
-        try:
-            data = CoreModelProvider.extract_json(raw_text)
-        except CoreModelError as err:
-            raise CoreModelError(
-                f"frontier returned unparseable output: {raw_text[:200]!r}"
-            ) from err
-        if not isinstance(data, dict) or data.get("verdict") not in {"ANSWER", "NEED_MORE"}:
-            raise CoreModelError(f"frontier returned invalid verdict: {raw_text[:200]!r}")
 
         usage = getattr(resp, "usage", None)
         return FrontierVerdict(
-            verdict=data["verdict"],
-            answer=data.get("answer"),
-            reason=data.get("reason"),
-            suggested_queries=data.get("suggested_queries") or [],
-            suggested_depth=data.get("suggested_depth"),
+            verdict=parsed.verdict,
+            answer=parsed.answer,
+            reason=parsed.reason,
+            suggested_queries=parsed.suggested_queries,
+            suggested_depth=parsed.suggested_depth,
             tokens_in=getattr(usage, "prompt_tokens", None) if usage else None,
             tokens_out=getattr(usage, "completion_tokens", None) if usage else None,
             latency_ms=latency_ms,

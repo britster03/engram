@@ -22,7 +22,9 @@ from engram.frontmatter import FrontmatterError
 from engram.models.core import CoreModelError, CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
+from engram.models.semantic import L1PlanOutput, LnPlanOutput, complete_validated
 from engram.resilience import CircuitOpenError
+from engram.retrieval.l0_classifier import ClassifierStatus
 from engram.retrieval.l0_gate import AlwaysClass0Classifier, L0Classifier, run_l0_gate
 from engram.retrieval.templates import TemplateError, run_template
 from engram.retrieval.tree_render import render_tree
@@ -95,6 +97,7 @@ class OrchestratorContext:
     frontier: FrontierLLMProvider
     embed: EmbeddingService
     l0_classifier: L0Classifier = field(default_factory=AlwaysClass0Classifier)
+    l0_classifier_status: ClassifierStatus | None = None
 
 
 # ----------------------------------------------------------------------
@@ -110,6 +113,7 @@ def run_query(
     max_depth: str | None = None,
     max_reentries: int | None = None,
     include_trace: bool = False,
+    force_retrieval: bool = False,
     on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResult:
     md = RetrievalMetadata()
@@ -123,6 +127,7 @@ def run_query(
             "selected_sources": [],
             "token_allocation": {},
             "reentry_requests": [],
+            "l0_gate": {},
         }
     max_depth = max_depth or ctx.cfg.retrieval.max_depth
     max_reentries = max_reentries if max_reentries is not None else ctx.cfg.retrieval.max_reentries
@@ -140,7 +145,13 @@ def run_query(
                 neo4j=ctx.neo4j,
                 threshold=ctx.cfg.gating.classification_threshold,
                 memory_hit_threshold=ctx.cfg.gating.memory_hit_threshold,
-                skip=ctx.cfg.retrieval.l0_skip,
+                skip=ctx.cfg.retrieval.l0_skip or force_retrieval,
+                classifier_mode=ctx.cfg.gating.classifier_mode,
+                classifier_available=(
+                    ctx.l0_classifier_status.loaded
+                    if ctx.l0_classifier_status is not None
+                    else ctx.cfg.gating.classifier_mode == "off"
+                ),
             )
         except Exception as err:
             # L0 is best-effort — on failure, default to CONTINUE so queries
@@ -153,6 +164,18 @@ def run_query(
     md.latency_ms["l0_gate"] = (time.perf_counter() - t) * 1000
     md.l0_decision = gate.decision
     md.l0_reason = gate.reason
+    if md.trace is not None:
+        md.trace["l0_gate"] = {
+            "decision": gate.decision,
+            "reason": gate.reason,
+            "classifier_mode": gate.classifier_mode,
+            "classifier_probability": gate.classifier_probability,
+            "classifier_status": (
+                ctx.l0_classifier_status.to_dict()
+                if ctx.l0_classifier_status is not None
+                else None
+            ),
+        }
     _notify_step(on_step, md, "l0_gate")
     if gate.decision == "BYPASS":
         # Go straight to the frontier with only session context + query.
@@ -281,11 +304,14 @@ def _l1_plan(
         memory_hit=(memory_hit and memory_hit.get("l0_abstract")),
     )
     try:
-        result = ctx.core.complete(
+        validated, _result = complete_validated(
+            ctx.core,
+            task="l1_plan",
+            schema=L1PlanOutput,
             system_prompt=prompt,
             user_prompt="Return the plan JSON.",
         )
-        out = result.output if isinstance(result.output, dict) else {}
+        out = validated.model_dump(mode="json")
     except (CoreModelError, CircuitOpenError, Exception) as err:
         # §Graceful degradation: when the Core Model is unavailable we fall
         # back to a minimal "just vector-search the raw query" plan. The
@@ -319,11 +345,14 @@ def _ln_plan(
         previous_results=summary,
     )
     try:
-        result = ctx.core.complete(
+        validated, _result = complete_validated(
+            ctx.core,
+            task="ln_plan",
+            schema=LnPlanOutput,
             system_prompt=prompt,
             user_prompt="Return the fused plan-judge JSON.",
         )
-        out = result.output if isinstance(result.output, dict) else {}
+        out = validated.model_dump(mode="json")
     except (CoreModelError, CircuitOpenError, Exception) as err:
         # §Graceful degradation: when Ln planning fails we terminate the
         # cascade and let the frontier answer from what we already have.

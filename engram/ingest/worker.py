@@ -35,6 +35,7 @@ from engram.ingest.conflict import apply_decision, classify
 from engram.ingest.entity_linker import resolve as entity_resolve
 from engram.models.core import CoreModelError, CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.semantic import ExtractOutput, GateWriteOutput, complete_validated
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.graph_projection import project_memory_node
 from engram.storage.sqlite import SqliteStore
@@ -486,30 +487,28 @@ def _call_gate(
     ctx: IngestContext, turn_pair: dict[str, str], *, session_summary: str | None
 ) -> dict:
     prompt = prompts.render("gate_write", turn_pair=turn_pair, session_summary=session_summary)
-    result = ctx.core.complete(
+    validated, _result = complete_validated(
+        ctx.core,
+        task="gate_write",
+        schema=GateWriteOutput,
         system_prompt=prompt,
         user_prompt="Respond with a JSON object matching the schema.",
     )
-    if not isinstance(result.output, dict) or "store" not in result.output:
-        raise CoreModelError(f"gate returned invalid output: {result.raw_text[:200]}")
-    return result.output
+    return validated.model_dump(mode="json")
 
 
 def _call_extract(
     ctx: IngestContext, turn_pair: dict[str, str], *, session_context: str | None
 ) -> dict:
     prompt = prompts.render("extract", turn_pair=turn_pair, session_context=session_context)
-    result = ctx.core.complete(
+    validated, _result = complete_validated(
+        ctx.core,
+        task="extract",
+        schema=ExtractOutput,
         system_prompt=prompt,
         user_prompt="Respond with a JSON object matching the schema.",
     )
-    out = result.output
-    if not isinstance(out, dict):
-        raise CoreModelError(f"extract returned non-object: {result.raw_text[:200]}")
-    out.setdefault("resolved_text", turn_pair["assistant"])
-    out.setdefault("triplets", [])
-    out.setdefault("l0_abstract", turn_pair["assistant"][:200])
-    return out
+    return validated.model_dump(mode="json")
 
 
 def _resolve_entities(

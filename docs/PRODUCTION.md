@@ -166,8 +166,6 @@ tar --exclude='*.tmp' -czf /var/backups/engram/mem-${DATE}.tar.gz /var/lib/engra
 # SQLite — use the online backup API (WAL-aware)
 sqlite3 /var/lib/engram/event_ledger.db \
   ".backup /var/backups/engram/ledger-${DATE}.db"
-sqlite3 /var/lib/engram/consolidation.db \
-  ".backup /var/backups/engram/cons-${DATE}.db"
 
 # Neo4j (optional — always re-derivable)
 docker compose exec -T neo4j neo4j-admin database dump \

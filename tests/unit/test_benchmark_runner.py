@@ -5,8 +5,13 @@ from typing import Any
 import pytest
 
 from benchmarks.engram_client import DrainConfig, EngramClient, IngestFailedError
-from benchmarks.loader import Conversation, Turn
-from benchmarks.run_locomo import _retrieved_turn_ids, ingest_conversation, summarize
+from benchmarks.loader import Conversation, QAProbe, Turn
+from benchmarks.run_locomo import (
+    _retrieved_turn_ids,
+    _selected_questions,
+    ingest_conversation,
+    summarize,
+)
 
 
 class CapturingClient:
@@ -58,6 +63,24 @@ def test_retrieved_turn_ids_are_unique_and_rank_preserving() -> None:
         ]
     }
     assert _retrieved_turn_ids(trace) == ["D1:2", "D1:1", "D1:3"]
+
+
+def test_canary_question_selection_is_seeded_and_category_balanced() -> None:
+    conv = Conversation(sample_id="sample", speaker_a="A", speaker_b="B")
+    conv.qa = [
+        QAProbe(f"q{category}-{i}", "a", category, [], category == 5)
+        for category in range(1, 6)
+        for i in range(4)
+    ]
+    first = _selected_questions(conv, 10, seed=17)
+    second = _selected_questions(conv, 10, seed=17)
+    different = _selected_questions(conv, 10, seed=18)
+    assert [index for index, _ in first] == [index for index, _ in second]
+    assert [index for index, _ in first] != [index for index, _ in different]
+    counts = {category: 0 for category in range(1, 6)}
+    for _index, probe in first:
+        counts[probe.category] += 1
+    assert counts == {category: 2 for category in range(1, 6)}
 
 
 def test_summary_uses_official_metrics_as_primary() -> None:

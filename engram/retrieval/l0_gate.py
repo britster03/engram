@@ -53,6 +53,8 @@ class GateDecision:
     decision: str  # "BYPASS" | "CONTINUE"
     reason: str
     memory_hit: dict | None = None  # filled when the fallback triggered
+    classifier_probability: float | None = None
+    classifier_mode: str = "off"
 
 
 class L0Classifier(Protocol):
@@ -81,21 +83,52 @@ def run_l0_gate(
     threshold: float = 0.3,
     memory_hit_threshold: float = 0.75,
     skip: bool = False,
+    classifier_mode: str = "off",
+    classifier_available: bool = True,
 ) -> GateDecision:
     """Apply the L0 binary gate and memory-hit fallback."""
     if skip:
-        return GateDecision(decision="CONTINUE", reason="retrieval.l0_skip=true")
+        return GateDecision(
+            decision="CONTINUE",
+            reason="retrieval.l0_skip=true",
+            classifier_mode=classifier_mode,
+        )
 
     first = _FIRST_SENTENCE.match(query or "")
     head = (first.group(0) if first else query or "").strip()
 
     for pat in _REGEX_PATTERNS:
         if pat.search(head):
-            return GateDecision(decision="CONTINUE", reason=f"regex:{pat.pattern[:30]}")
+            return GateDecision(
+                decision="CONTINUE",
+                reason=f"regex:{pat.pattern[:30]}",
+                classifier_mode=classifier_mode,
+            )
 
-    prob = classifier.predict(query)
-    if prob >= threshold:
-        return GateDecision(decision="CONTINUE", reason=f"classifier:{prob:.2f}")
+    prob: float | None = None
+    if classifier_mode in {"shadow", "active"} and classifier_available:
+        try:
+            prob = classifier.predict(query)
+        except Exception:
+            if classifier_mode == "active":
+                return GateDecision(
+                    decision="CONTINUE",
+                    reason="classifier_error_fail_open",
+                    classifier_mode=classifier_mode,
+                )
+    elif classifier_mode == "active":
+        return GateDecision(
+            decision="CONTINUE",
+            reason="classifier_unavailable_fail_open",
+            classifier_mode=classifier_mode,
+        )
+    if classifier_mode == "active" and prob is not None and prob >= threshold:
+        return GateDecision(
+            decision="CONTINUE",
+            reason=f"classifier:{prob:.2f}",
+            classifier_probability=prob,
+            classifier_mode=classifier_mode,
+        )
 
     # BYPASS so far — run the memory-hit fallback (§3.1.2).
     emb = embed.embed(query)
@@ -105,5 +138,12 @@ def run_l0_gate(
             decision="CONTINUE",
             reason=f"memory_hit:{hits[0]['score']:.2f}",
             memory_hit=hits[0],
+            classifier_probability=prob,
+            classifier_mode=classifier_mode,
         )
-    return GateDecision(decision="BYPASS", reason="no_match")
+    return GateDecision(
+        decision="BYPASS",
+        reason="no_match",
+        classifier_probability=prob,
+        classifier_mode=classifier_mode,
+    )

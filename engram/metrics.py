@@ -61,6 +61,12 @@ core_model_calls = Counter(
     ["task", "provider"],
     registry=REGISTRY,
 )
+semantic_output_schema_failures = Counter(
+    "engram_semantic_output_schema_failures_total",
+    "Semantic model outputs rejected by typed task contracts.",
+    ["task", "provider"],
+    registry=REGISTRY,
+)
 overview_model_calls = Counter(
     "engram_overview_model_calls_total",
     "Overview model calls by tenant (deterministic single-child refreshes are excluded).",

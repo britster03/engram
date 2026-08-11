@@ -247,11 +247,16 @@ def readyz() -> JSONResponse:
         return JSONResponse(
             {"status": "not_ready", "reason": str(err)[:500]}, status_code=503
         )
+    workers = _worker_status(state)
     components = {
         "sqlite": True,  # get_state() succeeded → SQLite is writable
         "neo4j": state.neo4j.ping(),
         "redis": state.session_cache.ping(),
         "filesystem": state.fs.data_dir.exists(),
+        "classifier": not state.l0_classifier_status.degraded,
+        "ingest_worker": workers["ingest"] in {"running", "disabled"},
+        "consolidation_worker": workers["consolidation"] in {"running", "disabled"},
+        "reconciliation_worker": workers["reconciliation"] in {"running", "disabled"},
     }
     ready = all(components.values())
     return JSONResponse(
@@ -259,6 +264,8 @@ def readyz() -> JSONResponse:
             "status": "ready" if ready else "not_ready",
             "components": components,
             "breakers": breaker_snapshot(),
+            "classifier": state.l0_classifier_status.to_dict(),
+            "workers": workers,
         },
         status_code=200 if ready else 503,
     )
@@ -279,8 +286,72 @@ def health() -> schemas.HealthResponse:
     components["neo4j"] = state.neo4j.ping()
     components["redis"] = state.session_cache.ping()
     components["filesystem"] = state.fs.data_dir.exists()
-    overall = "healthy" if all(components.values()) else "degraded"
-    return schemas.HealthResponse(status=overall, components=components)
+    components["classifier"] = not state.l0_classifier_status.degraded
+    workers = _worker_status(state)
+    components["ingest_worker"] = workers["ingest"] in {"running", "disabled"}
+    components["consolidation_worker"] = workers["consolidation"] in {
+        "running", "disabled"
+    }
+    components["reconciliation_worker"] = workers["reconciliation"] in {
+        "running", "disabled"
+    }
+    failures = _failure_counts(state)
+    degradation_reasons = [name for name, available in components.items() if not available]
+    if failures["events"]:
+        degradation_reasons.append("failed_events_present")
+    if failures["consolidation_tasks"]:
+        degradation_reasons.append("failed_consolidation_tasks_present")
+    if failures["artifacts"]:
+        degradation_reasons.append("failed_artifacts_present")
+    overall = "healthy" if not degradation_reasons else "degraded"
+    return schemas.HealthResponse(
+        status=overall,
+        components=components,
+        classifier=state.l0_classifier_status.to_dict(),
+        workers=workers,
+        failures=failures,
+        degradation_reasons=degradation_reasons,
+        benchmark_ready=not degradation_reasons,
+    )
+
+
+def _worker_status(state: AppState) -> dict[str, str]:
+    ingest = (
+        "running" if _ingest_worker is not None and _ingest_worker.is_alive else "stopped"
+    )
+    if state.cfg.consolidation.poll_interval_seconds <= 0:
+        consolidation = "disabled"
+    else:
+        consolidation = (
+            "running" if _cons_handle is not None and _cons_handle[0].is_alive() else "stopped"
+        )
+    if state.cfg.event_ledger.reconciliation_interval_seconds <= 0:
+        reconciliation = "disabled"
+    else:
+        reconciliation = (
+            "running" if _recon_handle is not None and _recon_handle[0].is_alive() else "stopped"
+        )
+    return {
+        "ingest": ingest,
+        "consolidation": consolidation,
+        "reconciliation": reconciliation,
+    }
+
+
+def _failure_counts(state: AppState) -> dict[str, int]:
+    conn = state.sqlite.get_conn()
+    task_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM consolidation_tasks WHERE status = 'FAILED'"
+    ).fetchone()
+    artifact_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM ingest_artifacts "
+        "WHERE filesystem_state = 'FAILED' OR kg_state = 'FAILED'"
+    ).fetchone()
+    return {
+        "events": state.sqlite.count_events_by_status("FAILED"),
+        "consolidation_tasks": int(task_row["c"] if task_row else 0),
+        "artifacts": int(artifact_row["c"] if artifact_row else 0),
+    }
 
 
 @app.get("/api/v1/config", response_model=schemas.ConfigResponse, dependencies=[AuthDep])
@@ -297,6 +368,8 @@ def get_config_endpoint() -> schemas.ConfigResponse:
             "provider": cfg.frontier_llm.provider,
             "model_path": cfg.frontier_llm.model_path,
         },
+        classifier=state.l0_classifier_status.to_dict(),
+        embedding={"model_path": cfg.gating.embedding_model_path},
     )
 
 
@@ -385,6 +458,7 @@ def query(req: schemas.QueryRequest):
             max_depth=req.max_depth,
             max_reentries=req.max_reentries,
             include_trace=req.include_trace,
+            force_retrieval=req.force_retrieval,
         )
     except Exception as err:
         log.exception("query failed")
