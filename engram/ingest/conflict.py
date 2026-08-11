@@ -190,11 +190,6 @@ def apply_decision(
         and incoming_assertion_uri
         and decision.existing_assertion_uri
     ):
-        _mark_assertion_historical(
-            neo4j,
-            decision.existing_assertion_uri,
-            now=now,
-        )
         neo4j.merge_edge(
             subject_uri=incoming_assertion_uri,
             object_uri=decision.existing_assertion_uri,
@@ -250,24 +245,6 @@ def _supersede_edge(neo4j: Neo4jStore, edge_id: Any, *, now: str) -> str | None:
     except Exception:
         log.debug("supersede_edge failed for %s", edge_id, exc_info=True)
         return None
-
-
-def _mark_assertion_historical(
-    neo4j: Neo4jStore,
-    assertion_uri: str,
-    *,
-    now: str,
-) -> None:
-    """Retire the superseded assertion while preserving entity identity."""
-    try:
-        neo4j.run_template(
-            "MATCH (n:Node {tenant_id: $tenant_id, source_uri: $uri}) "
-            "WHERE n.node_type = 'FACT' "
-            "SET n.status = 'HISTORICAL', n.superseded_at = $now",
-            {"uri": assertion_uri, "now": now},
-        )
-    except Exception:
-        log.debug("assertion retirement failed for %s", assertion_uri, exc_info=True)
 
 
 def _cos(a: list[float], b: list[float]) -> float:

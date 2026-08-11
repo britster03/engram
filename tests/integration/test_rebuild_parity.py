@@ -257,7 +257,13 @@ def test_rebuild_matches_duplicate_contradiction_and_history(cfg: EngramConfig):
         if node.get("node_type") == "FACT"
     }
     assert len(fact_nodes) == 3
-    assert any(node.get("status") == "HISTORICAL" for node in fact_nodes.values())
+    assert all(node.get("status") == "ACTIVE" for node in fact_nodes.values())
+    superseded_fact_uris = {edge["target"] for edge in supersedes}
+    query_vector = DeterministicEmbeddingService().embed("User works at Meta.")
+    active_hits = graph.vector_search(query_vector, k=100, tenant_id="history-tenant")
+    assert superseded_fact_uris.isdisjoint(
+        {str(hit["source_uri"]) for hit in active_hits}
+    )
     entity_nodes = [
         node
         for _uri, node in graph.iter_nodes(tenant_id="history-tenant")

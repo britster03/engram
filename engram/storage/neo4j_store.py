@@ -292,6 +292,9 @@ class Neo4jStore:
             "CALL db.index.vector.queryNodes('l0_idx', $k, $vec) YIELD node, score "
             "WHERE node.tenant_id = $tenant_id "
             "AND node.status = 'ACTIVE' "
+            "AND NOT EXISTS { "
+            "MATCH (:Node {tenant_id: $tenant_id})-[:SUPERSEDES]->(node) "
+            "} "
             "AND coalesce(node.retrieval_weight, 1.0) >= $floor "
         )
         if uri_prefix:

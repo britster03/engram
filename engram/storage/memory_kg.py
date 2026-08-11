@@ -210,6 +210,13 @@ class InMemoryKnowledgeGraph:
                     continue
                 if node.get("status") != "ACTIVE":
                     continue
+                if any(
+                    edge.tenant_id == tid
+                    and edge.type == "SUPERSEDES"
+                    and edge.object_uri == uri
+                    for edge in self._edges
+                ):
+                    continue
                 if float(node.get("retrieval_weight", 1.0)) < dormant_floor:
                     continue
                 if uri_prefix and not uri.startswith(uri_prefix):
@@ -304,13 +311,6 @@ class InMemoryKnowledgeGraph:
                         edge.props["status"] = "HISTORICAL"
                         edge.props["superseded_at"] = params.get("now")
                         return [{"object_uri": edge.object_uri}]
-                return []
-
-            if "SET N.STATUS = 'HISTORICAL'" in cypher_upper and uri:
-                node = self._nodes.get((tid, uri))
-                if node is not None and node.get("node_type") == "FACT":
-                    node["status"] = "HISTORICAL"
-                    node["superseded_at"] = params.get("now")
                 return []
 
             # t_children_of — CONTAINS traversal
