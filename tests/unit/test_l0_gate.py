@@ -44,6 +44,19 @@ def test_skip_returns_continue_unconditionally():
     assert "l0_skip" in decision.reason
 
 
+def test_skip_reason_can_identify_a_request_level_override():
+    decision = run_l0_gate(
+        "hello",
+        classifier=AlwaysClass0Classifier(),
+        embed=FakeEmbed(),
+        neo4j=FakeNeo(),  # type: ignore[arg-type]
+        skip=True,
+        skip_reason="request.force_retrieval=true",
+    )
+    assert decision.decision == "CONTINUE"
+    assert decision.reason == "request.force_retrieval=true"
+
+
 def test_deixis_matches_regex():
     decision = run_l0_gate(
         "You mentioned the project yesterday — what's the status?",

@@ -148,6 +148,11 @@ def run_query(
                 threshold=ctx.cfg.gating.classification_threshold,
                 memory_hit_threshold=ctx.cfg.gating.memory_hit_threshold,
                 skip=ctx.cfg.retrieval.l0_skip or force_retrieval,
+                skip_reason=(
+                    "retrieval.l0_skip=true"
+                    if ctx.cfg.retrieval.l0_skip
+                    else "request.force_retrieval=true"
+                ),
                 classifier_mode=ctx.cfg.gating.classifier_mode,
                 classifier_available=(
                     ctx.l0_classifier_status.loaded

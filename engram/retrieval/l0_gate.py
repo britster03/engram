@@ -83,6 +83,7 @@ def run_l0_gate(
     threshold: float = 0.3,
     memory_hit_threshold: float = 0.75,
     skip: bool = False,
+    skip_reason: str = "retrieval.l0_skip=true",
     classifier_mode: str = "off",
     classifier_available: bool = True,
 ) -> GateDecision:
@@ -90,7 +91,7 @@ def run_l0_gate(
     if skip:
         return GateDecision(
             decision="CONTINUE",
-            reason="retrieval.l0_skip=true",
+            reason=skip_reason,
             classifier_mode=classifier_mode,
         )
 
