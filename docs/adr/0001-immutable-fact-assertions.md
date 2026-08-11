@@ -37,7 +37,9 @@ temporal metadata, subject URI, and optional object URI.
   persist `explicit_correction=true` from an explicit retraction/replacement in
   the source; otherwise same-subject/relation values coexist.
 - Runtime indexing and KG rebuild use the same FACT identity and reconstruct
-  the same provenance and history edges.
+  the same provenance and history edges. Every entity-valued FACT commits its
+  conflict decision and stable target assertion URI before applying the graph
+  mutation, so rebuild does not rerun a nondeterministic Core-model decision.
 
 ## Compatibility
 

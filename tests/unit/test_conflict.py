@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from engram.ingest.conflict import ConflictDecision, apply_decision, classify
+import pytest
+
+from engram.ingest.conflict import (
+    ConflictDecision,
+    apply_decision,
+    classify,
+    restore_decision,
+)
 from engram.models.core import CompletionResult, CoreModelProvider
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from tests.integration.providers import DeterministicEmbeddingService
@@ -186,6 +193,50 @@ def test_core_contradiction_requires_explicit_correction_evidence():
     assert correction.case == "CONTRADICTION"
     assert correction.existing_edge_id == "42"
     assert correction.existing_assertion_uri == "mem://user/facts/old/0_works-at_google.md"
+
+
+def test_restore_decision_resolves_runtime_edge_from_stable_assertion_uri() -> None:
+    target = "mem://user/facts/old/0_works-at_google.md"
+    neo = StaticNeo(
+        edges=[
+            {
+                "edge_id": "deployment-local-42",
+                "relation_label": "works_at",
+                "object_uri": "mem://user/entities/google/google.md",
+                "object_abstract": "Google",
+                "assertion_uri": target,
+            }
+        ]
+    )
+
+    decision = restore_decision(
+        neo4j=neo,  # type: ignore[arg-type]
+        subject_uri="mem://user/entities/alice/alice.md",
+        persisted={
+            "case": "CONTRADICTION",
+            "existing_assertion_uri": target,
+            "reason": "explicit correction",
+        },
+    )
+
+    assert decision == ConflictDecision(
+        "CONTRADICTION",
+        "deployment-local-42",
+        "explicit correction",
+        existing_assertion_uri=target,
+    )
+
+
+def test_restore_decision_fails_closed_when_contradiction_target_is_missing() -> None:
+    with pytest.raises(RuntimeError, match="contradiction target is unavailable"):
+        restore_decision(
+            neo4j=StaticNeo(edges=[]),  # type: ignore[arg-type]
+            subject_uri="mem://user/entities/alice/alice.md",
+            persisted={
+                "case": "CONTRADICTION",
+                "existing_assertion_uri": "mem://user/facts/missing.md",
+            },
+        )
 
 
 def test_apply_decision_for_duplicate_noop_and_contradiction_supersedes():

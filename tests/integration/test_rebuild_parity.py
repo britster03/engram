@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from engram.config import EngramConfig
+from engram.frontmatter import parse
 from engram.ingest.worker import IngestContext, process_event
 from engram.rebuild_kg import rebuild
 from engram.storage.filesystem import FilesystemStore
@@ -76,6 +79,43 @@ class AssertionProvider(DeterministicCoreProvider):
         return super().complete(**kwargs)
 
 
+class AmbiguousDuplicateProvider(AssertionProvider):
+    def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        from engram.models.core import CompletionResult
+
+        prompt = str(kwargs.get("system_prompt") or "")
+        if prompt.startswith("[DEDUP]"):
+            match = re.search(r"^- edge_id:\s*(\S+)", prompt, flags=re.MULTILINE)
+            assert match is not None
+            return CompletionResult(
+                output={
+                    "case": "DUPLICATE",
+                    "existing_edge_id": match.group(1),
+                    "reason": "semantic aliases describe the same role",
+                },
+                raw_text="{}",
+            )
+        return super().complete(**kwargs)
+
+
+class AmbiguousEmbeddingService:
+    """Place two object aliases in the Core-model disambiguation band."""
+
+    dim = 2
+
+    def embed(self, text: str) -> list[float]:
+        if text == "Meta career":
+            return [1.0, 0.0]
+        if text == "Meta work":
+            return [0.8, 0.6]
+        if text == "works_at":
+            return [1.0, 0.0]
+        return [0.0, 1.0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed(text) for text in texts]
+
+
 @pytest.fixture
 def cfg(tmp_path: Path) -> EngramConfig:
     return EngramConfig.model_validate(
@@ -100,10 +140,9 @@ def _ingest(
     tenant_id: str,
     index: int,
     core: DeterministicCoreProvider,
+    embed: Any | None = None,
 ) -> str:
-    set_current_tenant(
-        Tenant(tenant_id=tenant_id, display_name=tenant_id, quotas=TenantQuotas())
-    )
+    set_current_tenant(Tenant(tenant_id=tenant_id, display_name=tenant_id, quotas=TenantQuotas()))
     event_id, _ = sqlite.record_event(
         pair_id=pair_id_fn(f"session-{tenant_id}", index * 2, index * 2 + 1),
         session_id=f"session-{tenant_id}",
@@ -131,7 +170,7 @@ def _ingest(
         fs=fs,
         neo4j=graph,
         core=core,
-        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+        embed=embed or DeterministicEmbeddingService(),  # type: ignore[arg-type]
     )
     assert process_event(ctx, event_id) == "COMPLETE"
     return event_id
@@ -140,11 +179,7 @@ def _ingest(
 def _snapshot(graph: InMemoryKnowledgeGraph, tenant_id: str) -> str:
     nodes = dict(graph.iter_nodes(tenant_id=tenant_id))
     edges = sorted(
-        (
-            edge
-            for edge in graph.edges
-            if edge.get("tenant_id") == tenant_id
-        ),
+        (edge for edge in graph.edges if edge.get("tenant_id") == tenant_id),
         key=lambda edge: (
             str(edge.get("type")),
             str(edge.get("source")),
@@ -253,8 +288,7 @@ def test_rebuild_matches_duplicate_explicit_correction_and_history(
     supersedes = [
         edge
         for edge in graph.edges
-        if edge.get("tenant_id") == "history-tenant"
-        and edge.get("type") == "SUPERSEDES"
+        if edge.get("tenant_id") == "history-tenant" and edge.get("type") == "SUPERSEDES"
     ]
     assert len(supersedes) == 1
     assert all("/facts/" in edge["source"] and "/facts/" in edge["target"] for edge in supersedes)
@@ -268,9 +302,7 @@ def test_rebuild_matches_duplicate_explicit_correction_and_history(
     superseded_fact_uris = {edge["target"] for edge in supersedes}
     query_vector = DeterministicEmbeddingService().embed("User works at Meta.")
     active_hits = graph.vector_search(query_vector, k=100, tenant_id="history-tenant")
-    assert superseded_fact_uris.isdisjoint(
-        {str(hit["source_uri"]) for hit in active_hits}
-    )
+    assert superseded_fact_uris.isdisjoint({str(hit["source_uri"]) for hit in active_hits})
     entity_nodes = [
         node
         for _uri, node in graph.iter_nodes(tenant_id="history-tenant")
@@ -285,3 +317,44 @@ def test_rebuild_matches_duplicate_explicit_correction_and_history(
         embed=DeterministicEmbeddingService(),
     )
     assert _snapshot(graph, "history-tenant") == before
+
+
+def test_rebuild_replays_persisted_core_duplicate_decision(cfg: EngramConfig) -> None:
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    graph = InMemoryKnowledgeGraph()
+    embed = AmbiguousEmbeddingService()
+    for index, employer in enumerate(("Meta career", "Meta work")):
+        _ingest(
+            cfg=cfg,
+            sqlite=sqlite,
+            fs=fs,
+            graph=graph,
+            tenant_id="ambiguous-tenant",
+            index=index,
+            core=AmbiguousDuplicateProvider(employer),
+            embed=embed,
+        )
+
+    before = _snapshot(graph, "ambiguous-tenant")
+    duplicate_edges = [
+        edge
+        for edge in graph.edges
+        if edge.get("tenant_id") == "ambiguous-tenant" and edge.get("type") == "DUPLICATE_OF"
+    ]
+    assert len(duplicate_edges) == 1
+    conflict_cases = []
+    for path in (Path(cfg.filesystem.data_dir) / "ambiguous-tenant").rglob("*.md"):
+        memory = parse(path.read_text(encoding="utf-8"))
+        if memory.frontmatter.get("node_type") == "FACT":
+            conflict_cases.append(memory.frontmatter["conflict"]["case"])
+    assert sorted(conflict_cases) == ["CO_EXISTENCE", "DUPLICATE"]
+
+    rebuild(
+        cfg,
+        tenant_ids=["ambiguous-tenant"],
+        dry_run=False,
+        graph=graph,
+        embed=embed,
+    )
+    assert _snapshot(graph, "ambiguous-tenant") == before

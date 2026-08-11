@@ -38,8 +38,8 @@ MAX_CORE_CANDIDATES = 20
 
 @dataclass
 class ConflictDecision:
-    case: str                       # "DUPLICATE" | "CONTRADICTION" | "CO_EXISTENCE"
-    existing_edge_id: str | None
+    case: str  # "DUPLICATE" | "CONTRADICTION" | "CO_EXISTENCE"
+    existing_edge_id: Any | None
     reason: str
     existing_assertion_uri: str | None = None
 
@@ -130,7 +130,8 @@ def classify(
     # Ambiguous — ask the Core Model when available. Otherwise co-existence.
     if core is None:
         return ConflictDecision(
-            "CO_EXISTENCE", None,
+            "CO_EXISTENCE",
+            None,
             f"ambiguous cosine {best_score:.2f}; no core model available",
         )
     try:
@@ -163,9 +164,7 @@ def classify(
             user_prompt="Return the dedup JSON.",
         )
         if validated.case == "CO_EXISTENCE":
-            return ConflictDecision(
-                "CO_EXISTENCE", None, validated.reason or "core-model-dedup"
-            )
+            return ConflictDecision("CO_EXISTENCE", None, validated.reason or "core-model-dedup")
         selected = next(
             (
                 edge
@@ -189,14 +188,53 @@ def classify(
             selected.get("edge_id"),
             validated.reason or "core-model-dedup",
             existing_assertion_uri=(
-                str(selected["assertion_uri"])
-                if selected.get("assertion_uri")
-                else None
+                str(selected["assertion_uri"]) if selected.get("assertion_uri") else None
             ),
         )
     except Exception:
         log.warning("dedup core call failed; defaulting to CO_EXISTENCE", exc_info=True)
         return ConflictDecision("CO_EXISTENCE", None, "core-model-error")
+
+
+def restore_decision(
+    *,
+    neo4j: Neo4jStore,
+    subject_uri: str,
+    persisted: dict[str, Any],
+) -> ConflictDecision:
+    """Restore a committed conflict decision using stable assertion identity.
+
+    Neo4j relationship element IDs are deployment-local and cannot be saved in
+    the authoritative FACT file. For replay/rebuild we resolve the prior edge
+    from its stable ``assertion_uri``. A missing contradiction target is fatal:
+    silently treating it as coexistence would change history topology.
+    """
+    case = str(persisted.get("case") or "")
+    if case not in {"DUPLICATE", "CONTRADICTION", "CO_EXISTENCE"}:
+        raise RuntimeError(f"invalid persisted conflict case: {case!r}")
+    target = (
+        str(persisted["existing_assertion_uri"])
+        if persisted.get("existing_assertion_uri")
+        else None
+    )
+    edge_id: Any | None = None
+    if target:
+        for edge in _fetch_active_edges(neo4j, subject_uri):
+            if str(edge.get("assertion_uri") or "") == target:
+                value = edge.get("edge_id")
+                edge_id = value
+                break
+    if case == "CONTRADICTION" and (not target or edge_id is None):
+        raise RuntimeError(
+            "persisted contradiction target is unavailable: "
+            f"subject={subject_uri!r}, assertion={target!r}"
+        )
+    return ConflictDecision(
+        case=case,
+        existing_edge_id=edge_id,
+        reason=str(persisted.get("reason") or "persisted-conflict-decision"),
+        existing_assertion_uri=target,
+    )
 
 
 def apply_decision(

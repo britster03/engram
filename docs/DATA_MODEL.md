@@ -107,6 +107,12 @@ subject/object values and URIs, canonical relation, optional original relation,
 relations remain queryable but are explicitly reviewable; the controlled
 vocabulary is never enforced by silently dropping an assertion.
 
+For entity-valued assertions, the FACT also records the committed conflict
+classification (`CO_EXISTENCE`, `DUPLICATE`, or `CONTRADICTION`) and the stable
+URI of any prior assertion it targets. Runtime retries and KG rebuilds replay
+that decision; they never attempt to reproduce an earlier model decision from
+a deployment-local Neo4j relationship ID.
+
 ### Reserved metadata keys (§6.3)
 
 Validated before every KG index update (`engram.frontmatter.validate_metadata`).

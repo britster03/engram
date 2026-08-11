@@ -34,7 +34,12 @@ from engram import metrics as metrics_mod
 from engram import uri as uri_mod
 from engram.config import EngramConfig
 from engram.ingest.atomize import atomize_triplets
-from engram.ingest.conflict import apply_decision, classify
+from engram.ingest.conflict import (
+    ConflictDecision,
+    apply_decision,
+    classify,
+    restore_decision,
+)
 from engram.ingest.entity_linker import resolve as entity_resolve
 from engram.ingest.facts import fact_sentence, fact_uri
 from engram.models.core import CoreModelError, CoreModelProvider
@@ -911,15 +916,14 @@ def _index_neo4j(
         # but do not create a derived entity-to-entity traversal edge.
         if conf < 0.6 or o_uri is None:
             continue
-        decision = classify(
-            neo4j=ctx.neo4j,
-            embed=ctx.embed,
+        decision = _resolve_conflict_decision(
+            ctx=ctx,
+            assertion_uri=assertion_uri,
             subject_uri=s_uri,
             relation_label=str(rel),
             object_uri=o_uri,
             object_abstract=str(o_raw),
-            core=ctx.core,
-            incoming_confidence=conf,
+            confidence=conf,
             allow_contradiction=trip.get("explicit_correction") is True,
         )
         apply_decision(
@@ -949,6 +953,48 @@ def _index_neo4j(
                 "source_turn_ids": source["source_turn_ids"],
             },
         )
+
+
+def _resolve_conflict_decision(
+    *,
+    ctx: IngestContext,
+    assertion_uri: str,
+    subject_uri: str,
+    relation_label: str,
+    object_uri: str,
+    object_abstract: str,
+    confidence: float,
+    allow_contradiction: bool,
+) -> ConflictDecision:
+    """Load or commit the nondeterministic conflict decision for one FACT."""
+    memory = frontmatter.parse(ctx.fs.read(assertion_uri))
+    persisted = memory.frontmatter.get("conflict")
+    if isinstance(persisted, dict):
+        return restore_decision(
+            neo4j=ctx.neo4j,
+            subject_uri=subject_uri,
+            persisted=persisted,
+        )
+
+    decision = classify(
+        neo4j=ctx.neo4j,
+        embed=ctx.embed,
+        subject_uri=subject_uri,
+        relation_label=relation_label,
+        object_uri=object_uri,
+        object_abstract=object_abstract,
+        core=ctx.core,
+        incoming_confidence=confidence,
+        allow_contradiction=allow_contradiction,
+    )
+    memory.frontmatter["conflict"] = {
+        "case": decision.case,
+        "existing_assertion_uri": decision.existing_assertion_uri,
+        "reason": decision.reason,
+        "classifier_version": "conflict_v1",
+    }
+    ctx.fs.write_atomic(assertion_uri, memory.serialize())
+    return decision
 
 
 def _index_fact_node(

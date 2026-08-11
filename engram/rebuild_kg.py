@@ -10,7 +10,7 @@ from typing import Any
 from engram import frontmatter
 from engram import uri as uri_mod
 from engram.config import EngramConfig
-from engram.ingest.conflict import apply_decision, classify
+from engram.ingest.conflict import apply_decision, classify, restore_decision
 from engram.ingest.facts import fact_uri
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore, is_generated_memory_path
@@ -74,12 +74,14 @@ def rebuild(
 
     placeholders = ",".join("?" for _ in requested)
     event_count = int(
-        sqlite.get_conn().execute(
+        sqlite.get_conn()
+        .execute(
             "SELECT COUNT(*) AS c FROM events WHERE tenant_id IN ("
             + placeholders
             + ") AND status IN ('INDEXED', 'COMPLETE')",
             tuple(requested),
-        ).fetchone()["c"]
+        )
+        .fetchone()["c"]
     )
     stats: dict[str, Any] = {
         "dry_run": dry_run,
@@ -127,6 +129,12 @@ def rebuild(
                 (tenant_id, source_uri)
                 for tenant_id, _root, source_uri, memory in validated
                 if memory.frontmatter.get("node_type") == "FACT"
+            },
+            conflict_decisions={
+                (tenant_id, source_uri): dict(memory.frontmatter["conflict"])
+                for tenant_id, _root, source_uri, memory in validated
+                if memory.frontmatter.get("node_type") == "FACT"
+                and isinstance(memory.frontmatter.get("conflict"), dict)
             },
         )
     finally:
@@ -195,16 +203,21 @@ def _rebuild_assertions(
     sqlite: SqliteStore,
     tenant_ids: list[str],
     assertion_uris: set[tuple[str, str]],
+    conflict_decisions: dict[tuple[str, str], dict[str, Any]],
 ) -> int:
     placeholders = ",".join("?" for _ in tenant_ids)
-    rows = sqlite.get_conn().execute(
-        "SELECT e.event_id, e.tenant_id, e.created_at, e.payload, x.triplets "
-        "FROM events e JOIN extractions x ON x.event_id = e.event_id "
-        "WHERE e.tenant_id IN ("
-        + placeholders
-        + ") AND e.status IN ('INDEXED', 'COMPLETE') ORDER BY e.created_at, e.event_id",
-        tuple(tenant_ids),
-    ).fetchall()
+    rows = (
+        sqlite.get_conn()
+        .execute(
+            "SELECT e.event_id, e.tenant_id, e.created_at, e.payload, x.triplets "
+            "FROM events e JOIN extractions x ON x.event_id = e.event_id "
+            "WHERE e.tenant_id IN ("
+            + placeholders
+            + ") AND e.status IN ('INDEXED', 'COMPLETE') ORDER BY e.created_at, e.event_id",
+            tuple(tenant_ids),
+        )
+        .fetchall()
+    )
     written = 0
     previous_tenant = get_current_tenant()
     try:
@@ -219,11 +232,15 @@ def _rebuild_assertions(
                 payload = json.loads(row["payload"])
             except Exception:
                 continue
-            link_rows = sqlite.get_conn().execute(
-                "SELECT triplet_idx, subject_node_id, object_node_id FROM linked_entities "
-                "WHERE event_id = ? AND tenant_id = ?",
-                (event_id, tenant_id),
-            ).fetchall()
+            link_rows = (
+                sqlite.get_conn()
+                .execute(
+                    "SELECT triplet_idx, subject_node_id, object_node_id FROM linked_entities "
+                    "WHERE event_id = ? AND tenant_id = ?",
+                    (event_id, tenant_id),
+                )
+                .fetchall()
+            )
             links = {
                 int(link["triplet_idx"]): (link["subject_node_id"], link["object_node_id"])
                 for link in link_rows
@@ -244,17 +261,25 @@ def _rebuild_assertions(
                     if (tenant_id, candidate_assertion_uri) in assertion_uris
                     else None
                 )
-                decision = classify(
-                    neo4j=graph,
-                    embed=embed,
-                    subject_uri=str(subject_uri),
-                    relation_label=str(relation),
-                    object_uri=str(object_uri),
-                    object_abstract=str(trip.get("object") or ""),
-                    core=None,
-                    incoming_confidence=confidence,
-                    allow_contradiction=trip.get("explicit_correction") is True,
-                )
+                persisted = conflict_decisions.get((tenant_id, candidate_assertion_uri))
+                if persisted is not None:
+                    decision = restore_decision(
+                        neo4j=graph,
+                        subject_uri=str(subject_uri),
+                        persisted=persisted,
+                    )
+                else:
+                    decision = classify(
+                        neo4j=graph,
+                        embed=embed,
+                        subject_uri=str(subject_uri),
+                        relation_label=str(relation),
+                        object_uri=str(object_uri),
+                        object_abstract=str(trip.get("object") or ""),
+                        core=None,
+                        incoming_confidence=confidence,
+                        allow_contradiction=trip.get("explicit_correction") is True,
+                    )
                 apply_decision(
                     neo4j=graph,
                     decision=decision,
@@ -266,11 +291,7 @@ def _rebuild_assertions(
                         "created_at": str(row["created_at"]),
                         "ingest_event_id": event_id,
                         "source_turn_ids": source_turn_ids,
-                        **(
-                            {"assertion_uri": assertion_uri}
-                            if assertion_uri is not None
-                            else {}
-                        ),
+                        **({"assertion_uri": assertion_uri} if assertion_uri is not None else {}),
                     },
                     incoming_assertion_uri=assertion_uri,
                 )
