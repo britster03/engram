@@ -210,6 +210,13 @@ def test_full_flow_ingest_then_query(cfg: EngramConfig):
     entity_count = sum(1 for n in neo.nodes.values() if n.get("node_type") == "ENTITY")
     assert episode_count == 3
     assert entity_count >= 3
+    works_at_fact = next(
+        node
+        for node in neo.nodes.values()
+        if node.get("node_type") == "FACT" and node.get("fact_relation") == "works_at"
+    )
+    assert works_at_fact["fact_relation_normalized"] is True
+    assert works_at_fact["fact_relation_review_required"] is False
 
     # Query it — the stub frontier echoes retrieved sentences; we just check the pipeline runs.
     result = run_query(

@@ -4,7 +4,7 @@
 # labels that fail to match above 0.85 are preserved verbatim and flagged
 # for manual review via /api/v1/consolidation/status.
 
-version: 2
+version: 3
 relations:
   # Employment / organisational
   - works_at
@@ -34,6 +34,7 @@ relations:
   - friend_of
 
   # Project / work artifacts
+  - works_on
   - contributes_to
   - owns
   - maintains
@@ -87,6 +88,9 @@ aliases:
   childOf: child_of
   siblingOf: sibling_of
   friendOf: friend_of
+  worksOn: works_on
+  working_on: works_on
+  "working on": works_on
   contributesTo: contributes_to
   dependsOn: depends_on
   startedOn: started_on

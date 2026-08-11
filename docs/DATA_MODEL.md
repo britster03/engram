@@ -38,7 +38,7 @@ decide where to descend without reading file contents:
 |---|---|
 | ENTITY | `{entity_slug}_{summary_slug}.md` |
 | EVENT / EPISODE | `{YYYY-MM-DD}_{summary_slug}.md` |
-| FACT | `{fact_slug}.md` (parent directory carries the context) |
+| FACT | `facts/{event_id}/{triplet_index}-{stable_digest}.md` |
 | DOCUMENT | `{resource_slug}_{summary_slug}.md` |
 
 `engram.uri.semantic_filename()` generates these deterministically.
@@ -91,6 +91,12 @@ Full resolved text follows as normal Markdown.
 
 The first body line is the **L0 abstract** — it's what gets embedded for the
 vector index and what the Frontier LLM sees at L1.
+
+Every extracted assertion is an immutable FACT. Its typed `fact` payload stores
+subject/object values and URIs, canonical relation, optional original relation,
+`relation_normalized`, `relation_review_required`, and object kind. Unknown
+relations remain queryable but are explicitly reviewable; the controlled
+vocabulary is never enforced by silently dropping an assertion.
 
 ### Reserved metadata keys (§6.3)
 
@@ -202,7 +208,7 @@ gating, extraction, entity linking, or filesystem writes.
 
 ### `ingest_artifacts` — artifact-level filesystem/KG readiness
 
-Every episode, entity, and low-confidence FACT required by an event records
+Every episode, entity, and FACT required by an event records
 its type, URI, stable frontmatter ID, content hash, source session/turn IDs,
 confidence, extractor version, filesystem state, KG state, attempts, and
 error. `/api/v1/events/status` derives `memory_ready` from all required

@@ -1,32 +1,14 @@
-"""Thin Engram API client for the benchmark harness.
+"""Thin, fail-closed Engram API client for the benchmark harness.
 
-Wraps the four things the harness needs from a running Engram instance and,
-critically, solves the two correctness issues that would otherwise make the
-baseline lie:
+Every conversation gets an isolated tenant. Fresh ingestion retains every
+submitted event ID and waits on tenant-scoped artifact readiness for those exact
+IDs. Corpus reuse enumerates the tenant's source events, verifies the expected
+count, then applies the same exact readiness check. Consolidation is observed
+separately because overview readiness is not the same contract as memory
+readiness.
 
-* Issue C (cross-conversation contamination) -> `create_tenant()` gives each
-  conversation its own isolated memory space. Engram's multi-tenancy does the
-  actual isolation; we just create one tenant per conversation and send that
-  conversation's traffic under its key.
-
-* Issue A (async ingest race) -> `wait_for_drain()`. Engram's /ingest returns
-  202 immediately and builds the memory in a background worker. Querying before
-  that finishes scores ~0% and looks like a retrieval failure when it is really
-  a timing bug. We block until the background work is done.
-
-Drain detection uses ONLY the public consolidation-status endpoint
-(GET /api/v1/consolidation/status), per the chosen approach. That endpoint
-reports the consolidation queue, which fills at the LAST step of ingest, so a
-naive "queue == 0" check suffers a "premature zero": right after POSTing, the
-worker has not started, the queue is still empty, and we would wrongly conclude
-we are done. `wait_for_drain()` guards against this with a rise-then-settle
-wait (see its docstring).
-
-Residual limitation of the consolidation-only signal: if some ingest events
-never enqueue a consolidation task (e.g. a gated-skip or a failure), they leave
-no trace in this queue. The rise-then-settle wait plus a minimum floor covers
-the common case; if a full baseline ever looks suspiciously low, tighten this
-by also checking the event ledger's RECEIVED/PROCESSING counts.
+``wait_for_drain`` remains only for compatibility with older diagnostics. The
+LoCoMo runner does not use its queue-level rise/settle heuristic.
 """
 
 from __future__ import annotations
@@ -52,7 +34,7 @@ class IngestFailedError(RuntimeError):
 
 @dataclass
 class DrainConfig:
-    """Tunables for the rise-then-settle drain wait."""
+    """Deadlines for exact readiness and the legacy queue-settle helper."""
 
     max_wait_s: float = 600.0      # hard ceiling for one conversation's ingest
     poll_interval_s: float = 2.0   # how often to poll the status endpoint

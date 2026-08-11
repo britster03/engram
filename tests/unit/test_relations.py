@@ -23,3 +23,12 @@ def test_employment_paraphrases_share_one_canonical_relation() -> None:
 def test_past_employment_remains_distinct() -> None:
     vocab = RelationVocabulary()
     assert vocab.canonicalise("worked_at", UnexpectedEmbedder()) == "worked_at"
+
+
+def test_prompt_working_on_relation_has_a_deterministic_canonical_label() -> None:
+    vocab = RelationVocabulary()
+    embed = UnexpectedEmbedder()
+
+    assert vocab.canonicalise("works_on", embed) == "works_on"
+    assert vocab.canonicalise("working_on", embed) == "works_on"
+    assert vocab.canonicalise("working on", embed) == "works_on"

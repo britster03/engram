@@ -966,6 +966,11 @@ def _write_fact_file(
         "fact": {
             "subject": subject,
             "relation": rel,
+            "relation_original": triplet.get("relation_original"),
+            "relation_normalized": bool(triplet.get("relation_normalized")),
+            "relation_review_required": bool(
+                triplet.get("relation_review_required")
+            ),
             "object": obj,
             "object_kind": str(triplet.get("object_kind") or "ENTITY"),
             "subject_uri": subject_uri,
