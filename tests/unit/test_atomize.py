@@ -402,6 +402,57 @@ def test_prepare_extraction_sanitizes_caption_only_ownership_abstract() -> None:
     )
 
 
+def test_prepare_extraction_sanitizes_varied_caption_ownership_without_triplet() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Caroline shared a photo of herself holding a necklace.",
+            "l0_abstract": "Caroline owns a necklace featuring a cross and a heart.",
+            "triplets": [],
+        },
+        {
+            "turn_pair": {
+                "user": {
+                    "content": "Take a look at this.",
+                    "speaker": "Caroline",
+                    "image_caption": "a person holding a necklace with a cross and a heart",
+                },
+                "assistant": {
+                    "content": "Love the necklace. Does it mean anything?",
+                    "speaker": "Melanie",
+                },
+            }
+        },
+    )
+
+    assert prepared["triplets"] == []
+    assert prepared["l0_abstract"] == (
+        "Caroline shared an image depicting a person holding a necklace with a cross and a heart."
+    )
+
+
+def test_prepare_extraction_keeps_explicit_spoken_ownership_of_captioned_item() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Caroline owns a necklace with a heart.",
+            "l0_abstract": "Caroline owns a necklace with a heart.",
+            "triplets": [],
+        },
+        {
+            "turn_pair": {
+                "user": {
+                    "content": "I own this necklace and wear it daily.",
+                    "speaker": "Caroline",
+                    "image_caption": "a necklace with a heart",
+                }
+            }
+        },
+    )
+
+    assert prepared["l0_abstract"] == "Caroline owns a necklace with a heart."
+
+
 def test_prepare_extraction_drops_future_identity_but_keeps_adoption_intent() -> None:
     prepared = _prepare_extraction(  # type: ignore[arg-type]
         SimpleNamespace(embed=_Embed()),

@@ -48,6 +48,18 @@ _ABSTRACT_OWNERSHIP_OBJECT = re.compile(
     r"(?:a\s+|an\s+|the\s+)?(?P<object>[^.!?]{3,200})",
     re.IGNORECASE,
 )
+_DIRECT_OWNERSHIP_ASSERTION = re.compile(
+    r"\b(?:i|we|he|she|they)\s+"
+    r"(?:drive|drives|drove|have|has|had|maintain|maintains|own|owns|owned|possess|possesses)\b|"
+    r"\b(?:i|we)(?:'|\u2019)?ve\s+got\b|\bbelongs?\s+to\b",
+    re.IGNORECASE,
+)
+_NAMED_OWNERSHIP_ASSERTION = re.compile(
+    r"\b[a-z][\w'-]*\s+"
+    r"(?:drives?|drove|has|had|maintains?|owns?|owned|possesses?)\b",
+    re.IGNORECASE,
+)
+_FIRST_PERSON_POSSESSION = re.compile(r"\b(?:my|our)\b", re.IGNORECASE)
 _FUTURE_STATE_RELATIONS = {
     "drives",
     "has",
@@ -134,6 +146,47 @@ def _caption_only_ownership_abstract(abstract: str, spoken: str, captions: str) 
         return False
     obj = " ".join(match.group("object").casefold().split()).strip(" ,;:")
     return bool(obj and obj in captions and obj not in spoken)
+
+
+def _has_direct_ownership_assertion(text: str, speakers: set[str]) -> bool:
+    if _DIRECT_OWNERSHIP_ASSERTION.search(text) or _NAMED_OWNERSHIP_ASSERTION.search(text):
+        return True
+    normalized = " ".join(text.casefold().split())
+    return any(
+        re.search(
+            rf"\b{re.escape(speaker)}\s+"
+            r"(?:drives?|drove|has|had|maintains?|owns?|owned|possesses?)\b",
+            normalized,
+        )
+        for speaker in speakers
+        if speaker
+    )
+
+
+def _meaningful_caption_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in _CAPTION_TOKEN.findall(text.casefold())
+        if len(token) >= 4 and token not in _CAPTION_TOKEN_STOP
+    }
+
+
+def _caption_only_ownership_text(
+    text: str, spoken: str, captions: str, speakers: set[str]
+) -> bool:
+    if not _has_direct_ownership_assertion(text, speakers):
+        return False
+    caption_tokens = _meaningful_caption_tokens(captions)
+    if not caption_tokens.intersection(_CAPTION_TOKEN.findall(text.casefold())):
+        return False
+    for sentence in re.split(r"(?<=[.!?])\s+", spoken):
+        if not caption_tokens.intersection(_CAPTION_TOKEN.findall(sentence.casefold())):
+            continue
+        if _has_direct_ownership_assertion(sentence, speakers) or _FIRST_PERSON_POSSESSION.search(
+            sentence
+        ):
+            return False
+    return True
 
 
 def _caption_only_creation(
@@ -406,10 +459,15 @@ def audit(
                     fail("caption_preservation", {"uri": uri, "role": role})
             spoken, captions, speakers = _source_text(payload)
             abstract = memory.body.splitlines()[0] if memory.body else ""
-            if _caption_only_ownership_abstract(abstract, spoken, captions):
+            if _caption_only_ownership_abstract(
+                abstract, spoken, captions
+            ) or _caption_only_ownership_text(abstract, spoken, captions, speakers):
                 fail("caption_only_ownership_abstract", uri)
             derivative = memory.body.split("## Source turns", 1)[0]
             for sentence in re.split(r"(?<=[.!?])\s+", derivative):
+                if _caption_only_ownership_text(sentence, spoken, captions, speakers):
+                    fail("caption_only_ownership_derivative", uri)
+                    break
                 if _caption_only_creation_text(sentence, spoken, captions, speakers):
                     fail("caption_only_creation_derivative", uri)
                     break
@@ -445,7 +503,9 @@ def audit(
         relation = str(fact.get("relation") or "")
         subject = " ".join(str(fact.get("subject") or "").casefold().split())
         obj = " ".join(str(fact.get("object") or "").casefold().split())
-        if relation in _OWNERSHIP and obj and obj in captions and obj not in spoken:
+        if relation in _OWNERSHIP and _caption_only_ownership_text(
+            f"{subject} {relation} {obj}", spoken, captions, speakers
+        ):
             fail("caption_only_ownership", uri)
         if relation in _LOCATION_RELATIONS and obj in _LOCATION_PLACEHOLDERS:
             fail("placeholder_location_fact", uri)

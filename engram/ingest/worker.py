@@ -129,6 +129,18 @@ _ABSTRACT_OWNERSHIP_CUE = re.compile(
     r"\b(?:drives|has|maintains|owns|possesses)\b",
     re.IGNORECASE,
 )
+_DIRECT_OWNERSHIP_ASSERTION = re.compile(
+    r"\b(?:i|we|he|she|they)\s+"
+    r"(?:drive|drives|drove|have|has|had|maintain|maintains|own|owns|owned|possess|possesses)\b|"
+    r"\b(?:i|we)(?:'|\u2019)?ve\s+got\b|\bbelongs?\s+to\b",
+    re.IGNORECASE,
+)
+_NAMED_OWNERSHIP_ASSERTION = re.compile(
+    r"\b[a-z][\w'-]*\s+"
+    r"(?:drives?|drove|has|had|maintains?|owns?|owned|possesses?)\b",
+    re.IGNORECASE,
+)
+_FIRST_PERSON_POSSESSION = re.compile(r"\b(?:my|our)\b", re.IGNORECASE)
 _FUTURE_STATE_RELATIONS = frozenset(
     {
         "drives",
@@ -536,11 +548,9 @@ def _evidence_safe_abstract(
     """
     abstract = str(extraction.get("l0_abstract") or "").strip()[:500]
     caption_claims = rejected_caption_ownership + rejected_caption_creation
-    unsafe_ownership = bool(
-        rejected_caption_ownership and _ABSTRACT_OWNERSHIP_CUE.search(abstract)
-    )
+    unsafe_ownership = _caption_only_ownership_text(abstract, payload)
     unsafe_creation = _caption_only_creation_text(abstract, payload)
-    if not unsafe_creation and (not caption_claims or not unsafe_ownership):
+    if not unsafe_creation and not unsafe_ownership:
         return abstract
     abstract_norm = " ".join(abstract.casefold().split())
     rejected_objects = {
@@ -548,10 +558,15 @@ def _evidence_safe_abstract(
         for trip in caption_claims
     }
     rejected_objects.discard("")
-    if unsafe_creation and not rejected_objects:
+    if (unsafe_creation or unsafe_ownership) and not rejected_objects:
         return _literal_caption_description(payload, set())
-    if not unsafe_creation and not any(obj in abstract_norm for obj in rejected_objects):
+    if not (unsafe_creation or unsafe_ownership) and not any(
+        obj in abstract_norm for obj in rejected_objects
+    ):
         return abstract
+
+    if unsafe_creation or unsafe_ownership:
+        return _literal_caption_description(payload, set())
 
     for _role, turn in _source_turn_records(payload):
         content = str(turn.get("content") or "")
@@ -589,7 +604,9 @@ def _evidence_safe_resolved_text(
         return resolved
     kept: list[str] = []
     for sentence in re.split(r"(?<=[.!?])\s+", resolved):
-        if _caption_only_creation_text(sentence, payload):
+        if _caption_only_creation_text(sentence, payload) or _caption_only_ownership_text(
+            sentence, payload
+        ):
             continue
         kept.append(sentence)
     sanitized = " ".join(kept).strip()
@@ -665,6 +682,60 @@ def _has_direct_creation_assertion(text: str, speakers: set[str]) -> bool:
     )
 
 
+def _has_direct_ownership_assertion(text: str, speakers: set[str]) -> bool:
+    if _DIRECT_OWNERSHIP_ASSERTION.search(text) or _NAMED_OWNERSHIP_ASSERTION.search(text):
+        return True
+    normalized = " ".join(text.casefold().split())
+    return any(
+        re.search(
+            rf"\b{re.escape(speaker)}\s+"
+            r"(?:drives?|drove|has|had|maintains?|owns?|owned|possesses?)\b",
+            normalized,
+        )
+        for speaker in speakers
+        if speaker
+    )
+
+
+def _meaningful_caption_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in _CAPTION_TOKEN.findall(text.casefold())
+        if len(token) >= 4 and token not in _CAPTION_TOKEN_STOP
+    }
+
+
+def _caption_only_ownership_text(text: str, payload: dict[str, Any]) -> bool:
+    """Detect derivative ownership grounded only in visual-caption tokens."""
+    speakers = {
+        " ".join(str(turn.get("speaker") or "").casefold().split())
+        for _role, turn in _source_turn_records(payload)
+        if turn.get("speaker")
+    }
+    if not _has_direct_ownership_assertion(text, speakers):
+        return False
+    spoken_parts: list[str] = []
+    caption_parts: list[str] = []
+    for _role, turn in _source_turn_records(payload):
+        content = str(turn.get("content") or "")
+        caption_parts.extend(_INLINE_IMAGE_CAPTION.findall(content))
+        spoken_parts.append(_INLINE_IMAGE_CAPTION.sub("", content))
+        if turn.get("image_caption"):
+            caption_parts.append(str(turn["image_caption"]))
+    caption_tokens = _meaningful_caption_tokens(" ".join(caption_parts))
+    if not caption_tokens.intersection(_CAPTION_TOKEN.findall(text.casefold())):
+        return False
+    for sentence in re.split(r"(?<=[.!?])\s+", " ".join(spoken_parts)):
+        sentence_tokens = set(_CAPTION_TOKEN.findall(sentence.casefold()))
+        if not caption_tokens.intersection(sentence_tokens):
+            continue
+        if _has_direct_ownership_assertion(sentence, speakers) or _FIRST_PERSON_POSSESSION.search(
+            sentence
+        ):
+            return False
+    return True
+
+
 def _future_state_fact(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:
     """Reject a planned or conditional identity/state as a current assertion."""
     relation = "_".join(str(triplet.get("relation") or "").casefold().split())
@@ -690,24 +761,12 @@ def _caption_only_ownership(triplet: dict[str, Any], payload: dict[str, Any]) ->
     retrieval; only the unsupported derived ownership assertion is removed.
     """
     relation = str(triplet.get("relation") or "").casefold().strip()
-    obj = " ".join(str(triplet.get("object") or "").casefold().split())
-    if relation not in _OWNERSHIP_RELATIONS or not obj:
+    if relation not in _OWNERSHIP_RELATIONS:
         return False
-
-    pair = payload.get("turn_pair") or payload.get("turn_group") or payload
-    if not isinstance(pair, dict):
-        return False
-    spoken: list[str] = []
-    captions: list[str] = []
-    for _role, turn in _source_turn_records(payload):
-        content = str(turn.get("content") or "")
-        captions.extend(_INLINE_IMAGE_CAPTION.findall(content))
-        spoken.append(_INLINE_IMAGE_CAPTION.sub("", content))
-        if turn.get("image_caption"):
-            captions.append(str(turn["image_caption"]))
-    spoken_text = " ".join(" ".join(spoken).casefold().split())
-    caption_text = " ".join(" ".join(captions).casefold().split())
-    return obj in caption_text and obj not in spoken_text
+    claim = " ".join(
+        str(triplet.get(key) or "") for key in ("subject", "relation", "object")
+    )
+    return _caption_only_ownership_text(claim, payload)
 
 
 def _caption_claim_artifact(triplet: dict[str, Any], payload: dict[str, Any]) -> str:
