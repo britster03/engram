@@ -7,8 +7,12 @@ requeues every stuck state described in §5.5's recovery table.
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
+import pickle
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,14 +28,60 @@ from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
 
 
 class CountingCoreProvider(DeterministicCoreProvider):
-    def __init__(self) -> None:
+    def __init__(self, call_log_path: Path | None = None) -> None:
         self.calls: Counter[str] = Counter()
+        self.call_log_path = call_log_path
 
     def complete(self, **kwargs):  # type: ignore[no-untyped-def,override]
         prompt = str(kwargs.get("system_prompt") or "")
         tag = prompt.split("]", 1)[0].lstrip("[") if prompt.startswith("[") else ""
         self.calls[tag] += 1
+        if self.call_log_path is not None:
+            with self.call_log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"{tag}\n")
+                log_file.flush()
+                os.fsync(log_file.fileno())
         return super().complete(**kwargs)
+
+
+def _kill_process_after_stage(
+    config: dict[str, Any],
+    event_id: str,
+    crash_stage: str,
+    graph_state_path: str,
+    call_log_path: str,
+) -> None:
+    """Run a real ingest process and terminate it immediately after a durable stage."""
+    cfg = EngramConfig.model_validate(config)
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    neo = InMemoryKnowledgeGraph()
+    ingest = IngestContext(
+        cfg=cfg,
+        sqlite=sqlite,
+        fs=fs,
+        neo4j=neo,  # type: ignore[arg-type]
+        core=CountingCoreProvider(Path(call_log_path)),  # type: ignore[arg-type]
+        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+    )
+
+    def terminate(stage: str) -> None:
+        if stage != crash_stage:
+            return
+        with open(graph_state_path, "wb") as graph_file:
+            pickle.dump((neo._nodes, neo._edges), graph_file)
+            graph_file.flush()
+            os.fsync(graph_file.fileno())
+        os._exit(86)
+
+    ingest.stage_hook = terminate
+    process_event(ingest, event_id)
+
+
+def _read_call_log(path: Path) -> Counter[str]:
+    if not path.exists():
+        return Counter()
+    return Counter(path.read_text(encoding="utf-8").splitlines())
 
 
 @pytest.fixture
@@ -165,6 +215,111 @@ def test_crash_after_every_committed_stage_resumes_without_model_replay(
     assert graph_snapshot == json.dumps(
         {"nodes": neo.nodes, "edges": neo.edges}, sort_keys=True, separators=(",", ":")
     )
+
+
+@pytest.mark.parametrize(
+    "crash_stage",
+    [
+        "GATED",
+        "EXTRACTED",
+        "LINKED",
+        "FILESYSTEM_COMMITTED",
+        "KG_COMMITTED",
+        "CONSOLIDATION_COMMITTED",
+        "COMPLETE",
+    ],
+)
+def test_abrupt_process_exit_after_every_stage_replays_exactly_once(
+    cfg: EngramConfig,
+    tmp_path: Path,
+    crash_stage: str,
+) -> None:
+    """A SIGKILL-shaped exit preserves committed work across a new interpreter."""
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    eid = _enqueue_event(
+        sqlite,
+        f"process-kill-{crash_stage}",
+        "I moved to Berlin.",
+        "That is a significant move.",
+        0,
+    )
+    assert [row["event_id"] for row in sqlite.claim_pending_events(limit=1)] == [eid]
+    graph_state_path = tmp_path / f"{crash_stage}-graph.pickle"
+    call_log_path = tmp_path / f"{crash_stage}-calls.log"
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_kill_process_after_stage,
+        args=(
+            cfg.model_dump(mode="json"),
+            eid,
+            crash_stage,
+            str(graph_state_path),
+            str(call_log_path),
+        ),
+    )
+    process.start()
+    process.join(timeout=15.0)
+    assert process.exitcode == 86
+    assert graph_state_path.exists()
+
+    with graph_state_path.open("rb") as graph_file:
+        nodes, edges = pickle.load(graph_file)
+    neo = InMemoryKnowledgeGraph()
+    neo._nodes = nodes
+    neo._edges = edges
+    before_replay = _read_call_log(call_log_path)
+
+    event = sqlite.get_event(eid)
+    assert event is not None
+    if crash_stage != "COMPLETE":
+        with sqlite.transaction() as conn:
+            conn.execute(
+                "UPDATE events SET processed_at = datetime('now', '-10 minutes') "
+                "WHERE event_id = ?",
+                (eid,),
+            )
+        counts = run_once(ReconciliationContext(cfg=cfg, sqlite=sqlite))
+        assert sum(counts.values()) == 1
+        assert [row["event_id"] for row in sqlite.claim_pending_events(limit=1)] == [eid]
+
+    resumed = IngestContext(
+        cfg=cfg,
+        sqlite=sqlite,
+        fs=FilesystemStore(cfg.filesystem.data_dir),
+        neo4j=neo,  # type: ignore[arg-type]
+        core=CountingCoreProvider(call_log_path),  # type: ignore[arg-type]
+        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+    )
+    assert process_event(resumed, eid) == "COMPLETE"
+    after_replay = _read_call_log(call_log_path)
+    assert after_replay["GATE"] == before_replay["GATE"]
+    if crash_stage != "GATED":
+        assert after_replay["EXTRACT"] == before_replay["EXTRACT"]
+    if crash_stage in {
+        "LINKED",
+        "FILESYSTEM_COMMITTED",
+        "KG_COMMITTED",
+        "CONSOLIDATION_COMMITTED",
+        "COMPLETE",
+    }:
+        assert after_replay["LINK"] == before_replay["LINK"]
+
+    artifacts = sqlite.list_ingest_artifacts(eid, tenant_id="_default")
+    assert artifacts
+    assert all(row["filesystem_state"] == "COMMITTED" for row in artifacts)
+    assert all(row["kg_state"] == "COMMITTED" for row in artifacts)
+    file_snapshot = {
+        str(path.relative_to(Path(cfg.filesystem.data_dir))): path.read_bytes()
+        for path in Path(cfg.filesystem.data_dir).rglob("*.md")
+    }
+    graph_snapshot = pickle.dumps((neo._nodes, neo._edges))
+    assert process_event(resumed, eid) == "COMPLETE"
+    assert _read_call_log(call_log_path) == after_replay
+    assert file_snapshot == {
+        str(path.relative_to(Path(cfg.filesystem.data_dir))): path.read_bytes()
+        for path in Path(cfg.filesystem.data_dir).rglob("*.md")
+    }
+    assert pickle.dumps((neo._nodes, neo._edges)) == graph_snapshot
 
 
 def test_reconciliation_leaves_old_received_backlog_claimable(cfg: EngramConfig):
