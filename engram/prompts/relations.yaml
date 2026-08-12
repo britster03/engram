@@ -4,7 +4,7 @@
 # labels that fail to match above 0.85 are preserved verbatim and flagged
 # for manual review via /api/v1/consolidation/status.
 
-version: 6
+version: 7
 relations:
   # Employment / organisational
   - works_at
@@ -51,6 +51,7 @@ relations:
   - mentions
   - contains
   - created_by
+  - created_on
   - gifted_by
   - helps_with
   - undergoing
@@ -113,6 +114,8 @@ aliases:
   contributesTo: contributes_to
   dependsOn: depends_on
   startedOn: started_on
+  createdOn: created_on
+  "created on": created_on
   endedOn: ended_on
   scheduledFor: scheduled_for
   happenedAt: happened_at

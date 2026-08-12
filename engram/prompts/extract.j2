@@ -37,7 +37,7 @@ Produce three outputs:
    resides_in, visited, born_in, moved_from, moved_to, related_to, married_to,
    parent_of, child_of, sibling_of, friend_of, works_on, contributes_to, owns,
    maintains, uses, built_with, depends_on, references, mentions, contains,
-   created_by, gifted_by, symbolizes, received_on, reminds_of, started_on,
+   created_by, created_on, gifted_by, symbolizes, received_on, reminds_of, started_on,
    ended_on, scheduled_for,
    happened_at, achieved, took_place_in, participated_in, attended, prefers,
    likes, dislikes, avoids, interested_in, motivated_by, makes_feel, helps_with,
@@ -91,6 +91,13 @@ Produce three outputs:
    grandma and stands for love, faith and strength" yields
    `(necklace, gifted_by, grandma)` plus three `symbolizes` facts; it does not
    yield `created_by`.
+
+   Keep plans and conditional identities distinct from current state. "It'll
+   be tough as a single parent" does not establish `(speaker, is_a,
+   single parent)` yet. Retain that intent in `resolved_text` and use a precise
+   plan/preference relation only when the source supports one. Use `created_on`
+   for the creation date of an artifact; `started_on` is for an activity,
+   project, or process.
 
    Set `explicit_correction` to true only when the current source explicitly
    retracts, corrects, or replaces an earlier value for the same subject and

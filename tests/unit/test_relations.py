@@ -42,6 +42,7 @@ def test_benchmark_relations_are_controlled_without_embedding_guesswork() -> Non
         "attended",
         "contains",
         "created_by",
+        "created_on",
         "gifted_by",
         "from_country",
         "helps_with",

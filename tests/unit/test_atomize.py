@@ -285,3 +285,154 @@ def test_prepare_extraction_drops_placeholder_location_but_keeps_duration() -> N
     assert [(row["relation"], row["object"]) for row in prepared["triplets"]] == [
         ("knows_for", "4 years")
     ]
+
+
+def test_prepare_extraction_sanitizes_caption_only_ownership_abstract() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Caroline shared a photo of a necklace.",
+            "l0_abstract": "Caroline owns a necklace with a cross and a heart.",
+            "triplets": [
+                {
+                    "subject": "Caroline",
+                    "relation": "owns",
+                    "object": "necklace with a cross and a heart",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.9,
+                }
+            ],
+        },
+        {
+            "turn_pair": {
+                "user": {
+                    "content": "Take a look at this.",
+                    "speaker": "Caroline",
+                    "image_caption": "a photo of a necklace with a cross and a heart",
+                },
+                "assistant": {"content": "Does it have a special meaning?"},
+            }
+        },
+    )
+
+    assert prepared["triplets"] == []
+    assert prepared["l0_abstract"] == (
+        "Caroline shared an image depicting a photo of a necklace with a cross and a heart."
+    )
+
+
+def test_prepare_extraction_drops_future_identity_but_keeps_adoption_intent() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Caroline wants to adopt and expects single parenthood to be hard.",
+            "l0_abstract": "Caroline is interested in adoption.",
+            "triplets": [
+                {
+                    "subject": "Caroline",
+                    "relation": "is_a",
+                    "object": "single parent",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.95,
+                },
+                {
+                    "subject": "Caroline",
+                    "relation": "interested_in",
+                    "object": "adoption",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.9,
+                },
+            ],
+        },
+        {
+            "turn_pair": {
+                "assistant": {
+                    "content": "It'll be tough as a single parent, but I'm up for it!",
+                    "speaker": "Caroline",
+                }
+            }
+        },
+    )
+
+    assert [(row["relation"], row["object"]) for row in prepared["triplets"]] == [
+        ("interested_in", "adoption")
+    ]
+
+
+def test_prepare_extraction_repairs_artifact_creation_date_relation() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Melanie painted a lake painting in 2022.",
+            "l0_abstract": "Melanie painted a lake painting in 2022.",
+            "triplets": [
+                {
+                    "subject": "lake painting",
+                    "relation": "created_by",
+                    "object": "Melanie",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.95,
+                },
+                {
+                    "subject": "lake painting",
+                    "relation": "started_on",
+                    "object": "2022",
+                    "object_kind": "LITERAL",
+                    "confidence": 0.9,
+                },
+            ],
+        },
+        {
+            "turn_pair": {
+                "assistant": {
+                    "content": "I painted that lake painting in 2022.",
+                    "speaker": "Melanie",
+                }
+            }
+        },
+    )
+
+    assert [row["relation"] for row in prepared["triplets"]] == [
+        "created_by",
+        "created_on",
+    ]
+    assert prepared["triplets"][1]["relation_original"] == "started_on"
+
+
+def test_prepare_extraction_preserves_project_start_date() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "Alice created Project Atlas, which started in 2022.",
+            "l0_abstract": "Project Atlas started in 2022.",
+            "triplets": [
+                {
+                    "subject": "Project Atlas",
+                    "relation": "created_by",
+                    "object": "Alice",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.95,
+                },
+                {
+                    "subject": "Project Atlas",
+                    "relation": "started_on",
+                    "object": "2022",
+                    "object_kind": "LITERAL",
+                    "confidence": 0.9,
+                },
+            ],
+        },
+        {
+            "turn_pair": {
+                "assistant": {
+                    "content": "Alice created Project Atlas, which started in 2022.",
+                    "speaker": "Alice",
+                }
+            }
+        },
+    )
+
+    assert [row["relation"] for row in prepared["triplets"]] == [
+        "created_by",
+        "started_on",
+    ]

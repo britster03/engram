@@ -93,6 +93,38 @@ _GIFT_CUE = re.compile(
     r"\b(?:gave|gift|gifted|given|present|received)\b",
     re.IGNORECASE,
 )
+_ABSTRACT_OWNERSHIP_CUE = re.compile(
+    r"\b(?:drives|has|maintains|owns|possesses)\b",
+    re.IGNORECASE,
+)
+_FUTURE_STATE_RELATIONS = frozenset(
+    {
+        "drives",
+        "has",
+        "is_a",
+        "lives_in",
+        "married_to",
+        "owns",
+        "parent_of",
+        "resides_in",
+        "works_at",
+    }
+)
+_FUTURE_STATE_CUE = re.compile(
+    r"\b(?:going to be|hope(?:s|d)? to become|i(?:'|\u2019)?ll be|it(?:'|\u2019)?ll be|"
+    r"plan(?:s|ned)? to become|want(?:s|ed)? to become|will be|would be)\b",
+    re.IGNORECASE,
+)
+_DATEISH_OBJECT = re.compile(
+    r"^(?:\d{4}(?:-\d{1,2}(?:-\d{1,2})?)?|"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b)",
+    re.IGNORECASE,
+)
+_CREATIVE_ARTIFACT_CUE = re.compile(
+    r"\b(?:authored|crafted|painted|wrote)\b",
+    re.IGNORECASE,
+)
 _LOCATION_RELATIONS = frozenset(
     {"born_in", "lives_in", "located_in", "moved_from", "moved_to", "resides_in", "visited"}
 )
@@ -355,16 +387,23 @@ def _prepare_extraction(
     normalized: list[dict[str, Any]] = []
     vocab = vocabulary()
     supported_triplets: list[dict[str, Any]] = []
+    rejected_caption_ownership: list[dict[str, Any]] = []
     for raw in raw_triplets:
-        if (
-            not isinstance(raw, dict)
-            or _caption_only_ownership(raw, payload)
-            or _placeholder_fact(raw)
-        ):
+        if not isinstance(raw, dict):
+            continue
+        if _caption_only_ownership(raw, payload):
+            rejected_caption_ownership.append(raw)
+            continue
+        if _placeholder_fact(raw) or _future_state_fact(raw, payload):
             continue
         repaired = _repair_created_by(raw, payload)
         if repaired is not None:
             supported_triplets.append(repaired)
+    prepared["l0_abstract"] = _evidence_safe_abstract(
+        prepared,
+        payload,
+        rejected_caption_ownership=rejected_caption_ownership,
+    )
     candidate_triplets = atomize_triplets(supported_triplets)
     for raw in candidate_triplets:
         subject = str(raw.get("subject") or "").strip()
@@ -414,8 +453,91 @@ def _prepare_extraction(
             )
             trip["temporal"] = {**temporal, "asserted_at": asserted_at}
         normalized.append(trip)
+    creation_subjects = {
+        " ".join(str(trip.get("subject") or "").casefold().split())
+        for trip in normalized
+        if trip.get("relation") == "created_by"
+    }
+    spoken_source = " ".join(
+        _INLINE_IMAGE_CAPTION.sub("", str(turn.get("content") or ""))
+        for _role, turn in _source_turn_records(payload)
+    )
+    for trip in normalized:
+        subject_key = " ".join(str(trip.get("subject") or "").casefold().split())
+        object_value = str(trip.get("object") or "").strip()
+        if (
+            trip.get("relation") == "started_on"
+            and subject_key in creation_subjects
+            and bool(_DATEISH_OBJECT.search(object_value))
+            and bool(_CREATIVE_ARTIFACT_CUE.search(spoken_source))
+        ):
+            trip["relation_original"] = "started_on"
+            trip["relation"] = "created_on"
+            trip["relation_normalized"] = True
+            trip.pop("relation_review_required", None)
     prepared["triplets"] = normalized
     return prepared
+
+
+def _evidence_safe_abstract(
+    extraction: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    rejected_caption_ownership: list[dict[str, Any]],
+) -> str:
+    """Keep a rejected caption inference out of the episode vector abstract.
+
+    FACT validation alone is insufficient because the episode abstract is also
+    embedded and can rank above authoritative source text. When the model made
+    the same caption-only ownership claim in both fields, replace the abstract
+    with a literal description of the image-sharing event.
+    """
+    abstract = str(extraction.get("l0_abstract") or "").strip()[:500]
+    if not rejected_caption_ownership or not _ABSTRACT_OWNERSHIP_CUE.search(abstract):
+        return abstract
+    abstract_norm = " ".join(abstract.casefold().split())
+    rejected_objects = {
+        " ".join(str(trip.get("object") or "").casefold().split())
+        for trip in rejected_caption_ownership
+        if trip.get("object")
+    }
+    if not any(obj in abstract_norm for obj in rejected_objects):
+        return abstract
+
+    for _role, turn in _source_turn_records(payload):
+        content = str(turn.get("content") or "")
+        captions = _INLINE_IMAGE_CAPTION.findall(content)
+        if turn.get("image_caption"):
+            captions.append(str(turn["image_caption"]))
+        for caption in captions:
+            caption_match = _INLINE_IMAGE_CAPTION.fullmatch(caption.strip())
+            caption_text = (
+                re.sub(r"^\[Image caption:\s*|\]$", "", caption.strip(), flags=re.IGNORECASE)
+                if caption_match
+                else caption.strip()
+            )
+            caption_norm = " ".join(caption_text.casefold().split())
+            if any(obj in caption_norm for obj in rejected_objects):
+                speaker = str(turn.get("speaker") or "The speaker").strip()
+                return f"{speaker} shared an image depicting {caption_text}."[:500]
+
+    obj = next(iter(rejected_objects), "an item")
+    return f"An image shared in the conversation depicted {obj}."[:500]
+
+
+def _future_state_fact(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Reject a planned or conditional identity/state as a current assertion."""
+    relation = "_".join(str(triplet.get("relation") or "").casefold().split())
+    obj = " ".join(str(triplet.get("object") or "").casefold().split())
+    if relation not in _FUTURE_STATE_RELATIONS or not obj:
+        return False
+    for _role, turn in _source_turn_records(payload):
+        spoken = _INLINE_IMAGE_CAPTION.sub("", str(turn.get("content") or ""))
+        for sentence in re.split(r"(?<=[.!?])\s+", spoken):
+            sentence_norm = " ".join(sentence.casefold().split())
+            if obj in sentence_norm and _FUTURE_STATE_CUE.search(sentence):
+                return True
+    return False
 
 
 def _caption_only_ownership(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:

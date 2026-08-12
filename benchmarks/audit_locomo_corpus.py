@@ -27,6 +27,27 @@ _CREATION_CUE = re.compile(
     re.IGNORECASE,
 )
 _GIFT_CUE = re.compile(r"\b(?:gave|gift|gifted|given|present|received)\b", re.IGNORECASE)
+_ABSTRACT_OWNERSHIP_OBJECT = re.compile(
+    r"\b(?:drives|has|maintains|owns|possesses)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?P<object>[^.!?]{3,200})",
+    re.IGNORECASE,
+)
+_FUTURE_STATE_RELATIONS = {
+    "drives",
+    "has",
+    "is_a",
+    "lives_in",
+    "married_to",
+    "owns",
+    "parent_of",
+    "resides_in",
+    "works_at",
+}
+_FUTURE_STATE_CUE = re.compile(
+    r"\b(?:going to be|hope(?:s|d)? to become|i(?:'|\u2019)?ll be|it(?:'|\u2019)?ll be|"
+    r"plan(?:s|ned)? to become|want(?:s|ed)? to become|will be|would be)\b",
+    re.IGNORECASE,
+)
 _OWNERSHIP = {"drives", "has", "maintains", "owns"}
 _LOCATION_RELATIONS = {
     "born_in",
@@ -90,6 +111,15 @@ def _source_text(payload: dict[str, Any]) -> tuple[str, str, set[str]]:
     )
 
 
+def _caption_only_ownership_abstract(abstract: str, spoken: str, captions: str) -> bool:
+    """Whether an ownership abstract's object is supported only by a caption."""
+    match = _ABSTRACT_OWNERSHIP_OBJECT.search(abstract)
+    if not match:
+        return False
+    obj = " ".join(match.group("object").casefold().split()).strip(" ,;:")
+    return bool(obj and obj in captions and obj not in spoken)
+
+
 def audit(
     *,
     data_path: Path,
@@ -122,6 +152,9 @@ def audit(
         )
     )
     event_ids = {str(row["event_id"]) for row in events}
+    completed_stages = {
+        str(row["event_id"]): str(row["completed_stage"] or "RECEIVED") for row in events
+    }
     payloads = {str(row["event_id"]): json.loads(str(row["payload"])) for row in events}
     artifacts = list(
         connection.execute(
@@ -303,6 +336,10 @@ def audit(
                 caption = str(turn.get("image_caption") or "")
                 if caption and caption not in memory.body:
                     fail("caption_preservation", {"uri": uri, "role": role})
+            spoken, captions, _speakers = _source_text(payload)
+            abstract = memory.body.splitlines()[0] if memory.body else ""
+            if _caption_only_ownership_abstract(abstract, spoken, captions):
+                fail("caption_only_ownership_abstract", uri)
         if node_type != "FACT":
             continue
         fact = fm.get("fact")
@@ -316,7 +353,16 @@ def audit(
         # Conflict classification applies only to graph assertions between two
         # entity nodes. Literal-object FACTs remain first-class files/nodes but
         # intentionally have no RELATES_TO edge to classify.
-        if fact.get("object_uri") and not isinstance(fm.get("conflict"), dict):
+        conflict_committed = completed_stages.get(source_event) in {
+            "KG_COMMITTED",
+            "CONSOLIDATION_COMMITTED",
+            "COMPLETE",
+        }
+        if (
+            fact.get("object_uri")
+            and conflict_committed
+            and not isinstance(fm.get("conflict"), dict)
+        ):
             fail("conflict_decision", uri)
         expected_episode = f"mem://user/episodes/{source_event}.md"
         if fm.get("source_episode_uri") != expected_episode:
@@ -337,6 +383,18 @@ def audit(
                 fail("created_by_source_support", uri)
         if relation == "gifted_by" and not _GIFT_CUE.search(spoken):
             fail("gifted_by_source_support", uri)
+        if relation in _FUTURE_STATE_RELATIONS and obj:
+            pair_payload = _pair(payload)
+            for role in ("user", "assistant"):
+                turn = pair_payload.get(role)
+                if not isinstance(turn, dict):
+                    continue
+                source_content = _CAPTION.sub("", str(turn.get("content") or ""))
+                for sentence in re.split(r"(?<=[.!?])\s+", source_content):
+                    sentence_norm = " ".join(sentence.casefold().split())
+                    if obj in sentence_norm and _FUTURE_STATE_CUE.search(sentence):
+                        fail("future_state_fact", uri)
+                        break
         semantic_findings.append({"uri": uri, "relation": relation, "status": fm.get("status")})
 
     episode_multiplicity = {
