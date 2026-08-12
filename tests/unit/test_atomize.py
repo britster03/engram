@@ -264,6 +264,29 @@ def test_prepare_extraction_sanitizes_caption_creation_without_a_triplet() -> No
     )
 
 
+def test_prepare_extraction_keeps_non_creation_made_feel_sentence() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": "The painting made Caroline happy.",
+            "l0_abstract": "The painting made Caroline happy.",
+            "triplets": [],
+        },
+        {
+            "turn_pair": {
+                "user": {
+                    "content": "That made me happy.",
+                    "speaker": "Caroline",
+                    "image_caption": "a colorful painting",
+                }
+            }
+        },
+    )
+
+    assert prepared["resolved_text"] == "The painting made Caroline happy."
+    assert prepared["l0_abstract"] == "The painting made Caroline happy."
+
+
 def test_prepare_extraction_maps_gift_provenance_without_inventing_creation() -> None:
     prepared = _prepare_extraction(  # type: ignore[arg-type]
         SimpleNamespace(embed=_Embed()),

@@ -32,7 +32,7 @@ _EXPLICIT_DEICTIC_CREATION_CUE = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_CREATION_ASSERTION = re.compile(
-    r"\b(?:i|we|he|she|they|[A-Z][a-z]+)\s+"
+    r"\b(?:i|we|he|she|they)\s+"
     r"(?:authored|built|crafted|created|designed|made|painted|wrote)\b|"
     r"\b(?:was|were)\s+(?:authored|built|crafted|created|designed|made|painted|written)\s+by\b",
     re.IGNORECASE,
@@ -152,8 +152,25 @@ def _caption_only_creation(
     )
 
 
-def _caption_only_creation_text(text: str, spoken: str, captions: str) -> bool:
-    if not _DIRECT_CREATION_ASSERTION.search(text):
+def _has_direct_creation_assertion(text: str, speakers: set[str]) -> bool:
+    if _DIRECT_CREATION_ASSERTION.search(text):
+        return True
+    normalized = " ".join(text.casefold().split())
+    return any(
+        re.search(
+            rf"\b{re.escape(speaker)}\s+"
+            r"(?:authored|built|crafted|created|designed|made|painted|wrote)\b",
+            normalized,
+        )
+        for speaker in speakers
+        if speaker
+    )
+
+
+def _caption_only_creation_text(
+    text: str, spoken: str, captions: str, speakers: set[str]
+) -> bool:
+    if not _has_direct_creation_assertion(text, speakers):
         return False
     caption_tokens = {
         token
@@ -165,7 +182,7 @@ def _caption_only_creation_text(text: str, spoken: str, captions: str) -> bool:
     if _EXPLICIT_DEICTIC_CREATION_CUE.search(spoken):
         return False
     return not any(
-        _DIRECT_CREATION_ASSERTION.search(sentence)
+        _has_direct_creation_assertion(sentence, speakers)
         and caption_tokens.intersection(_CAPTION_TOKEN.findall(sentence.casefold()))
         for sentence in re.split(r"(?<=[.!?])\s+", spoken)
     )
@@ -387,13 +404,13 @@ def audit(
                 caption = str(turn.get("image_caption") or "")
                 if caption and caption not in memory.body:
                     fail("caption_preservation", {"uri": uri, "role": role})
-            spoken, captions, _speakers = _source_text(payload)
+            spoken, captions, speakers = _source_text(payload)
             abstract = memory.body.splitlines()[0] if memory.body else ""
             if _caption_only_ownership_abstract(abstract, spoken, captions):
                 fail("caption_only_ownership_abstract", uri)
             derivative = memory.body.split("## Source turns", 1)[0]
             for sentence in re.split(r"(?<=[.!?])\s+", derivative):
-                if _caption_only_creation_text(sentence, spoken, captions):
+                if _caption_only_creation_text(sentence, spoken, captions, speakers):
                     fail("caption_only_creation_derivative", uri)
                     break
         if node_type != "FACT":

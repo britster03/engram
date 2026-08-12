@@ -56,4 +56,14 @@ def test_caption_only_creation_in_retrieval_text_is_unsafe() -> None:
         "Melanie shared a bowl with a black and white flower design that she made.",
         "making pottery is calming. look at this!",
         "a bowl with a black and white flower design",
+        {"caroline", "melanie"},
+    )
+
+
+def test_made_feel_sentence_is_not_a_creation_assertion() -> None:
+    assert not _caption_only_creation_text(
+        "The painting made Caroline happy.",
+        "that made me happy.",
+        "a colorful painting",
+        {"caroline"},
     )

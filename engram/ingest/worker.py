@@ -95,7 +95,7 @@ _EXPLICIT_DEICTIC_CREATION_CUE = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_CREATION_ASSERTION = re.compile(
-    r"\b(?:i|we|he|she|they|[A-Z][a-z]+)\s+"
+    r"\b(?:i|we|he|she|they)\s+"
     r"(?:authored|built|crafted|created|designed|made|painted|wrote)\b|"
     r"\b(?:was|were)\s+(?:authored|built|crafted|created|designed|made|painted|written)\s+by\b",
     re.IGNORECASE,
@@ -614,7 +614,12 @@ def _literal_caption_description(payload: dict[str, Any], artifacts: set[str]) -
 
 def _caption_only_creation_text(text: str, payload: dict[str, Any]) -> bool:
     """Detect a derivative creation claim grounded only in a caption."""
-    if not _DIRECT_CREATION_ASSERTION.search(text):
+    speakers = {
+        " ".join(str(turn.get("speaker") or "").casefold().split())
+        for _role, turn in _source_turn_records(payload)
+        if turn.get("speaker")
+    }
+    if not _has_direct_creation_assertion(text, speakers):
         return False
     spoken_parts: list[str] = []
     caption_parts: list[str] = []
@@ -637,12 +642,27 @@ def _caption_only_creation_text(text: str, payload: dict[str, Any]) -> bool:
     if _EXPLICIT_DEICTIC_CREATION_CUE.search(spoken):
         return False
     for sentence in re.split(r"(?<=[.!?])\s+", spoken):
-        if not _DIRECT_CREATION_ASSERTION.search(sentence):
+        if not _has_direct_creation_assertion(sentence, speakers):
             continue
         sentence_tokens = set(_CAPTION_TOKEN.findall(sentence.casefold()))
         if caption_tokens.intersection(sentence_tokens):
             return False
     return True
+
+
+def _has_direct_creation_assertion(text: str, speakers: set[str]) -> bool:
+    if _DIRECT_CREATION_ASSERTION.search(text):
+        return True
+    normalized = " ".join(text.casefold().split())
+    return any(
+        re.search(
+            rf"\b{re.escape(speaker)}\s+"
+            r"(?:authored|built|crafted|created|designed|made|painted|wrote)\b",
+            normalized,
+        )
+        for speaker in speakers
+        if speaker
+    )
 
 
 def _future_state_fact(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:
