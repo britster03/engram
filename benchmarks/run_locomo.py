@@ -289,6 +289,38 @@ def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 
+def _redacted_argv(argv: list[str]) -> list[str]:
+    """Preserve reproducibility flags without serializing command-line secrets."""
+    redacted: list[str] = []
+    redact_next = False
+    for value in argv:
+        if redact_next:
+            redacted.append("[REDACTED]")
+            redact_next = False
+            continue
+        if value == "--admin-key":
+            redacted.append(value)
+            redact_next = True
+            continue
+        if value.startswith("--admin-key="):
+            redacted.append("--admin-key=[REDACTED]")
+            continue
+        redacted.append(value)
+    return redacted
+
+
+def _tenant_id(prefix: str, corpus_run_id: str, conv_idx: int) -> str:
+    """Build a stable API-valid tenant ID for arbitrarily descriptive run IDs."""
+    suffix = f"-c{conv_idx}"
+    candidate = f"{prefix}-{corpus_run_id}{suffix}"
+    if len(candidate) <= 64:
+        return candidate
+    digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:12]
+    reserved = len(suffix) + len(digest) + 2  # separators around the digest
+    stem = f"{prefix}-{corpus_run_id}"[: 64 - reserved].rstrip("-")
+    return f"{stem}-{digest}{suffix}"
+
+
 def _append_partial(handle: TextIO, row: dict[str, Any]) -> None:
     handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     handle.flush()
@@ -443,7 +475,7 @@ def _make_manifest(
         "runner": {
             "python": platform.python_version(),
             "platform": platform.platform(),
-            "argv": sys.argv,
+            "argv": _redacted_argv(sys.argv),
             "base_url": args.base_url
             or os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000"),
             "max_depth": args.max_depth,
@@ -558,7 +590,7 @@ def run(args: argparse.Namespace) -> int:
     with judge_context as judge, partial_path.open("a", encoding="utf-8") as partial:
         for conv_idx, conv in enumerate(conversations):
             corpus_run_id = args.corpus_run_id or run_id
-            tenant_id = f"{args.tenant_prefix}-{corpus_run_id}-c{conv_idx}"
+            tenant_id = _tenant_id(args.tenant_prefix, corpus_run_id, conv_idx)
             expected_for_conv = {
                 f"{conv.sample_id}:q{question_idx}"
                 for question_idx, _ in _selected_questions(

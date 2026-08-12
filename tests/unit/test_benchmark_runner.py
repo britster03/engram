@@ -13,8 +13,10 @@ from benchmarks.run_locomo import (
     _expected_pair_count,
     _metrics_delta,
     _metrics_snapshot,
+    _redacted_argv,
     _retrieved_turn_ids,
     _selected_questions,
+    _tenant_id,
     ingest_conversation,
     summarize,
 )
@@ -99,6 +101,27 @@ def test_bundled_dataset_commit_must_match_known_release_bytes() -> None:
     assert "must identify" in str(
         _dataset_provenance_error(sha256="custom", upstream_commit="unrecorded")
     )
+
+
+def test_manifest_argv_redacts_cli_admin_key_forms() -> None:
+    assert _redacted_argv([
+        "run_locomo.py", "--admin-key", "secret", "--seed", "42"
+    ]) == ["run_locomo.py", "--admin-key", "[REDACTED]", "--seed", "42"]
+    assert _redacted_argv([
+        "run_locomo.py", "--admin-key=secret"
+    ]) == ["run_locomo.py", "--admin-key=[REDACTED]"]
+
+
+def test_composed_tenant_id_is_stable_and_api_bounded() -> None:
+    short = _tenant_id("locomo", "run", 0)
+    assert short == "locomo-run-c0"
+    long_first = _tenant_id("locomo-noel08-final3d6d472", "fullconv-20260812", 0)
+    long_second = _tenant_id("locomo-noel08-final3d6d472", "fullconv-20260812", 0)
+    other = _tenant_id("locomo-noel08-final3d6d472", "fullconv-20260813", 0)
+    assert len(long_first) <= 64
+    assert long_first == long_second
+    assert long_first != other
+    assert long_first.endswith("-c0")
 
 
 def test_expected_pair_count_uses_source_sessions_and_limit() -> None:
