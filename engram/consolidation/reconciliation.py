@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from engram.config import EngramConfig
+from engram.storage.filesystem import FilesystemStore
 from engram.storage.sqlite import SqliteStore
 
 log = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class ReconciliationContext:
     cfg: EngramConfig
     sqlite: SqliteStore
     neo4j: Any | None = None  # optional for directory staleness check
+    fs: FilesystemStore | None = None
 
 
 def run_once(ctx: ReconciliationContext) -> dict[str, int]:
@@ -97,23 +99,32 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
 
     # 5. §7.4 daily scan: enqueue CONSOLIDATE_OVERVIEW for directories whose
     # child was modified after the overview was regenerated.
-    if ctx.neo4j is not None:
+    if ctx.neo4j is not None and ctx.fs is not None:
         try:
+            local_tenants = ctx.fs.list_tenant_ids()
+            if not local_tenants:
+                return counts
+            allowed_tenants = set(local_tenants)
             stale = ctx.neo4j.run_template(
                 "MATCH (d:Node)-[:CONTAINS]->(c:Node) "
-                "WHERE d.node_type = 'DIRECTORY' "
+                "WHERE d.tenant_id IN $tenant_ids AND c.tenant_id = d.tenant_id "
+                "AND d.node_type = 'DIRECTORY' "
                 "AND (d.overview_generated_at IS NULL OR "
                 "     c.created_at > d.overview_generated_at OR "
                 "     coalesce(c.superseded_at, '') > coalesce(d.overview_generated_at, '')) "
-                "RETURN DISTINCT d.source_uri AS uri LIMIT 200",
-                {},
+                "RETURN DISTINCT d.source_uri AS uri, d.tenant_id AS tenant_id LIMIT 200",
+                {"tenant_ids": local_tenants},
                 timeout_s=10,
             )
             for row in stale:
                 uri = row.get("uri")
-                if uri and ctx.sqlite.enqueue_directory_refresh(
+                tenant_id = str(row.get("tenant_id") or "")
+                if not uri or tenant_id not in allowed_tenants:
+                    continue
+                if ctx.sqlite.enqueue_directory_refresh(
                     node_id=str(uri), priority=6,
                     debounce_seconds=ctx.cfg.consolidation.overview_debounce_seconds,
+                    tenant_id=tenant_id,
                 ):
                     counts["stale_overviews_enqueued"] += 1
         except Exception:

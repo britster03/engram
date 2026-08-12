@@ -125,7 +125,7 @@ async def _lifespan(app: FastAPI):
 
     if state.cfg.event_ledger.reconciliation_interval_seconds > 0:
         rec_ctx = ReconciliationContext(
-            cfg=state.cfg, sqlite=state.sqlite, neo4j=state.neo4j,
+            cfg=state.cfg, sqlite=state.sqlite, neo4j=state.neo4j, fs=state.fs,
         )
         _recon_handle = start_reconciliation(rec_ctx, redis_url=redis_url)
         log.info("reconciliation worker started (leased=%s)", bool(redis_url))

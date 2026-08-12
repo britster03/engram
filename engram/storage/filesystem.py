@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from engram import uri as uri_mod
-from engram.tenancy import current_tenant_id
+from engram.tenancy import current_tenant_id, validate_tenant_id
 
 GENERATED_MEMORY_FILENAMES = {"overview.md", ".manifest"}
 
@@ -118,3 +118,18 @@ class FilesystemStore:
     def tenant_scope_path(self) -> Path:
         """Return the absolute path to the current tenant's root (for diagnostics)."""
         return self._tenant_root()
+
+    def list_tenant_ids(self) -> list[str]:
+        """Return valid, local tenant roots without following directory symlinks."""
+        tenants: list[str] = []
+        if not self.data_dir.is_dir():
+            return tenants
+        for child in sorted(self.data_dir.iterdir()):
+            if not child.is_dir() or child.is_symlink():
+                continue
+            try:
+                validate_tenant_id(child.name)
+            except ValueError:
+                continue
+            tenants.append(child.name)
+        return tenants

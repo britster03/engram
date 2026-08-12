@@ -311,3 +311,52 @@ def test_reconciliation_requeues_indexed_crash_window(cfg: EngramConfig):
     assert counts["indexed_without_consolidation"] == 1
     event = sqlite.get_event(eid)
     assert event is not None and event["status"] == "RECEIVED"
+
+
+def test_reconciliation_skips_graph_scan_without_local_tenants(cfg: EngramConfig):
+    class UnexpectedGraph:
+        def run_template(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("graph-only tenants must not create local refresh work")
+
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+
+    counts = run_once(
+        ReconciliationContext(cfg=cfg, sqlite=sqlite, neo4j=UnexpectedGraph(), fs=fs)
+    )
+
+    assert counts["stale_overviews_enqueued"] == 0
+    assert sqlite.queue_depth() == 0
+
+
+def test_reconciliation_preserves_stale_directory_tenant_scope(cfg: EngramConfig):
+    class StaleGraph:
+        params: dict | None = None
+
+        def run_template(self, cypher, params, **_kwargs):  # type: ignore[no-untyped-def]
+            assert "d.tenant_id IN $tenant_ids" in cypher
+            self.params = params
+            return [
+                {"uri": "mem://user/entities/alice", "tenant_id": "tenant-a"},
+                {"uri": "mem://user/entities/bob", "tenant_id": "foreign-tenant"},
+            ]
+
+    fs = FilesystemStore(cfg.filesystem.data_dir)
+    FilesystemStore(cfg.filesystem.data_dir, tenant_id="tenant-a").write_atomic(
+        "mem://user/entities/alice/alice.md", "Alice."
+    )
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    graph = StaleGraph()
+
+    counts = run_once(
+        ReconciliationContext(cfg=cfg, sqlite=sqlite, neo4j=graph, fs=fs)
+    )
+
+    assert graph.params == {"tenant_ids": ["tenant-a"]}
+    assert counts["stale_overviews_enqueued"] == 1
+    rows = sqlite.get_conn().execute(
+        "SELECT tenant_id, node_id FROM consolidation_tasks"
+    ).fetchall()
+    assert [(row["tenant_id"], row["node_id"]) for row in rows] == [
+        ("tenant-a", "mem://user/entities/alice")
+    ]
