@@ -29,6 +29,14 @@ class CompletionResult:
 class CoreModelError(RuntimeError):
     """Raised for provider-level failures (malformed output, timeout, API error)."""
 
+    def __init__(self, message: str, *, provider_calls: int = 1) -> None:
+        super().__init__(message)
+        self.provider_calls = max(1, provider_calls)
+
+
+class TransientCoreModelError(CoreModelError):
+    """A provider failure that is safe to retry without changing the request."""
+
 
 class CoreModelProvider(ABC):
     """Contract: produce validated JSON for a task."""

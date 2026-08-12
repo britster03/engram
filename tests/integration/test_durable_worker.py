@@ -276,3 +276,61 @@ def test_failed_events_are_marked(cfg: EngramConfig, monkeypatch: pytest.MonkeyP
     assert ev is not None
     assert ev["status"] == "FAILED"
     assert "forced failure" in (ev.get("error_message") or "")
+
+
+def test_transient_provider_failure_is_persistently_deferred(
+    cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from engram.ingest import durable_worker as dw
+    from engram.models.core import TransientCoreModelError
+
+    cfg.event_ledger.transient_retry_initial_delay_seconds = 60
+    worker, sqlite, _neo = _build_worker(cfg, concurrency=1)
+    eid = _enqueue(sqlite, "transient", 0, "I live in Pune.", "Noted.")
+    assert worker._claim_batch() == [eid]
+    monkeypatch.setattr(
+        dw,
+        "process_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TransientCoreModelError("provider rate limited")
+        ),
+    )
+
+    worker._process_one(eid)
+
+    event = sqlite.get_event(eid)
+    assert event is not None
+    assert event["status"] == "RECEIVED"
+    assert event["retry_count"] == 1
+    assert event["next_attempt_at"] is not None
+    assert "rate limited" in event["error_message"]
+    with worker._in_flight_lock:
+        worker._in_flight.discard(eid)
+    assert worker._claim_batch() == []
+
+
+def test_transient_provider_failure_becomes_terminal_after_retry_budget(
+    cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from engram.ingest import durable_worker as dw
+    from engram.models.core import TransientCoreModelError
+
+    cfg.event_ledger.max_transient_retries = 0
+    worker, sqlite, _neo = _build_worker(cfg, concurrency=1)
+    eid = _enqueue(sqlite, "transient-exhausted", 0, "I live in Pune.", "Noted.")
+    assert worker._claim_batch() == [eid]
+    monkeypatch.setattr(
+        dw,
+        "process_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TransientCoreModelError("provider rate limited")
+        ),
+    )
+
+    worker._process_one(eid)
+
+    event = sqlite.get_event(eid)
+    assert event is not None
+    assert event["status"] == "FAILED"
+    assert event["retry_count"] == 0
+    assert event["next_attempt_at"] is None

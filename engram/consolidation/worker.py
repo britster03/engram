@@ -9,7 +9,7 @@ from typing import Any
 
 from engram.config import EngramConfig
 from engram.consolidation import tasks as handlers
-from engram.models.core import CoreModelProvider
+from engram.models.core import CoreModelProvider, TransientCoreModelError
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.sqlite import SqliteStore
@@ -74,6 +74,34 @@ def _complete_task(sqlite: SqliteStore, task_id: str, status: str, err: str | No
         )
 
 
+def _defer_task(ctx: ConsolidationContext, task: dict, err: Exception) -> None:
+    retry_count = int(task.get("retry_count") or 0)
+    maximum = ctx.cfg.event_ledger.max_transient_retries
+    if retry_count >= maximum:
+        _complete_task(ctx.sqlite, task["task_id"], "FAILED", str(err)[:500])
+        return
+    delay = min(
+        ctx.cfg.event_ledger.transient_retry_max_delay_seconds,
+        ctx.cfg.event_ledger.transient_retry_initial_delay_seconds * (2**retry_count),
+    )
+    modifier = f"+{max(0.0, delay):.3f} seconds"
+    with ctx.sqlite.transaction() as conn:
+        conn.execute(
+            "UPDATE consolidation_tasks SET status = 'PENDING', started_at = NULL, "
+            "completed_at = NULL, retry_count = retry_count + 1, error_message = ?, "
+            "not_before = datetime('now', ?) WHERE task_id = ?",
+            (str(err)[:500], modifier, task["task_id"]),
+        )
+    log.warning(
+        "deferred transient consolidation failure for %s "
+        "(retry=%d/%d, delay=%.1fs)",
+        task["task_id"],
+        retry_count + 1,
+        maximum,
+        delay,
+    )
+
+
 def process_one(ctx: ConsolidationContext) -> bool:
     """Return True if a task was processed; False if the queue was empty."""
     task = _next_task(ctx.sqlite)
@@ -91,6 +119,8 @@ def process_one(ctx: ConsolidationContext) -> bool:
     try:
         _dispatch(ctx, task)
         _complete_task(ctx.sqlite, task["task_id"], "COMPLETE")
+    except TransientCoreModelError as err:
+        _defer_task(ctx, task, err)
     except Exception as err:
         log.exception("consolidation task %s failed", task["task_id"])
         _complete_task(ctx.sqlite, task["task_id"], "FAILED", str(err))
@@ -164,6 +194,12 @@ def run_forever(ctx: ConsolidationContext, stop: threading.Event) -> None:
     """Block until `stop` is set, processing tasks as they arrive."""
     interval = max(1, ctx.cfg.consolidation.poll_interval_seconds)
     while not stop.is_set():
+        if (
+            ctx.cfg.consolidation.pause_while_ingest_pending
+            and ctx.sqlite.has_active_ingest()
+        ):
+            stop.wait(interval)
+            continue
         did_work = False
         for _ in range(ctx.cfg.consolidation.max_concurrent_tasks):
             if process_one(ctx):

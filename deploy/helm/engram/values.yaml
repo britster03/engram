@@ -80,6 +80,7 @@ config:
   consolidation:
     max_concurrent_tasks: 4
     max_backlog: 10000
+    pause_while_ingest_pending: false
   session:
     timeout_minutes: 30
 

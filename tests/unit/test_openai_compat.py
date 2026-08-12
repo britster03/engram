@@ -120,6 +120,43 @@ def test_ollama_cloud_marks_rate_limits_retryable(
     sleep.assert_called_once_with(0.0)
 
 
+def test_ollama_cloud_maps_exhausted_transport_error_as_transient():
+    from engram.models.core import TransientCoreModelError
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+
+    provider = OllamaCloudCoreProvider(CoreModelConfig(
+        provider="ollama_cloud",
+        api_key="ollama-test-key",
+        min_request_interval_seconds=0,
+    ))
+    request = httpx.Request("POST", "https://ollama.com/api/chat")
+    provider._post_chat = MagicMock(side_effect=httpx.ConnectError("offline", request=request))
+
+    with pytest.raises(TransientCoreModelError, match="transient API error"):
+        provider.complete(system_prompt="gate", user_prompt="turn")
+
+
+def test_ollama_cloud_maps_permanent_http_error_as_non_transient():
+    from engram.models.core import CoreModelError, TransientCoreModelError
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+
+    provider = OllamaCloudCoreProvider(CoreModelConfig(
+        provider="ollama_cloud",
+        api_key="ollama-test-key",
+        min_request_interval_seconds=0,
+    ))
+    request = httpx.Request("POST", "https://ollama.com/api/chat")
+    response = httpx.Response(400, request=request)
+    permanent = httpx.HTTPStatusError(
+        "bad request", request=request, response=response
+    )
+    provider._post_chat = MagicMock(side_effect=permanent)
+
+    with pytest.raises(CoreModelError) as caught:
+        provider.complete(system_prompt="gate", user_prompt="turn")
+    assert not isinstance(caught.value, TransientCoreModelError)
+
+
 def test_openai_compat_complete_returns_parsed_json():
     """The adapter should hand back parsed JSON from the chat completion."""
     from engram.models.providers.openai_compat import OpenAICompatCoreProvider
@@ -187,8 +224,8 @@ def test_build_frontier_works_for_openai():
     assert isinstance(p, OpenAICompatFrontierProvider)
 
 
-def test_openai_compat_frontier_maps_api_errors_to_core_model_error():
-    from engram.models.core import CoreModelError
+def test_openai_compat_frontier_maps_connection_errors_as_transient():
+    from engram.models.core import TransientCoreModelError
     from engram.models.providers.openai_compat import OpenAICompatFrontierProvider
 
     cfg = FrontierLlmConfig(
@@ -202,5 +239,5 @@ def test_openai_compat_frontier_maps_api_errors_to_core_model_error():
         side_effect=openai.APIConnectionError(request=request)
     )
 
-    with pytest.raises(CoreModelError, match="frontier API error"):
+    with pytest.raises(TransientCoreModelError, match="frontier transient API error"):
         provider.answer(system_prompt="", msc="", user_query="test")

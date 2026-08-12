@@ -12,9 +12,8 @@ worker owns everything after that, with bounded concurrency and graceful
 shutdown.
 
 Failure model:
-  - Transient LLM / Neo4j failure → retry in the next poll cycle (the
-    @resilient decorators bubble up exceptions; we catch them here, mark
-    the event FAILED, and rely on the reconciliation worker to requeue).
+  - Transient provider failure → persist a bounded, exponential not-before
+    retry. Committed stage outputs remain authoritative across the retry.
   - Permanent failure (e.g. schema violation) → event marked FAILED with a
     preserved error_message; operators retry manually via
     POST /api/v1/events/{id}/retry.
@@ -42,7 +41,7 @@ from typing import Any
 from engram import metrics as metrics_mod
 from engram.config import EngramConfig
 from engram.ingest.worker import IngestContext, process_event
-from engram.models.core import CoreModelProvider
+from engram.models.core import CoreModelProvider, TransientCoreModelError
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.sqlite import SqliteStore
@@ -216,6 +215,39 @@ class DurableIngestWorker:
             ctx = self.ctx.ingest_context_factory()
             final = process_event(ctx, event_id)
             metrics_mod.ingest_events_total.labels(final_status=final).inc()
+        except TransientCoreModelError as err:
+            event = self.ctx.sqlite.get_event(event_id)
+            retry_count = int(event.get("retry_count") or 0) if event else 0
+            maximum = self.ctx.cfg.event_ledger.max_transient_retries
+            if retry_count >= maximum:
+                log.error(
+                    "durable ingest exhausted %d transient retries for %s",
+                    maximum,
+                    event_id,
+                )
+                self.ctx.sqlite.set_event_status(
+                    event_id, "FAILED", error_message=str(err)[:500]
+                )
+                metrics_mod.ingest_events_total.labels(final_status="FAILED").inc()
+            else:
+                delay = min(
+                    self.ctx.cfg.event_ledger.transient_retry_max_delay_seconds,
+                    self.ctx.cfg.event_ledger.transient_retry_initial_delay_seconds
+                    * (2**retry_count),
+                )
+                updated_count = self.ctx.sqlite.defer_event_retry(
+                    event_id, error=str(err), delay_seconds=delay
+                )
+                log.warning(
+                    "deferred transient ingest failure for %s "
+                    "(retry=%d/%d, delay=%.1fs): %s",
+                    event_id,
+                    updated_count,
+                    maximum,
+                    delay,
+                    err,
+                )
+                metrics_mod.ingest_events_total.labels(final_status="DEFERRED").inc()
         except Exception as err:
             log.exception("durable ingest failed for %s", event_id)
             try:

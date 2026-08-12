@@ -127,7 +127,8 @@ def _requeue_event(sqlite: SqliteStore, event_id: str) -> None:
     with sqlite.transaction() as conn:
         conn.execute(
             "UPDATE events SET status = 'RECEIVED', retry_count = retry_count + 1, "
-            "error_message = NULL, processed_at = NULL WHERE event_id = ?",
+            "error_message = NULL, processed_at = NULL, next_attempt_at = NULL "
+            "WHERE event_id = ?",
             (event_id,),
         )
 

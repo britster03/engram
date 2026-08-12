@@ -174,6 +174,49 @@ def test_worker_binds_task_tenant_and_restores_context(cfg: EngramConfig):
     assert current_tenant_id() == "_default"
 
 
+def test_worker_defers_transient_provider_failures(
+    cfg: EngramConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from engram.consolidation import worker as consolidation_worker
+    from engram.models.core import TransientCoreModelError
+
+    cfg.event_ledger.transient_retry_initial_delay_seconds = 60
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    task_id = sqlite.enqueue_task(
+        node_id="mem://user", task_type="REGENERATE_MANIFEST"
+    )
+    assert task_id is not None
+    ctx = ConsolidationContext(
+        cfg=cfg,
+        sqlite=sqlite,
+        fs=FilesystemStore(cfg.filesystem.data_dir),
+        neo4j=InMemoryKnowledgeGraph(),  # type: ignore[arg-type]
+        core=DeterministicCoreProvider(),
+        embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        consolidation_worker,
+        "_dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TransientCoreModelError("provider rate limited")
+        ),
+    )
+
+    assert process_one(ctx) is True
+
+    row = sqlite.get_conn().execute(
+        "SELECT status, retry_count, not_before, error_message "
+        "FROM consolidation_tasks WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "PENDING"
+    assert row["retry_count"] == 1
+    assert row["not_before"] is not None
+    assert "rate limited" in row["error_message"]
+    assert process_one(ctx) is False
+
+
 def test_refresh_directory_coalesces_and_calls_overview_once_per_signature(
     cfg: EngramConfig,
 ):

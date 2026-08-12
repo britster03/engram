@@ -40,9 +40,13 @@ data:
     event_ledger:
       path: "/var/lib/engram/event_ledger.db"
       ingest_worker_concurrency: 1
+      max_transient_retries: 8
+      transient_retry_initial_delay_seconds: 30
+      transient_retry_max_delay_seconds: 900
     consolidation:
       max_concurrent_tasks: {{ .Values.config.consolidation.max_concurrent_tasks }}
       max_backlog: {{ .Values.config.consolidation.max_backlog }}
+      pause_while_ingest_pending: {{ .Values.config.consolidation.pause_while_ingest_pending }}
     session_cache:
       backend: "redis"
       redis_url: {{ .Values.redis.url | default (printf "redis://%s-redis:6379" (include "engram.fullname" .)) | quote }}

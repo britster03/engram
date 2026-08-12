@@ -130,3 +130,42 @@ def test_migration_removes_global_event_pair_uniqueness(cfg: EngramConfig):
     assert eid_b != "evt-old"
     assert is_new_a is False
     assert eid_a == "evt-old"
+
+
+def test_migration_adds_persisted_event_retry_schedule(cfg: EngramConfig):
+    conn = sqlite3.connect(cfg.event_ledger.path)
+    conn.executescript(
+        """
+        CREATE TABLE events (
+            event_id TEXT PRIMARY KEY,
+            pair_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT '_default',
+            session_id TEXT,
+            source TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'RECEIVED',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            processed_at TEXT
+        );
+        CREATE TABLE meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO meta (key, value) VALUES ('schema_version', '6');
+        """
+    )
+    conn.close()
+
+    summary = run_pending(cfg)
+
+    assert summary["current_version"] >= 7
+    upgraded = sqlite3.connect(cfg.event_ledger.path)
+    columns = {row[1] for row in upgraded.execute("PRAGMA table_info(events)")}
+    indexes = {row[1] for row in upgraded.execute("PRAGMA index_list(events)")}
+    upgraded.close()
+    assert "next_attempt_at" in columns
+    assert "idx_events_claimable" in indexes

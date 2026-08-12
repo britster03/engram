@@ -104,6 +104,9 @@ class EventLedgerConfig(BaseModel):
     path: str = "./data/event_ledger.db"
     reconciliation_interval_seconds: int = 60
     ingest_worker_concurrency: int = Field(default=1, ge=1, le=64)
+    max_transient_retries: int = Field(default=8, ge=0, le=100)
+    transient_retry_initial_delay_seconds: float = Field(default=30.0, ge=0.0, le=3600.0)
+    transient_retry_max_delay_seconds: float = Field(default=900.0, ge=0.0, le=86400.0)
 
 
 class ConsolidationConfig(BaseModel):
@@ -113,6 +116,7 @@ class ConsolidationConfig(BaseModel):
     overview_debounce_seconds: int = 30
     manifest_update_delay_seconds: int = 5
     max_backlog: int = 10000
+    pause_while_ingest_pending: bool = False
 
 
 class SessionCacheConfig(BaseModel):

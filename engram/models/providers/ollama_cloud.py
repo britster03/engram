@@ -17,10 +17,15 @@ from typing import Any
 import httpx
 
 from engram.config import CoreModelConfig, FrontierLlmConfig
-from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
+from engram.models.core import (
+    CompletionResult,
+    CoreModelError,
+    CoreModelProvider,
+    TransientCoreModelError,
+)
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
 from engram.models.semantic import validate_frontier_output
-from engram.resilience import resilient
+from engram.resilience import CircuitOpenError, resilient
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +89,16 @@ class _OllamaCloudBase:
             timeout=timeout,
         )
         self._min_request_interval = min_request_interval_seconds
+        self._attempt_state = threading.local()
+
+    def _reset_attempt_count(self) -> None:
+        self._attempt_state.count = 0
+
+    def _increment_attempt_count(self) -> None:
+        self._attempt_state.count = self._attempt_count() + 1
+
+    def _attempt_count(self) -> int:
+        return int(getattr(self._attempt_state, "count", 0))
 
     def _throttle(self) -> None:
         """Apply one process-wide pace across core and frontier cloud calls."""
@@ -105,6 +120,7 @@ class _OllamaCloudBase:
     )
     def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._throttle()
+        self._increment_attempt_count()
         resp = self._client.post("/chat", json=payload)
         try:
             resp.raise_for_status()
@@ -140,6 +156,21 @@ class _OllamaCloudBase:
             return response
         return ""
 
+    def _post_chat_mapped(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep transient exhaustion distinguishable from permanent API errors."""
+        try:
+            return self._post_chat(payload)
+        except (*_RETRYABLE, CircuitOpenError) as err:
+            raise TransientCoreModelError(
+                f"ollama cloud transient API error: {err}",
+                provider_calls=self._attempt_count(),
+            ) from err
+        except httpx.HTTPError as err:
+            raise CoreModelError(
+                f"ollama cloud API error: {err}",
+                provider_calls=self._attempt_count(),
+            ) from err
+
 
 class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
     """Core Model provider backed by Ollama Cloud's native chat API."""
@@ -163,10 +194,10 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
         temperature: float | None = None,
     ) -> CompletionResult:
         sys_text = system_prompt + _CORE_SYSTEM_SUFFIX
+        self._reset_attempt_count()
         if output_schema is not None:
             sys_text += "\n\nOutput schema:\n" + json.dumps(output_schema, indent=2)
         started = time.perf_counter()
-        provider_calls = 1
         options: dict[str, float | int] = {
             "temperature": self.cfg.temperature if temperature is None else temperature,
             "num_predict": max_tokens or self.cfg.max_tokens,
@@ -184,10 +215,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
             "format": "json",
             "options": options,
         }
-        try:
-            data = self._post_chat(payload)
-        except httpx.HTTPError as err:
-            raise CoreModelError(f"ollama cloud API error: {err}") from err
+        data = self._post_chat_mapped(payload)
         latency_ms = (time.perf_counter() - started) * 1000
         raw_text = self._message_content(data)
         try:
@@ -206,8 +234,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
                 },
             ]
             retry_payload["options"] = {**payload["options"], "temperature": 0.0}
-            data = self._post_chat(retry_payload)
-            provider_calls += 1
+            data = self._post_chat_mapped(retry_payload)
             latency_ms = (time.perf_counter() - started) * 1000
             raw_text = self._message_content(data)
             output = self.extract_json(raw_text)
@@ -218,7 +245,7 @@ class OllamaCloudCoreProvider(_OllamaCloudBase, CoreModelProvider):
             tokens_in=data.get("prompt_eval_count"),
             tokens_out=data.get("eval_count"),
             latency_ms=latency_ms,
-            provider_calls=provider_calls,
+            provider_calls=max(1, self._attempt_count()),
         )
 
 
@@ -243,6 +270,7 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
         allow_need_more: bool = True,
     ) -> FrontierVerdict:
         sys_text = (system_prompt or "") + "\n\n" + _FRONTIER_SYSTEM
+        self._reset_attempt_count()
         if not allow_need_more:
             sys_text += "\n\nThis is the final call. Emit ANSWER with a best-effort answer."
         user_text = f"<msc>\n{msc}\n</msc>\n\n<user_query>\n{user_query}\n</user_query>"
@@ -262,18 +290,16 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
         }
         started = time.perf_counter()
         parsed = None
-        provider_calls = 0
         for attempt in range(2):
             try:
-                provider_calls += 1
-                data = self._post_chat(payload)
+                data = self._post_chat_mapped(payload)
                 raw_text = self._message_content(data)
                 parsed = validate_frontier_output(
                     CoreModelProvider.extract_json(raw_text)
                 )
                 break
-            except httpx.HTTPError as err:
-                raise CoreModelError(f"ollama cloud API error: {err}") from err
+            except TransientCoreModelError:
+                raise
             except CoreModelError:
                 if attempt:
                     raise
@@ -302,5 +328,5 @@ class OllamaCloudFrontierProvider(_OllamaCloudBase, FrontierLLMProvider):
             tokens_in=data.get("prompt_eval_count"),
             tokens_out=data.get("eval_count"),
             latency_ms=(time.perf_counter() - started) * 1000,
-            provider_calls=provider_calls,
+            provider_calls=max(1, self._attempt_count()),
         )

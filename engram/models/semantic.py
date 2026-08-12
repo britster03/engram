@@ -162,11 +162,11 @@ def complete_validated(
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-        except Exception:
+        except Exception as err:
             metrics_mod.core_model_calls.labels(
                 task=task,
                 provider=provider_name,
-            ).inc()
+            ).inc(max(1, int(getattr(err, "provider_calls", 1))))
             raise
         metrics_mod.core_model_calls.labels(
             task=task,

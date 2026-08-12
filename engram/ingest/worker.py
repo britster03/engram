@@ -145,13 +145,9 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
             if payload.get("force_store") is True:
                 gate = {"store": True, "reason": "authenticated force_store override"}
             else:
-                try:
-                    gate = _call_gate(
-                        ctx, turn_pair, session_summary=payload.get("session_summary")
-                    )
-                except CoreModelError as err:
-                    ctx.sqlite.set_event_status(event_id, "FAILED", error_message=str(err))
-                    raise
+                gate = _call_gate(
+                    ctx, turn_pair, session_summary=payload.get("session_summary")
+                )
         ctx.sqlite.advance_event_stage(event_id, "GATED", tenant_id=event_tenant, gate_output=gate)
         stage = "GATED"
         _after_stage(ctx, stage)

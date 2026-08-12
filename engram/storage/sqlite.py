@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS events (
     retry_count   INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    processed_at  TEXT
+    processed_at  TEXT,
+    next_attempt_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_status   ON events(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_session  ON events(session_id);
@@ -274,7 +275,8 @@ class SqliteStore:
             params = (status, error_message, event_id, tenant_id)
         with self.transaction() as conn:
             conn.execute(
-                "UPDATE events SET status = ?, error_message = ?, processed_at = datetime('now') "
+                "UPDATE events SET status = ?, error_message = ?, "
+                "processed_at = datetime('now'), next_attempt_at = NULL "
                 f"WHERE event_id = ?{tenant_clause}",
                 params,
             )
@@ -309,7 +311,7 @@ class SqliteStore:
         placeholders = ",".join("?" for _ in event_ids)
         rows = self.get_conn().execute(
             "SELECT e.event_id, e.pair_id, e.status, e.error_message, "
-            "e.created_at, e.processed_at, o.state AS outbox_state, "
+            "e.created_at, e.processed_at, e.next_attempt_at, o.state AS outbox_state, "
             "o.source_uri AS source_uri, s.completed_stage, "
             "COALESCE(a.artifact_count, 0) AS artifact_count, "
             "COALESCE(a.filesystem_ready_count, 0) AS filesystem_ready_count, "
@@ -477,7 +479,8 @@ class SqliteStore:
                 (event_id, tenant_id),
             )
             conn.execute(
-                "UPDATE events SET status = 'RECEIVED', error_message = NULL, processed_at = NULL "
+                "UPDATE events SET status = 'RECEIVED', error_message = NULL, "
+                "processed_at = NULL, next_attempt_at = NULL "
                 "WHERE event_id = ? AND tenant_id = ?",
                 (event_id, tenant_id),
             )
@@ -497,13 +500,15 @@ class SqliteStore:
             if tenant_id is None:
                 selected = conn.execute(
                     "SELECT event_id FROM events WHERE status = 'RECEIVED' "
-                    "ORDER BY created_at LIMIT ?",
+                    "AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now')) "
+                    "ORDER BY COALESCE(next_attempt_at, created_at), created_at LIMIT ?",
                     (limit,),
                 ).fetchall()
             else:
                 selected = conn.execute(
                     "SELECT event_id FROM events WHERE status = 'RECEIVED' AND tenant_id = ? "
-                    "ORDER BY created_at LIMIT ?",
+                    "AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now')) "
+                    "ORDER BY COALESCE(next_attempt_at, created_at), created_at LIMIT ?",
                     (tenant_id, limit),
                 ).fetchall()
             event_ids = [r["event_id"] for r in selected]
@@ -512,7 +517,7 @@ class SqliteStore:
             placeholders = ",".join("?" for _ in event_ids)
             conn.execute(
                 f"UPDATE events SET status = 'PROCESSING', processed_at = datetime('now'), "
-                f"error_message = NULL WHERE status = 'RECEIVED' "
+                f"error_message = NULL, next_attempt_at = NULL WHERE status = 'RECEIVED' "
                 f"AND event_id IN ({placeholders})",
                 tuple(event_ids),
             )
@@ -531,11 +536,47 @@ class SqliteStore:
         """
         with self.transaction() as conn:
             cursor = conn.execute(
-                "UPDATE events SET status = 'RECEIVED', processed_at = NULL "
+                "UPDATE events SET status = 'RECEIVED', processed_at = NULL, "
+                "next_attempt_at = NULL "
                 "WHERE event_id = ? AND status IN ('PROCESSING', 'GATED_STORE', 'INDEXED')",
                 (event_id,),
             )
         return cursor.rowcount > 0
+
+    def defer_event_retry(
+        self,
+        event_id: str,
+        *,
+        error: str,
+        delay_seconds: float,
+    ) -> int:
+        """Persist a transient retry without discarding committed stage state."""
+        modifier = f"+{max(0.0, delay_seconds):.3f} seconds"
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE events SET status = 'RECEIVED', retry_count = retry_count + 1, "
+                "error_message = ?, processed_at = NULL, "
+                "next_attempt_at = datetime('now', ?) "
+                "WHERE event_id = ? AND status IN "
+                "('PROCESSING', 'GATED_STORE', 'INDEXED')",
+                (error[:500], modifier, event_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"unable to defer unclaimed event: {event_id}")
+            row = conn.execute(
+                "SELECT retry_count FROM events WHERE event_id = ?", (event_id,)
+            ).fetchone()
+        if row is None:  # pragma: no cover - protected by the successful update
+            raise RuntimeError(f"event disappeared while deferring: {event_id}")
+        return int(row["retry_count"])
+
+    def has_active_ingest(self) -> bool:
+        """Whether ingest work is queued, deferred, or currently claimed."""
+        row = self.get_conn().execute(
+            "SELECT 1 FROM events WHERE status IN "
+            "('RECEIVED', 'PROCESSING', 'GATED_STORE', 'INDEXED') LIMIT 1"
+        ).fetchone()
+        return row is not None
 
     # ------------------------------------------------------------------
     # Extraction storage

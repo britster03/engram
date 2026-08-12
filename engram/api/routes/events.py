@@ -47,6 +47,7 @@ class EventReadiness(BaseModel):
     error: str | None = None
     created_at: str | None = None
     processed_at: str | None = None
+    next_attempt_at: str | None = None
 
 
 class EventStatusResponse(BaseModel):
@@ -130,6 +131,7 @@ def event_status(req: EventStatusRequest) -> EventStatusResponse:
                 error=row.get("error_message"),
                 created_at=row.get("created_at"),
                 processed_at=row.get("processed_at"),
+                next_attempt_at=row.get("next_attempt_at"),
             )
         )
     failures = [event for event in events if event.status == "FAILED"]
@@ -159,7 +161,8 @@ def retry_event(event_id: str) -> EventResponse:
     with state.sqlite.transaction() as conn:
         conn.execute(
             "UPDATE events SET status = 'RECEIVED', error_message = NULL, "
-            "retry_count = retry_count + 1 WHERE event_id = ? AND tenant_id = ?",
+            "retry_count = retry_count + 1, next_attempt_at = NULL, processed_at = NULL "
+            "WHERE event_id = ? AND tenant_id = ?",
             (event_id, tenant_id),
         )
     refreshed = state.sqlite.get_event(event_id, tenant_id=tenant_id) or event

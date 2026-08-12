@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -38,10 +39,15 @@ except ImportError as err:  # pragma: no cover
     ) from err
 
 from engram.config import CoreModelConfig, FrontierLlmConfig
-from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
+from engram.models.core import (
+    CompletionResult,
+    CoreModelError,
+    CoreModelProvider,
+    TransientCoreModelError,
+)
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
 from engram.models.semantic import validate_frontier_output
-from engram.resilience import resilient
+from engram.resilience import CircuitOpenError, resilient
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +120,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
             max_retries=0,                 # we handle retries via @resilient
         )
         self._use_json_mode = _supports_json_mode(cfg.api_base)
+        self._attempt_state = threading.local()
         # Per-provider breaker key so one backend outage does not open another.
         host = (cfg.api_base or "openai").split("//", 1)[-1].split("/", 1)[0]
         self._breaker_key = f"openai_compat_core_{host}"
@@ -128,6 +135,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
     def _call_chat(
         self, *, system: str, user: str, max_tokens: int, temperature: float,
     ):
+        self._attempt_state.count = self._attempt_count() + 1
         kwargs: dict[str, Any] = {
             "model": self.cfg.model_path,
             "messages": [
@@ -141,6 +149,23 @@ class OpenAICompatCoreProvider(CoreModelProvider):
             kwargs["response_format"] = {"type": "json_object"}
         return self._client.chat.completions.create(**kwargs)
 
+    def _attempt_count(self) -> int:
+        return int(getattr(self._attempt_state, "count", 0))
+
+    def _call_chat_mapped(self, **kwargs: Any) -> Any:
+        try:
+            return self._call_chat(**kwargs)
+        except (*_RETRYABLE, CircuitOpenError) as err:
+            raise TransientCoreModelError(
+                f"openai-compat transient API error: {err}",
+                provider_calls=self._attempt_count(),
+            ) from err
+        except openai.APIError as err:
+            raise CoreModelError(
+                f"openai-compat API error: {err}",
+                provider_calls=self._attempt_count(),
+            ) from err
+
     def complete(
         self,
         *,
@@ -151,17 +176,15 @@ class OpenAICompatCoreProvider(CoreModelProvider):
         temperature: float | None = None,
     ) -> CompletionResult:
         sys_text = system_prompt + _CORE_SYSTEM_SUFFIX
+        self._attempt_state.count = 0
         if output_schema is not None:
             sys_text += "\n\nOutput schema:\n" + json.dumps(output_schema, indent=2)
         started = time.perf_counter()
-        try:
-            resp = self._call_chat(
-                system=sys_text, user=user_prompt,
-                max_tokens=max_tokens or self.cfg.max_tokens,
-                temperature=self.cfg.temperature if temperature is None else temperature,
-            )
-        except openai.APIError as err:
-            raise CoreModelError(f"openai-compat API error: {err}") from err
+        resp = self._call_chat_mapped(
+            system=sys_text, user=user_prompt,
+            max_tokens=max_tokens or self.cfg.max_tokens,
+            temperature=self.cfg.temperature if temperature is None else temperature,
+        )
         latency_ms = (time.perf_counter() - started) * 1000
         raw_text = resp.choices[0].message.content or ""
 
@@ -174,7 +197,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
                 f"{user_prompt}\n\nYour previous response was not valid JSON. "
                 "Respond with ONLY the JSON object, no prose or fences."
             )
-            resp = self._call_chat(
+            resp = self._call_chat_mapped(
                 system=sys_text, user=retry_user,
                 max_tokens=max_tokens or self.cfg.max_tokens,
                 temperature=0.0,
@@ -190,6 +213,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
             tokens_in=getattr(usage, "prompt_tokens", None) if usage else None,
             tokens_out=getattr(usage, "completion_tokens", None) if usage else None,
             latency_ms=latency_ms,
+            provider_calls=max(1, self._attempt_count()),
         )
 
 
@@ -207,6 +231,7 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
             max_retries=0,
         )
         self._use_json_mode = _supports_json_mode(getattr(cfg, "api_base", None))
+        self._attempt_state = threading.local()
 
     @resilient(
         breaker="openai_compat_frontier",
@@ -216,6 +241,7 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
         log_context="openai_compat_frontier.answer",
     )
     def _call_chat(self, *, system: str, user: str):
+        self._attempt_state.count = self._attempt_count() + 1
         kwargs: dict[str, Any] = {
             "model": self.cfg.model_path,
             "messages": [
@@ -229,6 +255,23 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
             kwargs["response_format"] = {"type": "json_object"}
         return self._client.chat.completions.create(**kwargs)
 
+    def _attempt_count(self) -> int:
+        return int(getattr(self._attempt_state, "count", 0))
+
+    def _call_chat_mapped(self, *, system: str, user: str) -> Any:
+        try:
+            return self._call_chat(system=system, user=user)
+        except (*_RETRYABLE, CircuitOpenError) as err:
+            raise TransientCoreModelError(
+                f"openai-compat frontier transient API error: {err}",
+                provider_calls=self._attempt_count(),
+            ) from err
+        except openai.APIError as err:
+            raise CoreModelError(
+                f"openai-compat frontier API error: {err}",
+                provider_calls=self._attempt_count(),
+            ) from err
+
     def answer(
         self,
         *,
@@ -238,6 +281,7 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
         allow_need_more: bool = True,
     ) -> FrontierVerdict:
         system_text = (system_prompt or "") + "\n\n" + _FRONTIER_SYSTEM
+        self._attempt_state.count = 0
         if not allow_need_more:
             system_text += (
                 "\n\nThis is the final call. You MUST emit ANSWER with a best-effort "
@@ -249,14 +293,14 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
         parsed = None
         for attempt in range(2):
             try:
-                resp = self._call_chat(system=system_text, user=repair_user)
+                resp = self._call_chat_mapped(system=system_text, user=repair_user)
                 raw_text = resp.choices[0].message.content or ""
                 parsed = validate_frontier_output(
                     CoreModelProvider.extract_json(raw_text)
                 )
                 break
-            except openai.APIError as err:
-                raise CoreModelError(f"openai-compat frontier API error: {err}") from err
+            except TransientCoreModelError:
+                raise
             except CoreModelError:
                 if attempt:
                     raise
@@ -278,6 +322,7 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
             tokens_in=getattr(usage, "prompt_tokens", None) if usage else None,
             tokens_out=getattr(usage, "completion_tokens", None) if usage else None,
             latency_ms=latency_ms,
+            provider_calls=max(1, self._attempt_count()),
         )
 
     def stream_answer(  # type: ignore[override]
