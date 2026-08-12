@@ -1,6 +1,9 @@
 """Semantic checks used by the read-only LoCoMo corpus auditor."""
 
-from benchmarks.audit_locomo_corpus import _caption_only_ownership_abstract
+from benchmarks.audit_locomo_corpus import (
+    _caption_only_creation,
+    _caption_only_ownership_abstract,
+)
 
 
 def test_caption_object_in_abstract_but_only_in_caption_is_unsafe() -> None:
@@ -24,4 +27,24 @@ def test_spoken_ownership_is_not_caption_only() -> None:
         "Caroline owns a necklace.",
         "caroline said this necklace is special to me.",
         "a person holding a necklace",
+    )
+
+
+def test_generic_making_cue_does_not_support_captioned_artifact_creation() -> None:
+    assert _caption_only_creation(
+        "bowl with a black and white flower design",
+        "melanie",
+        "making it is calming. look at this!",
+        "a bowl with a black and white flower design",
+        {"caroline", "melanie"},
+    )
+
+
+def test_explicit_deictic_creation_supports_captioned_artifact() -> None:
+    assert not _caption_only_creation(
+        "bowl with a flower design",
+        "melanie",
+        "i made this.",
+        "a bowl with a flower design",
+        {"melanie"},
     )

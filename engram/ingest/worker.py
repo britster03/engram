@@ -89,6 +89,11 @@ _CREATION_CUE = re.compile(
     r"\b(?:authored|built|crafted|created|designed|made|make|makes|making|painted|wrote)\b",
     re.IGNORECASE,
 )
+_EXPLICIT_DEICTIC_CREATION_CUE = re.compile(
+    r"\b(?:i|we)\s+(?:authored|built|crafted|created|designed|made|painted|wrote)\s+"
+    r"(?:it|that|this)\b",
+    re.IGNORECASE,
+)
 _GIFT_CUE = re.compile(
     r"\b(?:gave|gift|gifted|given|present|received)\b",
     re.IGNORECASE,
@@ -388,11 +393,15 @@ def _prepare_extraction(
     vocab = vocabulary()
     supported_triplets: list[dict[str, Any]] = []
     rejected_caption_ownership: list[dict[str, Any]] = []
+    rejected_caption_creation: list[dict[str, Any]] = []
     for raw in raw_triplets:
         if not isinstance(raw, dict):
             continue
         if _caption_only_ownership(raw, payload):
             rejected_caption_ownership.append(raw)
+            continue
+        if _caption_only_creation(raw, payload):
+            rejected_caption_creation.append(raw)
             continue
         if _placeholder_fact(raw) or _future_state_fact(raw, payload):
             continue
@@ -403,6 +412,12 @@ def _prepare_extraction(
         prepared,
         payload,
         rejected_caption_ownership=rejected_caption_ownership,
+        rejected_caption_creation=rejected_caption_creation,
+    )
+    prepared["resolved_text"] = _evidence_safe_resolved_text(
+        prepared,
+        payload,
+        rejected_caption_creation=rejected_caption_creation,
     )
     candidate_triplets = atomize_triplets(supported_triplets)
     for raw in candidate_triplets:
@@ -484,6 +499,7 @@ def _evidence_safe_abstract(
     payload: dict[str, Any],
     *,
     rejected_caption_ownership: list[dict[str, Any]],
+    rejected_caption_creation: list[dict[str, Any]],
 ) -> str:
     """Keep a rejected caption inference out of the episode vector abstract.
 
@@ -493,14 +509,19 @@ def _evidence_safe_abstract(
     with a literal description of the image-sharing event.
     """
     abstract = str(extraction.get("l0_abstract") or "").strip()[:500]
-    if not rejected_caption_ownership or not _ABSTRACT_OWNERSHIP_CUE.search(abstract):
+    caption_claims = rejected_caption_ownership + rejected_caption_creation
+    unsafe_ownership = bool(
+        rejected_caption_ownership and _ABSTRACT_OWNERSHIP_CUE.search(abstract)
+    )
+    unsafe_creation = bool(rejected_caption_creation and _CREATION_CUE.search(abstract))
+    if not caption_claims or not (unsafe_ownership or unsafe_creation):
         return abstract
     abstract_norm = " ".join(abstract.casefold().split())
     rejected_objects = {
-        " ".join(str(trip.get("object") or "").casefold().split())
-        for trip in rejected_caption_ownership
-        if trip.get("object")
+        _caption_claim_artifact(trip, payload)
+        for trip in caption_claims
     }
+    rejected_objects.discard("")
     if not any(obj in abstract_norm for obj in rejected_objects):
         return abstract
 
@@ -523,6 +544,52 @@ def _evidence_safe_abstract(
 
     obj = next(iter(rejected_objects), "an item")
     return f"An image shared in the conversation depicted {obj}."[:500]
+
+
+def _evidence_safe_resolved_text(
+    extraction: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    rejected_caption_creation: list[dict[str, Any]],
+) -> str:
+    """Remove unsupported caption-derived creation from retrieval prose.
+
+    Exact source turns and captions remain in the episode.  This only removes
+    model-authored derivative sentences that would otherwise turn a visual
+    description plus generic talk about making things into provenance.
+    """
+    resolved = str(extraction.get("resolved_text") or "").strip()
+    if not resolved or not rejected_caption_creation:
+        return resolved
+    artifacts = {
+        _caption_claim_artifact(trip, payload)
+        for trip in rejected_caption_creation
+    }
+    artifacts.discard("")
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", resolved):
+        normalized = " ".join(sentence.casefold().split())
+        if _CREATION_CUE.search(sentence) and any(value in normalized for value in artifacts):
+            continue
+        kept.append(sentence)
+    sanitized = " ".join(kept).strip()
+    return sanitized or _literal_caption_description(payload, artifacts)
+
+
+def _literal_caption_description(payload: dict[str, Any], artifacts: set[str]) -> str:
+    for _role, turn in _source_turn_records(payload):
+        captions = _INLINE_IMAGE_CAPTION.findall(str(turn.get("content") or ""))
+        if turn.get("image_caption"):
+            captions.append(str(turn["image_caption"]))
+        for caption in captions:
+            caption_text = re.sub(
+                r"^\[Image caption:\s*|\]$", "", caption.strip(), flags=re.IGNORECASE
+            )
+            caption_norm = " ".join(caption_text.casefold().split())
+            if any(artifact in caption_norm for artifact in artifacts):
+                speaker = str(turn.get("speaker") or "The speaker").strip()
+                return f"{speaker} shared an image depicting {caption_text}."[:500]
+    return "An image was shared in the conversation."
 
 
 def _future_state_fact(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -568,6 +635,41 @@ def _caption_only_ownership(triplet: dict[str, Any], payload: dict[str, Any]) ->
     spoken_text = " ".join(" ".join(spoken).casefold().split())
     caption_text = " ".join(" ".join(captions).casefold().split())
     return obj in caption_text and obj not in spoken_text
+
+
+def _caption_claim_artifact(triplet: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Return the normalized artifact side of an ownership/creation claim."""
+    subject = " ".join(str(triplet.get("subject") or "").casefold().split())
+    obj = " ".join(str(triplet.get("object") or "").casefold().split())
+    speakers = {
+        " ".join(str(turn.get("speaker") or "").casefold().split())
+        for _role, turn in _source_turn_records(payload)
+        if turn.get("speaker")
+    }
+    return obj if subject in speakers and obj not in speakers else subject
+
+
+def _caption_only_creation(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Reject creation provenance inferred from an image description alone."""
+    relation = " ".join(str(triplet.get("relation") or "").casefold().split())
+    if relation not in _CREATED_BY_RELATIONS:
+        return False
+    artifact = _caption_claim_artifact(triplet, payload)
+    if not artifact:
+        return False
+    spoken: list[str] = []
+    captions: list[str] = []
+    for _role, turn in _source_turn_records(payload):
+        content = str(turn.get("content") or "")
+        captions.extend(_INLINE_IMAGE_CAPTION.findall(content))
+        spoken.append(_INLINE_IMAGE_CAPTION.sub("", content))
+        if turn.get("image_caption"):
+            captions.append(str(turn["image_caption"]))
+    spoken_text = " ".join(" ".join(spoken).casefold().split())
+    caption_text = " ".join(" ".join(captions).casefold().split())
+    if artifact not in caption_text or artifact in spoken_text:
+        return False
+    return not _EXPLICIT_DEICTIC_CREATION_CUE.search(" ".join(spoken))
 
 
 def _repair_created_by(

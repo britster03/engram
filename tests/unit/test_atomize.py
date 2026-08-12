@@ -165,7 +165,7 @@ def test_prepare_extraction_keeps_spoken_ownership_with_a_caption() -> None:
     assert [trip["object"] for trip in prepared["triplets"]] == ["hand-painted bowl"]
 
 
-def test_prepare_extraction_repairs_backward_caption_creation() -> None:
+def test_prepare_extraction_drops_caption_only_creation_despite_generic_making_cue() -> None:
     prepared = _prepare_extraction(  # type: ignore[arg-type]
         SimpleNamespace(embed=_Embed()),
         {
@@ -193,16 +193,41 @@ def test_prepare_extraction_repairs_backward_caption_creation() -> None:
         },
     )
 
-    assert prepared["triplets"] == [
+    assert prepared["triplets"] == []
+    assert prepared["resolved_text"] == (
+        "Melanie finds making pottery calming and shared a bowl."
+    )
+
+
+def test_prepare_extraction_keeps_explicit_deictic_caption_creation() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
         {
-            "subject": "bowl with a black and white flower design",
-            "relation": "created_by",
-            "object": "Melanie",
-            "object_kind": "ENTITY",
-            "confidence": 0.7,
-            "explicit_correction": False,
-            "relation_normalized": True,
-        }
+            "resolved_text": "Melanie made the pictured bowl.",
+            "l0_abstract": "Melanie made a pottery bowl.",
+            "triplets": [
+                {
+                    "subject": "bowl with a flower design",
+                    "relation": "created_by",
+                    "object": "Melanie",
+                    "object_kind": "ENTITY",
+                    "confidence": 0.95,
+                }
+            ],
+        },
+        {
+            "turn_pair": {
+                "assistant": {
+                    "content": "I made this. [Image caption: a bowl with a flower design]",
+                    "speaker": "Melanie",
+                    "image_caption": "a bowl with a flower design",
+                }
+            }
+        },
+    )
+
+    assert [(row["subject"], row["relation"], row["object"]) for row in prepared["triplets"]] == [
+        ("bowl with a flower design", "created_by", "Melanie")
     ]
 
 

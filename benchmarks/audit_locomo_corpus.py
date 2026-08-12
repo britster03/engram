@@ -26,6 +26,11 @@ _CREATION_CUE = re.compile(
     r"\b(?:authored|built|crafted|created|designed|made|make|makes|making|painted|wrote)\b",
     re.IGNORECASE,
 )
+_EXPLICIT_DEICTIC_CREATION_CUE = re.compile(
+    r"\b(?:i|we)\s+(?:authored|built|crafted|created|designed|made|painted|wrote)\s+"
+    r"(?:it|that|this)\b",
+    re.IGNORECASE,
+)
 _GIFT_CUE = re.compile(r"\b(?:gave|gift|gifted|given|present|received)\b", re.IGNORECASE)
 _ABSTRACT_OWNERSHIP_OBJECT = re.compile(
     r"\b(?:drives|has|maintains|owns|possesses)\s+"
@@ -118,6 +123,22 @@ def _caption_only_ownership_abstract(abstract: str, spoken: str, captions: str) 
         return False
     obj = " ".join(match.group("object").casefold().split()).strip(" ,;:")
     return bool(obj and obj in captions and obj not in spoken)
+
+
+def _caption_only_creation(
+    subject: str,
+    obj: str,
+    spoken: str,
+    captions: str,
+    speakers: set[str],
+) -> bool:
+    artifact = obj if subject in speakers and obj not in speakers else subject
+    return bool(
+        artifact
+        and artifact in captions
+        and artifact not in spoken
+        and not _EXPLICIT_DEICTIC_CREATION_CUE.search(spoken)
+    )
 
 
 def audit(
@@ -379,6 +400,8 @@ def audit(
         if relation == "created_by":
             if subject in speakers:
                 fail("created_by_direction", uri)
+            if _caption_only_creation(subject, obj, spoken, captions, speakers):
+                fail("caption_only_creation", uri)
             if not _CREATION_CUE.search(spoken):
                 fail("created_by_source_support", uri)
         if relation == "gifted_by" and not _GIFT_CUE.search(spoken):
