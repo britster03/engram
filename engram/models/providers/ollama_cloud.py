@@ -21,6 +21,7 @@ from engram.models.core import (
     CompletionResult,
     CoreModelError,
     CoreModelProvider,
+    ProviderQuotaError,
     TransientCoreModelError,
 )
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
@@ -127,6 +128,20 @@ class _OllamaCloudBase:
         except httpx.HTTPStatusError as err:
             if resp.status_code not in {408, 429, 500, 502, 503, 504}:
                 raise
+            if resp.status_code == 429:
+                try:
+                    error_text = str(resp.json().get("error") or "")
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    error_text = ""
+                normalized = error_text.casefold()
+                if (
+                    "reached your session usage limit" in normalized
+                    or "upgrade for higher limits" in normalized
+                ):
+                    raise ProviderQuotaError(
+                        f"ollama cloud quota exhausted: {error_text[:300]}",
+                        provider_calls=self._attempt_count(),
+                    ) from err
             # Provider tiers may return Retry-After. Waiting here makes the
             # subsequent decorator retry respect it instead of immediately
             # contributing another failure to the shared circuit breaker.

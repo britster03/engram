@@ -120,6 +120,36 @@ def test_ollama_cloud_marks_rate_limits_retryable(
     sleep.assert_called_once_with(0.0)
 
 
+def test_ollama_cloud_does_not_retry_exhausted_account_quota(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import engram.models.providers.ollama_cloud as ollama_cloud
+    from engram.models.core import ProviderQuotaError
+    from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider
+
+    provider = OllamaCloudCoreProvider(CoreModelConfig(
+        provider="ollama_cloud",
+        api_key="ollama-test-key",
+        min_request_interval_seconds=0,
+    ))
+    request = httpx.Request("POST", "https://ollama.com/api/chat")
+    response = httpx.Response(
+        429,
+        json={"error": "you have reached your session usage limit, upgrade for higher limits"},
+        request=request,
+    )
+    provider._client.post = MagicMock(return_value=response)
+    sleep = MagicMock()
+    monkeypatch.setattr(ollama_cloud.time, "sleep", sleep)
+
+    with pytest.raises(ProviderQuotaError, match="quota exhausted") as caught:
+        provider.complete(system_prompt="gate", user_prompt="turn")
+
+    assert caught.value.provider_calls == 1
+    assert provider._client.post.call_count == 1
+    sleep.assert_not_called()
+
+
 def test_ollama_cloud_maps_exhausted_transport_error_as_transient():
     from engram.models.core import TransientCoreModelError
     from engram.models.providers.ollama_cloud import OllamaCloudCoreProvider

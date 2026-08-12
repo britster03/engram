@@ -38,6 +38,10 @@ class TransientCoreModelError(CoreModelError):
     """A provider failure that is safe to retry without changing the request."""
 
 
+class ProviderQuotaError(CoreModelError):
+    """A provider account limit that requires an external quota change or reset."""
+
+
 class CoreModelProvider(ABC):
     """Contract: produce validated JSON for a task."""
 
