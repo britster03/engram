@@ -31,6 +31,17 @@ _EXPLICIT_DEICTIC_CREATION_CUE = re.compile(
     r"(?:it|that|this)\b",
     re.IGNORECASE,
 )
+_DIRECT_CREATION_ASSERTION = re.compile(
+    r"\b(?:i|we|he|she|they|[A-Z][a-z]+)\s+"
+    r"(?:authored|built|crafted|created|designed|made|painted|wrote)\b|"
+    r"\b(?:was|were)\s+(?:authored|built|crafted|created|designed|made|painted|written)\s+by\b",
+    re.IGNORECASE,
+)
+_CAPTION_TOKEN = re.compile(r"[a-z0-9]+")
+_CAPTION_TOKEN_STOP = {
+    "and", "for", "from", "holding", "image", "into", "photo", "photograph",
+    "picture", "person", "showing", "that", "the", "their", "this", "with",
+}
 _GIFT_CUE = re.compile(r"\b(?:gave|gift|gifted|given|present|received)\b", re.IGNORECASE)
 _ABSTRACT_OWNERSHIP_OBJECT = re.compile(
     r"\b(?:drives|has|maintains|owns|possesses)\s+"
@@ -138,6 +149,25 @@ def _caption_only_creation(
         and artifact in captions
         and artifact not in spoken
         and not _EXPLICIT_DEICTIC_CREATION_CUE.search(spoken)
+    )
+
+
+def _caption_only_creation_text(text: str, spoken: str, captions: str) -> bool:
+    if not _DIRECT_CREATION_ASSERTION.search(text):
+        return False
+    caption_tokens = {
+        token
+        for token in _CAPTION_TOKEN.findall(captions)
+        if len(token) >= 4 and token not in _CAPTION_TOKEN_STOP
+    }
+    if not caption_tokens.intersection(_CAPTION_TOKEN.findall(text.casefold())):
+        return False
+    if _EXPLICIT_DEICTIC_CREATION_CUE.search(spoken):
+        return False
+    return not any(
+        _DIRECT_CREATION_ASSERTION.search(sentence)
+        and caption_tokens.intersection(_CAPTION_TOKEN.findall(sentence.casefold()))
+        for sentence in re.split(r"(?<=[.!?])\s+", spoken)
     )
 
 
@@ -361,6 +391,11 @@ def audit(
             abstract = memory.body.splitlines()[0] if memory.body else ""
             if _caption_only_ownership_abstract(abstract, spoken, captions):
                 fail("caption_only_ownership_abstract", uri)
+            derivative = memory.body.split("## Source turns", 1)[0]
+            for sentence in re.split(r"(?<=[.!?])\s+", derivative):
+                if _caption_only_creation_text(sentence, spoken, captions):
+                    fail("caption_only_creation_derivative", uri)
+                    break
         if node_type != "FACT":
             continue
         fact = fm.get("fact")

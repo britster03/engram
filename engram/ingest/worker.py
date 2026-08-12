@@ -94,6 +94,33 @@ _EXPLICIT_DEICTIC_CREATION_CUE = re.compile(
     r"(?:it|that|this)\b",
     re.IGNORECASE,
 )
+_DIRECT_CREATION_ASSERTION = re.compile(
+    r"\b(?:i|we|he|she|they|[A-Z][a-z]+)\s+"
+    r"(?:authored|built|crafted|created|designed|made|painted|wrote)\b|"
+    r"\b(?:was|were)\s+(?:authored|built|crafted|created|designed|made|painted|written)\s+by\b",
+    re.IGNORECASE,
+)
+_CAPTION_TOKEN = re.compile(r"[a-z0-9]+")
+_CAPTION_TOKEN_STOP = frozenset(
+    {
+        "and",
+        "for",
+        "from",
+        "holding",
+        "image",
+        "into",
+        "photo",
+        "photograph",
+        "picture",
+        "person",
+        "showing",
+        "that",
+        "the",
+        "their",
+        "this",
+        "with",
+    }
+)
 _GIFT_CUE = re.compile(
     r"\b(?:gave|gift|gifted|given|present|received)\b",
     re.IGNORECASE,
@@ -417,7 +444,6 @@ def _prepare_extraction(
     prepared["resolved_text"] = _evidence_safe_resolved_text(
         prepared,
         payload,
-        rejected_caption_creation=rejected_caption_creation,
     )
     candidate_triplets = atomize_triplets(supported_triplets)
     for raw in candidate_triplets:
@@ -513,8 +539,8 @@ def _evidence_safe_abstract(
     unsafe_ownership = bool(
         rejected_caption_ownership and _ABSTRACT_OWNERSHIP_CUE.search(abstract)
     )
-    unsafe_creation = bool(rejected_caption_creation and _CREATION_CUE.search(abstract))
-    if not caption_claims or not (unsafe_ownership or unsafe_creation):
+    unsafe_creation = _caption_only_creation_text(abstract, payload)
+    if not unsafe_creation and (not caption_claims or not unsafe_ownership):
         return abstract
     abstract_norm = " ".join(abstract.casefold().split())
     rejected_objects = {
@@ -522,7 +548,9 @@ def _evidence_safe_abstract(
         for trip in caption_claims
     }
     rejected_objects.discard("")
-    if not any(obj in abstract_norm for obj in rejected_objects):
+    if unsafe_creation and not rejected_objects:
+        return _literal_caption_description(payload, set())
+    if not unsafe_creation and not any(obj in abstract_norm for obj in rejected_objects):
         return abstract
 
     for _role, turn in _source_turn_records(payload):
@@ -549,8 +577,6 @@ def _evidence_safe_abstract(
 def _evidence_safe_resolved_text(
     extraction: dict[str, Any],
     payload: dict[str, Any],
-    *,
-    rejected_caption_creation: list[dict[str, Any]],
 ) -> str:
     """Remove unsupported caption-derived creation from retrieval prose.
 
@@ -559,21 +585,15 @@ def _evidence_safe_resolved_text(
     description plus generic talk about making things into provenance.
     """
     resolved = str(extraction.get("resolved_text") or "").strip()
-    if not resolved or not rejected_caption_creation:
+    if not resolved:
         return resolved
-    artifacts = {
-        _caption_claim_artifact(trip, payload)
-        for trip in rejected_caption_creation
-    }
-    artifacts.discard("")
     kept: list[str] = []
     for sentence in re.split(r"(?<=[.!?])\s+", resolved):
-        normalized = " ".join(sentence.casefold().split())
-        if _CREATION_CUE.search(sentence) and any(value in normalized for value in artifacts):
+        if _caption_only_creation_text(sentence, payload):
             continue
         kept.append(sentence)
     sanitized = " ".join(kept).strip()
-    return sanitized or _literal_caption_description(payload, artifacts)
+    return sanitized or _literal_caption_description(payload, set())
 
 
 def _literal_caption_description(payload: dict[str, Any], artifacts: set[str]) -> str:
@@ -586,10 +606,43 @@ def _literal_caption_description(payload: dict[str, Any], artifacts: set[str]) -
                 r"^\[Image caption:\s*|\]$", "", caption.strip(), flags=re.IGNORECASE
             )
             caption_norm = " ".join(caption_text.casefold().split())
-            if any(artifact in caption_norm for artifact in artifacts):
+            if not artifacts or any(artifact in caption_norm for artifact in artifacts):
                 speaker = str(turn.get("speaker") or "The speaker").strip()
                 return f"{speaker} shared an image depicting {caption_text}."[:500]
     return "An image was shared in the conversation."
+
+
+def _caption_only_creation_text(text: str, payload: dict[str, Any]) -> bool:
+    """Detect a derivative creation claim grounded only in a caption."""
+    if not _DIRECT_CREATION_ASSERTION.search(text):
+        return False
+    spoken_parts: list[str] = []
+    caption_parts: list[str] = []
+    for _role, turn in _source_turn_records(payload):
+        content = str(turn.get("content") or "")
+        caption_parts.extend(_INLINE_IMAGE_CAPTION.findall(content))
+        spoken_parts.append(_INLINE_IMAGE_CAPTION.sub("", content))
+        if turn.get("image_caption"):
+            caption_parts.append(str(turn["image_caption"]))
+    caption_tokens = {
+        token
+        for token in _CAPTION_TOKEN.findall(" ".join(caption_parts).casefold())
+        if len(token) >= 4 and token not in _CAPTION_TOKEN_STOP
+    }
+    text_tokens = set(_CAPTION_TOKEN.findall(text.casefold()))
+    if not caption_tokens.intersection(text_tokens):
+        return False
+
+    spoken = " ".join(spoken_parts)
+    if _EXPLICIT_DEICTIC_CREATION_CUE.search(spoken):
+        return False
+    for sentence in re.split(r"(?<=[.!?])\s+", spoken):
+        if not _DIRECT_CREATION_ASSERTION.search(sentence):
+            continue
+        sentence_tokens = set(_CAPTION_TOKEN.findall(sentence.casefold()))
+        if caption_tokens.intersection(sentence_tokens):
+            return False
+    return True
 
 
 def _future_state_fact(triplet: dict[str, Any], payload: dict[str, Any]) -> bool:

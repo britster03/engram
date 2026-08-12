@@ -2,6 +2,7 @@
 
 from benchmarks.audit_locomo_corpus import (
     _caption_only_creation,
+    _caption_only_creation_text,
     _caption_only_ownership_abstract,
 )
 
@@ -47,4 +48,12 @@ def test_explicit_deictic_creation_supports_captioned_artifact() -> None:
         "i made this.",
         "a bowl with a flower design",
         {"melanie"},
+    )
+
+
+def test_caption_only_creation_in_retrieval_text_is_unsafe() -> None:
+    assert _caption_only_creation_text(
+        "Melanie shared a bowl with a black and white flower design that she made.",
+        "making pottery is calming. look at this!",
+        "a bowl with a black and white flower design",
     )

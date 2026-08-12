@@ -231,6 +231,39 @@ def test_prepare_extraction_keeps_explicit_deictic_caption_creation() -> None:
     ]
 
 
+def test_prepare_extraction_sanitizes_caption_creation_without_a_triplet() -> None:
+    prepared = _prepare_extraction(  # type: ignore[arg-type]
+        SimpleNamespace(embed=_Embed()),
+        {
+            "resolved_text": (
+                "Melanie enjoys making pottery. Melanie shared a bowl with a black and "
+                "white flower design that she made."
+            ),
+            "l0_abstract": "Melanie made a bowl with a black and white flower design.",
+            "triplets": [{
+                "subject": "Melanie",
+                "relation": "likes",
+                "object": "pottery",
+                "confidence": 0.9,
+            }],
+        },
+        {
+            "turn_pair": {
+                "assistant": {
+                    "content": "Making it is calming. Look at this!",
+                    "speaker": "Melanie",
+                    "image_caption": "a bowl with a black and white flower design",
+                }
+            }
+        },
+    )
+
+    assert prepared["resolved_text"] == "Melanie enjoys making pottery."
+    assert prepared["l0_abstract"] == (
+        "Melanie shared an image depicting a bowl with a black and white flower design."
+    )
+
+
 def test_prepare_extraction_maps_gift_provenance_without_inventing_creation() -> None:
     prepared = _prepare_extraction(  # type: ignore[arg-type]
         SimpleNamespace(embed=_Embed()),
