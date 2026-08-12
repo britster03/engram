@@ -28,12 +28,12 @@ def test_qa_server_admin_templates_include_responsive_and_null_safe_controls():
 
 def test_qa_server_stubs_current_admin_api_calls():
     with TestClient(app) as client:
-        graph = client.get("/api/v1/kg/graph")
+        graph = client.get("/admin/api/kg/graph")
         assert graph.status_code == 200
         assert graph.json()["nodes"]
 
         chat = client.post(
-            "/api/v1/chat/completions",
+            "/admin/api/chat/completions",
             json={"stream": True, "messages": [{"role": "user", "content": "Hello"}]},
         )
         assert chat.status_code == 200
@@ -41,7 +41,7 @@ def test_qa_server_stubs_current_admin_api_calls():
         assert "simulated Engram chat response" in chat.text
 
         bulk = client.post(
-            "/api/v1/ingest/bulk",
+            "/admin/api/ingest/bulk",
             data={"dry_run": "true"},
             files={
                 "file": (
@@ -53,3 +53,7 @@ def test_qa_server_stubs_current_admin_api_calls():
         )
         assert bulk.status_code == 202
         assert bulk.json()["status"] == "DRY_RUN"
+
+        session = client.post("/admin/api/sessions")
+        assert session.status_code == 201
+        assert session.json()["session_id"].startswith("sess-")

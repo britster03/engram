@@ -152,11 +152,13 @@ def memories(prefix: str = "", limit: int = 50):
     })
 
 
+@app.post("/admin/api/ingest")
 @app.post("/api/v1/ingest")
 def ingest():
     return JSONResponse({"event_id": "evt-qa-001", "pair_id": "pair-qa-001", "status": "RECEIVED"}, status_code=202)
 
 
+@app.post("/admin/api/ingest/bulk")
 @app.post("/api/v1/ingest/bulk")
 async def ingest_bulk(
     file: Annotated[UploadFile, File()],
@@ -188,6 +190,7 @@ async def ingest_bulk(
     return JSONResponse(job, status_code=202)
 
 
+@app.get("/admin/api/ingest/bulk/{job_id}")
 @app.get("/api/v1/ingest/bulk/{job_id}")
 def ingest_bulk_status(job_id: str):
     return JSONResponse({
@@ -206,11 +209,13 @@ def ingest_bulk_status(job_id: str):
     })
 
 
+@app.post("/admin/api/sessions")
 @app.post("/api/v1/sessions")
 def create_session():
     return JSONResponse({"session_id": "sess-qa-new", "status": "ACTIVE"}, status_code=201)
 
 
+@app.get("/admin/api/kg/graph")
 @app.get("/api/v1/kg/graph")
 def kg_graph(
     root_uri: str | None = None,
@@ -255,6 +260,7 @@ def kg_graph(
     return JSONResponse({"nodes": nodes, "edges": edges, "limit": limit, "depth": depth})
 
 
+@app.post("/admin/api/chat/completions")
 @app.post("/api/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()

@@ -17,10 +17,87 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
       - run: python -m pip install -e '.[dev,benchmark]'
       - run: ruff check .
-      - run: mypy engram
+      - run: mypy engram benchmarks
       - run: pytest tests/unit tests/integration -q
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m playwright install --with-deps chromium
+      - name: Run Admin UI browser smoke
+        env:
+          ENGRAM_BASE_URL: http://127.0.0.1:8000
+          ENGRAM_ADMIN_KEY: test-api-key-for-qa
+        run: |
+          python -m uvicorn scripts.qa_server:app --host 127.0.0.1 --port 8000 > /tmp/engram-qa-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null && break
+            if [ "$attempt" -eq 30 ]; then
+              cat /tmp/engram-qa-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          pytest tests/e2e/test_chat_e2e.py tests/e2e/test_admin_bulk_upload.py -q --browser chromium
+
+  typescript-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: clients/typescript/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Install wheel with CPU runtime dependencies
+        run: |
+          python -m venv /tmp/engram-wheel-test
+          /tmp/engram-wheel-test/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+          /tmp/engram-wheel-test/bin/pip install dist/engram-*.whl
+          /tmp/engram-wheel-test/bin/python -c 'import engram, torch; assert "+cpu" in torch.__version__'
+          /tmp/engram-wheel-test/bin/engram --help
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.16.1
+      - run: docker compose -f docker-compose.yml config --quiet
+      - run: touch .env.prod && docker compose -f docker-compose.yml -f docker-compose.prod.yml config --no-interpolate --quiet
+      - run: docker build --check .
+      - run: helm lint deploy/helm/engram --set secrets.apiKey=placeholder --set secrets.ollamaApiKey=placeholder --set secrets.neo4jAdminPassword=placeholder
 
   secrets:
     runs-on: ubuntu-latest
