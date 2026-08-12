@@ -12,6 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from engram import metrics as metrics_mod
 from engram.config import EngramConfig
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.sqlite import SqliteStore
@@ -56,6 +57,9 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     for row in stuck_processing:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["processing_stuck"] += 1
+        metrics_mod.ingest_reconciliation_replays_total.labels(
+            reason="processing_stuck"
+        ).inc()
 
     # 2. Any stale GATED_STORE lease → requeue. The durable stage record decides
     # whether processing resumes at extraction, linking, filesystem, or KG;
@@ -69,6 +73,9 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     for row in stuck_gated:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["gated_store_stuck"] += 1
+        metrics_mod.ingest_reconciliation_replays_total.labels(
+            reason="gated_store_stuck"
+        ).inc()
 
     # 3. fs_outbox.state = WRITTEN for > 2 minutes → replay KG index step
     stuck_written = conn.execute(
@@ -78,6 +85,9 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     for row in stuck_written:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["written_stuck"] += 1
+        metrics_mod.ingest_reconciliation_replays_total.labels(
+            reason="written_stuck"
+        ).inc()
 
     # 4. fs_outbox.state = INDEX_FAILED with retry_count < 3 → replay with backoff
     failed = conn.execute(
@@ -87,6 +97,9 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     for row in failed:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["index_failed_retried"] += 1
+        metrics_mod.ingest_reconciliation_replays_total.labels(
+            reason="index_failed"
+        ).inc()
 
     # 4b. KG committed but consolidation intent/COMPLETE did not commit.
     indexed = conn.execute(
@@ -96,6 +109,9 @@ def run_once(ctx: ReconciliationContext) -> dict[str, int]:
     for row in indexed:
         _requeue_event(ctx.sqlite, row["event_id"])
         counts["indexed_without_consolidation"] += 1
+        metrics_mod.ingest_reconciliation_replays_total.labels(
+            reason="indexed_without_consolidation"
+        ).inc()
 
     # 5. §7.4 daily scan: enqueue CONSOLIDATE_OVERVIEW for directories whose
     # child was modified after the overview was regenerated.

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,6 +20,17 @@ from engram.storage.sqlite import SqliteStore
 from engram.uri import pair_id as pair_id_fn
 
 from .providers import DeterministicCoreProvider, DeterministicEmbeddingService
+
+
+def _claim_from_process(
+    database_path: str,
+    start: Any,
+    results: Any,
+) -> None:
+    """Claim from a separate interpreter process for SQLite ownership tests."""
+    store = SqliteStore(database_path)
+    start.wait(timeout=5.0)
+    results.put([row["event_id"] for row in store.claim_pending_events(limit=1)])
 
 
 @pytest.fixture
@@ -156,6 +169,34 @@ def test_claim_batch_is_shared_across_worker_instances(cfg: EngramConfig):
     ev = sqlite.get_event(eid)
     assert ev is not None
     assert ev["status"] == "PROCESSING"
+
+
+def test_claim_is_atomic_across_independent_processes(cfg: EngramConfig):
+    """Two server processes cannot acquire the same SQLite processing lease."""
+    sqlite = SqliteStore(cfg.event_ledger.path)
+    eid = _enqueue(sqlite, "multiprocess", 0, "I live in Chicago.", "OK")
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=_claim_from_process,
+            args=(cfg.event_ledger.path, start, results),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(timeout=10.0)
+        assert process.exitcode == 0
+
+    claims = [results.get(timeout=2.0) for _ in processes]
+    assert sorted(claims, key=len) == [[], [eid]]
+    event = sqlite.get_event(eid)
+    assert event is not None
+    assert event["status"] == "PROCESSING"
 
 
 def test_claim_batch_never_exceeds_free_worker_capacity(cfg: EngramConfig):

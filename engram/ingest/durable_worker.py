@@ -123,6 +123,10 @@ class DurableIngestWorker:
                 for event_id in interrupted
                 if self.ctx.sqlite.release_event_claim(event_id)
             ]
+            if released:
+                metrics_mod.ingest_claim_releases_total.labels(
+                    reason="shutdown_timeout"
+                ).inc(len(released))
             log.warning(
                 "durable ingest shutdown timed out; released %d claim(s) for replay "
                 "(workers=%s)",
@@ -185,6 +189,8 @@ class DurableIngestWorker:
             if available == 0:
                 return []
             rows = self.ctx.sqlite.claim_pending_events(limit=available)
+            if rows:
+                metrics_mod.ingest_claims_total.inc(len(rows))
             claimed: list[str] = []
             for r in rows:
                 eid = r["event_id"]
@@ -211,10 +217,12 @@ class DurableIngestWorker:
 
     def _process_one(self, event_id: str) -> None:
         started = time.perf_counter()
+        metrics_mod.ingest_processing_attempts_total.labels(outcome="started").inc()
         try:
             ctx = self.ctx.ingest_context_factory()
             final = process_event(ctx, event_id)
             metrics_mod.ingest_events_total.labels(final_status=final).inc()
+            metrics_mod.ingest_processing_attempts_total.labels(outcome="completed").inc()
         except TransientCoreModelError as err:
             event = self.ctx.sqlite.get_event(event_id)
             retry_count = int(event.get("retry_count") or 0) if event else 0
@@ -229,6 +237,10 @@ class DurableIngestWorker:
                     event_id, "FAILED", error_message=str(err)[:500]
                 )
                 metrics_mod.ingest_events_total.labels(final_status="FAILED").inc()
+                metrics_mod.ingest_processing_attempts_total.labels(outcome="failed").inc()
+                metrics_mod.ingest_terminal_failures_total.labels(
+                    reason="transient_retry_exhausted"
+                ).inc()
             else:
                 delay = min(
                     self.ctx.cfg.event_ledger.transient_retry_max_delay_seconds,
@@ -248,6 +260,7 @@ class DurableIngestWorker:
                     err,
                 )
                 metrics_mod.ingest_events_total.labels(final_status="DEFERRED").inc()
+                metrics_mod.ingest_processing_attempts_total.labels(outcome="deferred").inc()
         except Exception as err:
             log.exception("durable ingest failed for %s", event_id)
             try:
@@ -255,6 +268,10 @@ class DurableIngestWorker:
                     event_id, "FAILED", error_message=str(err)[:500]
                 )
                 metrics_mod.ingest_events_total.labels(final_status="FAILED").inc()
+                metrics_mod.ingest_processing_attempts_total.labels(outcome="failed").inc()
+                metrics_mod.ingest_terminal_failures_total.labels(
+                    reason="permanent_pipeline_error"
+                ).inc()
             except Exception:
                 log.exception("failed to mark event FAILED")
         finally:

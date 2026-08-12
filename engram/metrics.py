@@ -55,6 +55,35 @@ ingest_events_total = Counter(
     ["final_status"],
     registry=REGISTRY,
 )
+ingest_claims_total = Counter(
+    "engram_ingest_claims_total",
+    "Durable ingest processing leases acquired from SQLite.",
+    registry=REGISTRY,
+)
+ingest_processing_attempts_total = Counter(
+    "engram_ingest_processing_attempts_total",
+    "Durable ingest processing attempts by outcome.",
+    ["outcome"],
+    registry=REGISTRY,
+)
+ingest_claim_releases_total = Counter(
+    "engram_ingest_claim_releases_total",
+    "Durable ingest processing leases released without a retry.",
+    ["reason"],
+    registry=REGISTRY,
+)
+ingest_reconciliation_replays_total = Counter(
+    "engram_ingest_reconciliation_replays_total",
+    "Ingest events returned to the durable queue by reconciliation.",
+    ["reason"],
+    registry=REGISTRY,
+)
+ingest_terminal_failures_total = Counter(
+    "engram_ingest_terminal_failures_total",
+    "Ingest events terminally failed by failure class.",
+    ["reason"],
+    registry=REGISTRY,
+)
 core_model_calls = Counter(
     "engram_core_model_calls_total",
     "Calls per Core Model task.",
