@@ -215,6 +215,23 @@ def _selected_questions(
     return selected
 
 
+def _benchmark_query(probe: Any) -> str:
+    """Return the question text expected by the official LoCoMo protocol.
+
+    LoCoMo's reference runner gives temporal (category 2) questions an
+    explicit instruction to resolve relative phrases against the conversation
+    date.  Keep that evaluation-only instruction in the harness so production
+    query behavior remains unchanged while benchmark prompts stay comparable
+    with the official protocol.
+    """
+    if probe.category == 2:
+        return (
+            f"{probe.question} "
+            "Use DATE of CONVERSATION to answer with an approximate date."
+        )
+    return str(probe.question)
+
+
 def _expected_manifest(conversations: list[Conversation], args: argparse.Namespace) -> dict:
     questions = [
         {
@@ -828,10 +845,11 @@ def run(args: argparse.Namespace) -> int:
                     result_id = f"{conv.sample_id}:q{question_idx}"
                     if result_id in completed_ids:
                         continue
+                    benchmark_query = _benchmark_query(probe)
                     query_started = time.monotonic()
                     try:
                         response = client.query(
-                            probe.question,
+                            benchmark_query,
                             max_depth=args.max_depth,
                             min_depth=args.min_depth,
                             max_reentries=args.max_reentries,
@@ -875,6 +893,7 @@ def run(args: argparse.Namespace) -> int:
                         "tenant_id": tenant_id,
                         "q_idx": question_idx,
                         "question": probe.question,
+                        "submitted_query": benchmark_query,
                         "category": probe.category,
                         "category_name": probe.category_name,
                         "is_adversarial": probe.is_adversarial,

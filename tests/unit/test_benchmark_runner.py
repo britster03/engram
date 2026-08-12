@@ -7,6 +7,7 @@ import pytest
 from benchmarks.engram_client import DrainConfig, EngramClient, IngestFailedError
 from benchmarks.loader import Conversation, QAProbe, Turn
 from benchmarks.run_locomo import (
+    _benchmark_query,
     _dataset_provenance_error,
     _effective_drain_timeout,
     _event_latency_seconds,
@@ -178,6 +179,17 @@ def test_canary_question_selection_is_seeded_and_category_balanced() -> None:
     for _index, probe in first:
         counts[probe.category] += 1
     assert counts == {category: 2 for category in range(1, 6)}
+
+
+def test_temporal_questions_follow_official_locomo_prompt_protocol() -> None:
+    temporal = QAProbe("When did it happen?", "yesterday", 2, ["D1:1"], False)
+    regular = QAProbe("What happened?", "event", 4, ["D1:1"], False)
+
+    assert _benchmark_query(temporal) == (
+        "When did it happen? "
+        "Use DATE of CONVERSATION to answer with an approximate date."
+    )
+    assert _benchmark_query(regular) == "What happened?"
 
 
 def test_partial_corpus_questions_require_all_evidence_to_be_ingested() -> None:
