@@ -162,7 +162,12 @@ def run(args: argparse.Namespace) -> int:
                 except DrainTimeout as err:
                     print(f"  ! drain timeout, querying anyway: {err}")
 
-                questions = conv.qa[: args.limit_questions] if args.limit_questions else conv.qa
+                questions = conv.qa
+                if args.categories:
+                    wanted = {c.strip() for c in args.categories.split(",") if c.strip()}
+                    questions = [q for q in questions if q.category_name in wanted]
+                if args.limit_questions:
+                    questions = questions[: args.limit_questions]
                 for qidx, probe in enumerate(questions):
                     try:
                         res = client.query(
@@ -279,6 +284,9 @@ def main() -> int:
     p.add_argument("--admin-key", default=None)
     p.add_argument("--limit-convs", type=int, default=0, help="0 = all")
     p.add_argument("--limit-questions", type=int, default=0, help="0 = all per conv")
+    p.add_argument("--categories", default="",
+                   help="comma-separated category filter, e.g. 'temporal' "
+                        "(names: multi_hop,temporal,open_domain,single_hop,adversarial)")
     p.add_argument("--limit-pairs", type=int, default=0,
                    help="0 = all; cap ingested pairs for a cheap plumbing smoke test")
     p.add_argument("--max-depth", default=None, help="cap cascade depth, e.g. L2")

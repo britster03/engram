@@ -73,6 +73,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
 
     payload = event["payload"]
     turn_pair = _turn_pair(payload)
+    event_time = _turn_time(payload)
 
     # --- Step 2: Write-path gate -----------------------------------------
     with _Timed("gate"), tracing.span("ingest.gate", event_id=event_id):
@@ -114,7 +115,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
     # --- Step 5: Filesystem write (authoritative) ------------------------
     with _Timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
         episode_uri, _ = _write_episode(
-            ctx, event_id, event["session_id"], extraction
+            ctx, event_id, event["session_id"], extraction, event_time=event_time
         )
         entity_records: list[tuple[str, str, str]] = []
         for slug, display_name, matched_uri in entities:
@@ -123,7 +124,7 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 continue
             ent_uri = _write_entity(
                 ctx, event_id, event["session_id"], slug, display_name,
-                extraction["l0_abstract"],
+                extraction["l0_abstract"], event_time=event_time,
             )
             entity_records.append((slug, display_name, ent_uri))
         ctx.sqlite.fs_outbox_write(event_id, episode_uri, tenant_id=event_tenant)
@@ -187,6 +188,38 @@ def _turn_pair(payload: dict[str, Any]) -> dict[str, str]:
         "user": u.get("content", "") if isinstance(u, dict) else str(u or ""),
         "assistant": a.get("content", "") if isinstance(a, dict) else str(a or ""),
     }
+
+
+def _turn_time(payload: dict[str, Any]) -> str | None:
+    """Event time for this turn pair, from the per-turn `timestamp`.
+
+    The API accepts a `timestamp` on each turn, but the worker previously
+    ignored it and stamped memories with wall-clock ingest time — so facts from
+    a 2023 conversation ingested in 2026 looked like 2026 events. Prefer the
+    user turn's timestamp, then the assistant's; None when neither is set.
+    """
+    tp = payload.get("turn_pair") or payload.get("turn_group") or payload
+    for role in ("user", "assistant"):
+        turn = tp.get(role) if isinstance(tp, dict) else None
+        if isinstance(turn, dict):
+            ts = turn.get("timestamp")
+            if isinstance(ts, str) and ts.strip():
+                return ts.strip()
+    return None
+
+
+def _event_date_str(event_time: str | None) -> str:
+    """YYYY-MM-DD for the episode filename, from the event time when available.
+
+    Falls back to wall-clock date when no usable timestamp is provided.
+    """
+    if event_time:
+        try:
+            return datetime.fromisoformat(event_time).strftime("%Y-%m-%d")
+        except ValueError:
+            if len(event_time) >= 10 and event_time[4] == "-" and event_time[7] == "-":
+                return event_time[:10]
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _call_gate(
@@ -273,8 +306,9 @@ def _write_episode(
     event_id: str,
     session_id: str | None,
     extraction: dict[str, Any],
+    event_time: str | None = None,
 ) -> tuple[str, str]:
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = _event_date_str(event_time)
     summary_slug = slugify(extraction["l0_abstract"], separator="-", lowercase=True)[:60]
     filename = f"{date_str}_{summary_slug or 'episode'}.md"
     uri = f"mem://user/episodes/{filename}"
@@ -291,6 +325,10 @@ def _write_episode(
             "ingest_event_id": event_id,
         },
     }
+    # Anchor the memory to when the event occurred (from the turn timestamp),
+    # not when it was ingested. `created_at` stays the ingest time.
+    if event_time:
+        fm["temporal"] = {"valid_from": event_time, "valid_until": None}
     body = f"{extraction['l0_abstract']}\n\n{extraction['resolved_text']}\n"
     mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
     path = ctx.fs.write_atomic(uri, mf.serialize())
@@ -304,6 +342,7 @@ def _write_entity(
     slug: str,
     display_name: str,
     l0_abstract: str,
+    event_time: str | None = None,
 ) -> str:
     filename = f"{slug}.md"
     uri = f"mem://user/entities/{slug}/{filename}"
@@ -323,6 +362,9 @@ def _write_entity(
             "ingest_event_id": event_id,
         },
     }
+    # First-mention event time from the turn timestamp (see _write_episode).
+    if event_time:
+        fm["temporal"] = {"valid_from": event_time, "valid_until": None}
     body = f"{display_name} (entity).\n\n{l0_abstract}\n"
     mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
     ctx.fs.write_atomic(uri, mf.serialize())
