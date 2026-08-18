@@ -4,9 +4,10 @@ LoCoMo answers are free-form ("Psychology, counseling certification"), so a
 string match cannot decide correctness -- Engram may phrase the same fact
 completely differently. We ask a model to grade semantic equivalence instead.
 
-Judge model: Kimi via Ollama Cloud, using the same native /chat + format=json
-call shape Engram itself uses (see engram/models/providers/ollama_cloud.py).
-Kept dependency-free of Engram internals so the harness runs on its own.
+Judge model: MiMo-V2.5 via OpenCode Zen Go, an OpenAI-compatible Chat
+Completions endpoint — the same provider Engram itself is configured against
+(config.yaml -> provider: openai_compat). Kept dependency-free of Engram
+internals so the harness runs on its own.
 
 Two grading modes:
 
@@ -30,8 +31,9 @@ from dataclasses import dataclass
 import httpx
 
 # Defaults mirror config.yaml so the judge lines up with Engram's own provider.
-DEFAULT_BASE = "https://ollama.com/api"
-DEFAULT_MODEL = "kimi-k2.7-code:cloud"
+DEFAULT_BASE = "https://opencode.ai/zen/go/v1"
+DEFAULT_MODEL = "mimo-v2.5"
+API_KEY_ENV = "OPENCODE_API_KEY"
 
 
 @dataclass
@@ -78,7 +80,7 @@ _ADVERSARIAL_SYSTEM = (
 
 
 class OllamaJudge:
-    """Grades predictions with Kimi via Ollama Cloud's native chat API."""
+    """Grades predictions via an OpenAI-compatible Chat Completions endpoint."""
 
     def __init__(
         self,
@@ -89,11 +91,14 @@ class OllamaJudge:
         timeout_s: float = 60.0,
         max_retries: int = 3,
     ) -> None:
-        api_key = api_key or os.environ.get("OLLAMA_API_KEY")
+        api_key = api_key or os.environ.get(API_KEY_ENV)
         if not api_key:
-            raise RuntimeError("OLLAMA_API_KEY is required for the judge")
+            raise RuntimeError(f"{API_KEY_ENV} is required for the judge")
         self.model = model
         self.max_retries = max_retries
+        # Providers vary in whether they accept response_format=json_object.
+        # Start with it on; _chat drops it permanently after a 4xx rejection.
+        self._use_json_mode = True
         self._http = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
@@ -111,28 +116,33 @@ class OllamaJudge:
 
     def _chat(self, system: str, user: str) -> str:
         """One deterministic JSON chat call, with a small retry on transport."""
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 0.0, "num_predict": 256},
-        }
         last_err: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            payload: dict[str, object] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 256,
+            }
+            if self._use_json_mode:
+                payload["response_format"] = {"type": "json_object"}
             try:
-                resp = self._http.post("/chat", json=payload)
+                resp = self._http.post("/chat/completions", json=payload)
+                # Some providers reject response_format; drop it and retry once.
+                if resp.status_code in (400, 422) and self._use_json_mode:
+                    self._use_json_mode = False
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
                 content = ""
-                msg = data.get("message")
-                if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                    content = msg["content"]
-                elif isinstance(data.get("response"), str):
-                    content = data["response"]
+                choices = data.get("choices")
+                if isinstance(choices, list) and choices:
+                    msg = choices[0].get("message")
+                    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                        content = msg["content"]
                 # An empty 200 reply (the model returned nothing) is transient —
                 # treat it like a transport error and retry rather than surfacing
                 # it as an unparseable grade.
@@ -208,7 +218,7 @@ class OllamaJudge:
 
 if __name__ == "__main__":
     # Self-test with fixed cases so you can eyeball the judge before a real run.
-    # Needs OLLAMA_API_KEY in the environment.
+    # Needs OPENCODE_API_KEY in the environment.
     cases = [
         # (question, gold, predicted, is_adversarial, expected_correct)
         ("When did Caroline go to the support group?", "7 May 2023",

@@ -24,7 +24,7 @@ Usage (smoke first, then full):
 Env:
     ENGRAM_BASE_URL   default http://127.0.0.1:8000
     ENGRAM_ADMIN_KEY  required (used to create per-conversation tenants)
-    OLLAMA_API_KEY    required (judge model)
+    OPENCODE_API_KEY  required (judge model)
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engram_client import DrainConfig, DrainTimeout, EngramClient, EngramError  # noqa: E402
-from judge import OllamaJudge  # noqa: E402
+from judge import API_KEY_ENV, OllamaJudge  # noqa: E402
 from loader import Conversation, load_locomo  # noqa: E402
 
 
@@ -119,8 +119,8 @@ def run(args: argparse.Namespace) -> int:
     if not admin_key:
         print("error: set ENGRAM_ADMIN_KEY (needed to create tenants)", file=sys.stderr)
         return 2
-    if not os.environ.get("OLLAMA_API_KEY"):
-        print("error: set OLLAMA_API_KEY (needed for the judge)", file=sys.stderr)
+    if not os.environ.get(API_KEY_ENV):
+        print(f"error: set {API_KEY_ENV} (needed for the judge)", file=sys.stderr)
         return 2
 
     conversations = load_locomo(args.data)
