@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engram_client import DrainConfig, DrainTimeout, EngramClient, EngramError  # noqa: E402
+from envfile import load_env_file  # noqa: E402
 from judge import API_KEY_ENV, OllamaJudge  # noqa: E402
 from loader import Conversation, load_locomo  # noqa: E402
 
@@ -114,6 +115,9 @@ def ingest_conversation(
 
 
 def run(args: argparse.Namespace) -> int:
+    env_used = load_env_file(args.env_file)
+    if env_used:
+        print(f"env: {env_used.resolve()}")
     base_url = args.base_url or os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000")
     admin_key = args.admin_key or os.environ.get("ENGRAM_ADMIN_KEY")
     if not admin_key:
@@ -137,6 +141,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"run {run_id}: {len(conversations)} conversation(s) -> {out_dir}")
 
     rows: list[dict] = []
+    skipped: list[dict] = []
     with OllamaJudge() as judge, open(rows_path, "w", encoding="utf-8") as rows_fh:
         for cidx, conv in enumerate(conversations):
             tenant_id = f"{args.tenant_prefix}-{run_id}-c{cidx}"
@@ -146,6 +151,7 @@ def run(args: argparse.Namespace) -> int:
                     base_url=base_url, admin_key=admin_key,
                     tenant_id=tenant_id, display_name=conv.sample_id,
                     query_timeout_s=args.query_timeout,
+                    ledger_path=args.ledger,
                 )
             except EngramError as err:
                 print(f"  ! tenant setup failed, skipping conv: {err}")
@@ -155,12 +161,28 @@ def run(args: argparse.Namespace) -> int:
                 t0 = time.monotonic()
                 n_pairs = ingest_conversation(client, conv, limit_pairs=args.limit_pairs)
                 print(f"  ingested {n_pairs} pairs in {time.monotonic()-t0:.1f}s; draining...")
+                drain = None
                 try:
                     drain = client.wait_for_drain(drain_cfg)
-                    print(f"  drained in {drain['waited_s']:.1f}s "
-                          f"(saw_activity={bool(drain['saw_activity'])})")
+                    print(f"  drained in {drain.waited_s:.1f}s | {drain.summary()}")
                 except DrainTimeout as err:
-                    print(f"  ! drain timeout, querying anyway: {err}")
+                    print(f"  ! DRAIN FAILED: {err}")
+
+                # Scoring a conversation whose ingest did not finish produces a
+                # real-looking accuracy against a memory that was never built
+                # (this is exactly how a Neo4j outage once yielded a phantom 0%).
+                # Skip it unless the operator explicitly opts in.
+                if drain is None or not drain.healthy():
+                    detail = drain.summary() if drain else "no drain result"
+                    if not args.force:
+                        print(f"  ! ingest incomplete ({detail}) — SKIPPING this "
+                              f"conversation so it cannot produce a phantom score. "
+                              f"Check that Neo4j/Redis are up; re-run with --force "
+                              f"to score anyway.")
+                        skipped.append({"conv_idx": cidx, "sample_id": conv.sample_id,
+                                        "reason": detail})
+                        continue
+                    print(f"  ! ingest incomplete ({detail}) — scoring anyway (--force)")
 
                 questions = conv.qa
                 if args.categories:
@@ -228,6 +250,7 @@ def run(args: argparse.Namespace) -> int:
     summary["run_id"] = run_id
     summary["base_url"] = base_url
     summary["generated_at"] = datetime.now(timezone.utc).isoformat()
+    summary["skipped_conversations"] = skipped
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print_summary(summary, rows_path, summary_path)
     return 0
@@ -273,6 +296,8 @@ def print_summary(summary: dict, rows_path: Path, summary_path: Path) -> None:
     _block("by cascade depth reached", summary["by_cascade_depth"])
     if summary["judge_failures"]:
         print(f"\n  ! {summary['judge_failures']} judge failure(s) — flagged for re-judging")
+    for s in summary.get("skipped_conversations", []):
+        print(f"\n  ! SKIPPED conv{s['conv_idx']} ({s['sample_id']}): {s['reason']}")
     print(f"\nrows:    {rows_path}")
     print(f"summary: {summary_path}")
 
@@ -296,6 +321,13 @@ def main() -> int:
                         "ready well before this, so we proceed on timeout")
     p.add_argument("--query-timeout", type=float, default=300.0,
                    help="per-query HTTP timeout (s); queries drive several LLM calls")
+    p.add_argument("--force", action="store_true",
+                   help="score a conversation even if its ingest did not complete "
+                        "(off by default so broken runs cannot yield phantom scores)")
+    p.add_argument("--ledger", default=None,
+                   help="path to the server's event_ledger.db (auto-located by default)")
+    p.add_argument("--env-file", default=None,
+                   help="path to .env (auto-located: ./.env, ../.env, ../../.env)")
     p.add_argument("--tenant-prefix", default="locomo")
     p.add_argument("--out", default="benchmarks/results")
     return run(p.parse_args())

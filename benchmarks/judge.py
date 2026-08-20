@@ -218,7 +218,14 @@ class OllamaJudge:
 
 if __name__ == "__main__":
     # Self-test with fixed cases so you can eyeball the judge before a real run.
-    # Needs OPENCODE_API_KEY in the environment.
+    # Reads OPENCODE_API_KEY from the environment or a nearby .env file.
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    from envfile import load_env_file
+
+    load_env_file()
     cases = [
         # (question, gold, predicted, is_adversarial, expected_correct)
         ("When did Caroline go to the support group?", "7 May 2023",
