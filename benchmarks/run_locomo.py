@@ -41,6 +41,7 @@ from pathlib import Path
 # Allow running as `python benchmarks/run_locomo.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from check_quota import blocked_windows, fetch_usage, format_usage  # noqa: E402
 from engram_client import DrainConfig, DrainTimeout, EngramClient, EngramError  # noqa: E402
 from envfile import load_env_file  # noqa: E402
 from judge import API_KEY_ENV, OllamaJudge  # noqa: E402
@@ -127,6 +128,23 @@ def run(args: argparse.Namespace) -> int:
         print(f"error: set {API_KEY_ENV} (needed for the judge)", file=sys.stderr)
         return 2
 
+    # Pre-flight: a blown provider quota makes every ingest fail with 429, which
+    # costs ~15 minutes and yields nothing. Check before doing any work.
+    if not args.skip_quota_check:
+        try:
+            usage = fetch_usage(os.environ[API_KEY_ENV])
+            blocked = blocked_windows(usage)
+            print("quota:")
+            print(format_usage(usage))
+            if blocked:
+                print(f"\nerror: provider quota exhausted ({', '.join(blocked)}). "
+                      f"Every model call will 429 — aborting before wasting time. "
+                      f"Wait for reset, enable balance, or pass --skip-quota-check.",
+                      file=sys.stderr)
+                return 3
+        except Exception as err:  # non-fatal: never block a run on telemetry
+            print(f"  (quota check unavailable: {err})")
+
     conversations = load_locomo(args.data)
     if args.limit_convs:
         conversations = conversations[: args.limit_convs]
@@ -137,15 +155,22 @@ def run(args: argparse.Namespace) -> int:
     rows_path = out_dir / "rows.jsonl"
     summary_path = out_dir / "summary.json"
 
-    drain_cfg = DrainConfig(max_wait_s=args.drain_timeout)
+    drain_cfg = DrainConfig(
+        max_wait_s=args.drain_timeout,
+        consolidation_max_wait_s=args.consolidation_wait,
+    )
     print(f"run {run_id}: {len(conversations)} conversation(s) -> {out_dir}")
 
     rows: list[dict] = []
     skipped: list[dict] = []
     with OllamaJudge() as judge, open(rows_path, "w", encoding="utf-8") as rows_fh:
         for cidx, conv in enumerate(conversations):
-            tenant_id = f"{args.tenant_prefix}-{run_id}-c{cidx}"
-            print(f"\n[conv {cidx}] {conv.sample_id} tenant={tenant_id}")
+            # --reuse-tenant re-queries a tenant that was already ingested,
+            # skipping the (expensive, ~1600 model call) ingest entirely. Useful
+            # for iterating on retrieval against a fixed memory.
+            tenant_id = args.reuse_tenant or f"{args.tenant_prefix}-{run_id}-c{cidx}"
+            print(f"\n[conv {cidx}] {conv.sample_id} tenant={tenant_id}"
+                  + ("  (reusing existing ingest)" if args.reuse_tenant else ""))
             try:
                 client = EngramClient.create_tenant(
                     base_url=base_url, admin_key=admin_key,
@@ -158,13 +183,30 @@ def run(args: argparse.Namespace) -> int:
                 continue
 
             with client:
-                t0 = time.monotonic()
-                n_pairs = ingest_conversation(client, conv, limit_pairs=args.limit_pairs)
-                print(f"  ingested {n_pairs} pairs in {time.monotonic()-t0:.1f}s; draining...")
+                if args.reuse_tenant:
+                    print("  skipping ingest (--reuse-tenant)")
+                else:
+                    t0 = time.monotonic()
+                    n_pairs = ingest_conversation(
+                        client, conv, limit_pairs=args.limit_pairs
+                    )
+                    print(f"  ingested {n_pairs} pairs in "
+                          f"{time.monotonic()-t0:.1f}s; draining...")
+
+                def _progress(elapsed: float, counts: dict, pending: int) -> None:
+                    done = sum(counts.get(s, 0)
+                               for s in ("COMPLETE", "GATED_SKIP", "FAILED"))
+                    total = sum(counts.values()) or 1
+                    print(f"    ... {elapsed/60:.1f}m  {done}/{total} events done "
+                          f"({100*done/total:.0f}%)  pending={pending}")
+
                 drain = None
                 try:
-                    drain = client.wait_for_drain(drain_cfg)
+                    drain = client.wait_for_drain(drain_cfg, on_progress=_progress)
                     print(f"  drained in {drain.waited_s:.1f}s | {drain.summary()}")
+                    if not drain.consolidation_settled:
+                        print("    note: consolidation still running — L3 overviews "
+                              "may be incomplete (memories are queryable)")
                 except DrainTimeout as err:
                     print(f"  ! DRAIN FAILED: {err}")
 
@@ -316,9 +358,10 @@ def main() -> int:
                    help="0 = all; cap ingested pairs for a cheap plumbing smoke test")
     p.add_argument("--max-depth", default=None, help="cap cascade depth, e.g. L2")
     p.add_argument("--max-reentries", type=int, default=None)
-    p.add_argument("--drain-timeout", type=float, default=240.0,
-                   help="max wait for consolidation to settle; core memory is "
-                        "ready well before this, so we proceed on timeout")
+    p.add_argument("--drain-timeout", type=float, default=5400.0,
+                   help="max wait for INGEST to finish (s). A 214-pair "
+                        "conversation legitimately takes ~45min. Consolidation "
+                        "is waited on separately and is best-effort.")
     p.add_argument("--query-timeout", type=float, default=300.0,
                    help="per-query HTTP timeout (s); queries drive several LLM calls")
     p.add_argument("--force", action="store_true",
@@ -328,6 +371,15 @@ def main() -> int:
                    help="path to the server's event_ledger.db (auto-located by default)")
     p.add_argument("--env-file", default=None,
                    help="path to .env (auto-located: ./.env, ../.env, ../../.env)")
+    p.add_argument("--skip-quota-check", action="store_true",
+                   help="run even if the provider reports an exhausted quota")
+    p.add_argument("--consolidation-wait", type=float, default=60.0,
+                   help="max seconds to wait for consolidation after ingest "
+                        "(best effort; 0 = don't wait, memories are already "
+                        "queryable and only L3 overviews are affected)")
+    p.add_argument("--reuse-tenant", default=None,
+                   help="query an already-ingested tenant instead of re-ingesting "
+                        "(e.g. locomo-0824101603-c0); implies a single conversation")
     p.add_argument("--tenant-prefix", default="locomo")
     p.add_argument("--out", default="benchmarks/results")
     return run(p.parse_args())

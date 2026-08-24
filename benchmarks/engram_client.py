@@ -79,13 +79,24 @@ class DrainTimeout(RuntimeError):
 class DrainConfig:
     """Tunables for the drain wait."""
 
-    max_wait_s: float = 600.0      # hard ceiling for one conversation's ingest
-    poll_interval_s: float = 2.0   # how often to poll
-    settle_s: float = 8.0          # everything must stay quiet this long
+    # A 214-pair conversation runs ~3 model calls per event at a few events per
+    # minute, so a full ingest legitimately takes 45+ minutes.
+    max_wait_s: float = 5400.0     # hard ceiling for one conversation's ingest
+    poll_interval_s: float = 5.0   # how often to poll
+    settle_s: float = 10.0         # everything must stay quiet this long
     activity_grace_s: float = 45.0  # consolidation-only fallback: how long to
     #                                 wait for the queue to rise before assuming
     #                                 it drained faster than we could observe
-    stall_timeout_s: float = 180.0  # abort if pending counts stop moving at all
+    stall_timeout_s: float = 420.0  # abort only if the status breakdown is
+    #                                 completely frozen this long (a single slow
+    #                                 event can hold one slot for minutes)
+    # Consolidation is best-effort: it costs ~4 tasks per pair, memories are
+    # queryable without it, and the PROPAGATE_OVERVIEW cascade can leave a
+    # backlog that never fully settles. Keep the wait short; 0 disables it.
+    consolidation_max_wait_s: float = 60.0
+    # Tolerate a few permanently-wedged events once this share is terminal.
+    straggler_ok_ratio: float = 0.97
+    straggler_grace_s: float = 90.0
 
 
 @dataclass
@@ -95,6 +106,7 @@ class DrainResult:
     waited_s: float
     by_status: dict[str, int]      # terminal + pending event counts for tenant
     source: str                    # "ledger" (authoritative) or "consolidation"
+    consolidation_settled: bool = True  # False -> L3 overviews may be incomplete
 
     @property
     def total(self) -> int:
@@ -113,15 +125,26 @@ class DrainResult:
         """Events that produced memory (COMPLETE); GATED_SKIP stored nothing."""
         return self.by_status.get("COMPLETE", 0)
 
-    def healthy(self, *, min_stored_ratio: float = 0.5) -> bool:
+    def healthy(
+        self,
+        *,
+        min_stored_ratio: float = 0.5,
+        max_failed_ratio: float = 0.05,
+        max_pending_ratio: float = 0.03,
+    ) -> bool:
         """True when ingest actually produced memory for most submitted events.
 
         A run that fails this should not be scored: the questions would be
-        answered against a memory that was never built.
+        answered against a memory that was never built. Small tolerances apply —
+        a couple of wedged or failed events out of hundreds does not meaningfully
+        change what is in memory, and demanding perfection would throw away
+        otherwise complete ingests.
         """
         if self.total == 0:
             return False
-        if self.pending or self.failed:
+        if (self.failed / self.total) > max_failed_ratio:
+            return False
+        if (self.pending / self.total) > max_pending_ratio:
             return False
         return (self.stored / self.total) >= min_stored_ratio
 
@@ -297,7 +320,26 @@ class EngramClient:
             int(by_status.get(s, 0)) > 0 for s in ("PENDING", "PROCESSING")
         )
 
-    def wait_for_drain(self, cfg: DrainConfig | None = None) -> DrainResult:
+    def _consolidation_busy(self) -> tuple[bool | None, int]:
+        """(busy, queue_depth) — busy is None when the status call failed.
+
+        Polling runs for minutes, so a single dropped keep-alive connection
+        (WinError 10053 and friends) must not abort the whole benchmark. The
+        caller treats None as "unknown, keep going".
+        """
+        try:
+            status = self.consolidation_status()
+        except (EngramError, httpx.HTTPError):
+            return None, 0
+        return self._is_busy(status), int(status.get("queue_depth", 0))
+
+    def wait_for_drain(
+        self,
+        cfg: DrainConfig | None = None,
+        *,
+        on_progress: Any = None,
+        progress_every_s: float = 30.0,
+    ) -> DrainResult:
         """Block until this tenant's background ingest + consolidation is done.
 
         Ingest is authoritative: an event row exists the moment /ingest returns,
@@ -305,18 +347,31 @@ class EngramClient:
         to "is there work left?". Only once ingest is fully terminal do we also
         wait for the consolidation queue to settle.
 
-        Raises DrainTimeout on `max_wait_s`, or when pending counts stop moving
-        for `stall_timeout_s` (a stalled worker — e.g. Neo4j down — would
-        otherwise burn the full timeout and then be scored as if it worked).
-        The exception message carries the status breakdown.
+        Two phases, with different consequences:
+
+          Phase 1 (ingest, BLOCKING): wait until no event is pending. This is
+          what decides whether memories exist, so failing here raises
+          DrainTimeout -- on the overall `max_wait_s`, or when the status
+          breakdown is completely frozen for `stall_timeout_s` (e.g. Neo4j
+          down). A handful of permanently-stuck stragglers is tolerated once
+          `straggler_ok_ratio` of events are terminal and nothing has moved for
+          `straggler_grace_s`, so one wedged event cannot block a good run.
+
+          Phase 2 (consolidation, BEST-EFFORT): overview generation costs ~4
+          model calls per pair and can outlast the questions by a wide margin,
+          while memories are already queryable. We wait up to
+          `consolidation_max_wait_s` and then proceed, recording
+          `consolidation_settled=False` so the caller knows L3 overviews may be
+          incomplete. Not settling is NOT an error.
         """
         cfg = cfg or DrainConfig()
         start = time.monotonic()
-        idle_since: float | None = None
-        last_pending: int | None = None
+        last_counts: dict[str, int] | None = None
         last_change = start
-        ledger_seen = False
+        last_report = start
+        counts: dict[str, int] | None = None
 
+        # --- Phase 1: ingest ------------------------------------------------
         while True:
             now = time.monotonic()
             elapsed = now - start
@@ -325,44 +380,87 @@ class EngramClient:
             if counts is None:
                 # No ledger access — fall back to the weaker consolidation-only
                 # wait so the harness still works off-box.
-                if not ledger_seen:
-                    return self._drain_consolidation_only(cfg, start)
-                pending = last_pending or 0
-            else:
-                ledger_seen = True
-                pending = sum(counts.get(s, 0) for s in _PENDING_EVENT_STATUSES)
+                return self._drain_consolidation_only(cfg, start)
 
-            if pending != last_pending:
-                last_pending = pending
+            pending = sum(counts.get(s, 0) for s in _PENDING_EVENT_STATUSES)
+            total = sum(counts.values()) or 1
+            terminal_ratio = (total - pending) / total
+
+            # Progress = ANY movement in the status breakdown, not just a drop in
+            # the pending total. RECEIVED -> PROCESSING keeps the total identical
+            # while real work is happening, so watching the total alone reports a
+            # false stall on a slow-but-healthy ingest.
+            if counts != last_counts:
+                last_counts = counts
                 last_change = now
+
+            if on_progress is not None and (now - last_report) >= progress_every_s:
+                last_report = now
+                on_progress(elapsed, counts, pending)
+
+            if pending == 0:
+                break
+
+            frozen_for = now - last_change
+            if (
+                terminal_ratio >= cfg.straggler_ok_ratio
+                and frozen_for >= cfg.straggler_grace_s
+            ):
+                # Nearly everything landed; a stuck event or two is not worth
+                # abandoning an otherwise complete ingest.
+                break
 
             if elapsed > cfg.max_wait_s:
                 raise DrainTimeout(
-                    f"tenant {self.tenant_id}: not drained within "
-                    f"{cfg.max_wait_s:.0f}s; pending={pending} "
-                    f"counts={counts or '{}'}"
+                    f"tenant {self.tenant_id}: ingest not finished within "
+                    f"{cfg.max_wait_s:.0f}s; pending={pending} counts={counts}"
                 )
-            if pending > 0 and (now - last_change) > cfg.stall_timeout_s:
+            if frozen_for > cfg.stall_timeout_s:
                 raise DrainTimeout(
-                    f"tenant {self.tenant_id}: ingest STALLED — pending={pending} "
-                    f"unchanged for {cfg.stall_timeout_s:.0f}s. Is Neo4j/Redis up? "
-                    f"counts={counts or '{}'}"
+                    f"tenant {self.tenant_id}: ingest STALLED — pending={pending}, "
+                    f"no status change for {cfg.stall_timeout_s:.0f}s. "
+                    f"Is Neo4j/Redis up? counts={counts}"
                 )
 
-            quiet = pending == 0 and not self._is_busy(self.consolidation_status())
-            if quiet:
+            time.sleep(cfg.poll_interval_s)
+
+        # --- Phase 2: consolidation (best effort) ---------------------------
+        cons_start = time.monotonic()
+        idle_since: float | None = None
+        settled = False
+        errors = 0
+        while cfg.consolidation_max_wait_s > 0:
+            now = time.monotonic()
+            busy, depth = self._consolidation_busy()
+            if busy is None:
+                # Transient status failure — tolerate a few, then stop waiting
+                # rather than killing an otherwise-finished run.
+                errors += 1
+                if errors > 3:
+                    break
+            elif busy:
+                errors = 0
+                idle_since = None
+            else:
+                errors = 0
                 if idle_since is None:
                     idle_since = now
                 elif now - idle_since >= cfg.settle_s:
-                    return DrainResult(
-                        waited_s=time.monotonic() - start,
-                        by_status=counts or {},
-                        source="ledger",
-                    )
-            else:
-                idle_since = None
-
+                    settled = True
+                    break
+            if (now - cons_start) > cfg.consolidation_max_wait_s:
+                break
+            if on_progress is not None and (now - last_report) >= progress_every_s:
+                last_report = now
+                print(f"    ... consolidation queue={depth} (best effort)")
             time.sleep(cfg.poll_interval_s)
+
+        return DrainResult(
+            waited_s=time.monotonic() - start,
+            by_status=counts or {},
+            source="ledger",
+            consolidation_settled=settled,
+        )
 
     def _drain_consolidation_only(
         self, cfg: DrainConfig, start: float
