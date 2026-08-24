@@ -62,6 +62,7 @@ class RetrievalMetadata:
     latency_ms: dict[str, float] = field(default_factory=dict)
     l0_decision: str | None = None
     l0_reason: str | None = None
+    forced_answer: bool = False  # final answer came from the best-effort fallback
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +75,7 @@ class RetrievalMetadata:
             "latency_ms": self.latency_ms,
             "l0_decision": self.l0_decision,
             "l0_reason": self.l0_reason,
+            "forced_answer": self.forced_answer,
         }
 
 
@@ -691,9 +693,16 @@ def _answer_loop(
         md.latency_ms[f"frontier_answer_{reentries}"] = (time.perf_counter() - t) * 1000
         if verdict.verdict == "ANSWER" or not allow_more:
             md.reentries = reentries
+            answer = (verdict.answer or "").strip()
+            if not answer:
+                # The re-entry budget is spent but the model still emitted
+                # NEED_MORE (or an empty ANSWER), so it never wrote a reply.
+                # Returning a placeholder wastes the retrieval we just did and
+                # denies the caller even a partial answer, so force one.
+                answer = _force_best_effort(ctx, current_msc, query, verdict)
+                md.forced_answer = True
             _notify_step(on_step, md, "frontier_answer")
-            return QueryResult(answer=verdict.answer or "(no answer produced)",
-                                retrieval_metadata=md)
+            return QueryResult(answer=answer, retrieval_metadata=md)
         reentries += 1
         md.reentries = reentries
         followups = verdict.suggested_queries or [query]
@@ -734,6 +743,45 @@ def _answer_loop(
         md.nodes_retrieved = len(hits)
         md.total_context_tokens = _est_tokens(current_msc)
         _notify_step(on_step, md, f"reentry_{reentries}")
+
+
+def _force_best_effort(
+    ctx: OrchestratorContext,
+    msc: str,
+    query: str,
+    verdict: FrontierVerdict,
+) -> str:
+    """Produce an answer when the frontier's final verdict carried no text.
+
+    `answer()` asks for a JSON verdict, and a model can satisfy that schema with
+    NEED_MORE and an empty `answer` even when told it is the final call — so the
+    JSON contract itself is the escape hatch. `stream_answer()` asks for plain
+    prose instead, removing the option of declining via a verdict field.
+
+    Falls back to the model's own stated `reason` (an honest "why I can't
+    answer" beats a placeholder), then to a fixed message.
+    """
+    try:
+        chunks = ctx.frontier.stream_answer(
+            system_prompt=(
+                "You are the final-answer generator in Engram. Answer the user's "
+                "question using the retrieved memory. If the memory is "
+                "incomplete, give your best supported answer and say what is "
+                "uncertain. Never reply with an empty response."
+            ),
+            msc=msc,
+            user_query=query,
+        )
+        forced = "".join(chunks).strip()
+        if forced:
+            return forced
+    except Exception as err:  # provider/transport failure — fall through
+        log.warning("forced best-effort answer failed: %s", err)
+
+    reason = (verdict.reason or "").strip()
+    if reason:
+        return reason
+    return "No answer could be produced from the retrieved memory."
 
 
 def _run_reentry_cascade(

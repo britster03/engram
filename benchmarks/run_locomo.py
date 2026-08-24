@@ -275,6 +275,7 @@ def run(args: argparse.Namespace) -> int:
                         "levels_visited": meta.get("levels_visited"),
                         "nodes_retrieved": meta.get("nodes_retrieved"),
                         "reentries": meta.get("reentries"),
+                        "forced_answer": meta.get("forced_answer"),
                         "total_context_tokens": meta.get("total_context_tokens"),
                         "latency_ms": meta.get("latency_ms"),
                     }
