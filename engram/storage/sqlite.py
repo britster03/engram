@@ -341,19 +341,51 @@ class SqliteStore:
         task_type: str,
         priority: int = 5,
         tenant_id: str = DEFAULT_TENANT_ID,
+        delay_seconds: int = 0,
+        max_deferral_seconds: int = 300,
     ) -> str | None:
-        """Insert a task; return task_id, or None if deduped by the unique index."""
+        """Insert a task; return task_id, or None if deduped by the unique index.
+
+        `delay_seconds` implements the §7.5 debounce. A directory overview is
+        rebuilt from its children, so rebuilding it after every write produces
+        a series of summaries that each obsolete the previous one — during a
+        bulk ingest that is hundreds of Core Model calls for a single useful
+        result. Deferring the task, and pushing the deadline back each time a
+        new write lands on the same node, collapses that burst into one rebuild
+        once writes stop.
+
+        `max_deferral_seconds` bounds the push-back relative to the task's
+        original creation, so a continuously-busy directory still gets
+        consolidated instead of being starved forever.
+        """
         task_id = f"task-{uuid.uuid4().hex[:12]}"
         try:
             with self.transaction() as conn:
                 conn.execute(
                     "INSERT INTO consolidation_tasks "
                     "(task_id, tenant_id, node_id, task_type, priority, scheduled_at) "
-                    "VALUES (?, ?, ?, ?, ?, datetime('now'))",
-                    (task_id, tenant_id, node_id, task_type, priority),
+                    "VALUES (?, ?, ?, ?, ?, datetime('now', ?))",
+                    (task_id, tenant_id, node_id, task_type, priority,
+                     f"+{max(0, int(delay_seconds))} seconds"),
                 )
             return task_id
         except sqlite3.IntegrityError:
+            if delay_seconds > 0:
+                # Already queued for this node — push the deadline back so the
+                # rebuild waits for the write burst to finish, but never past
+                # created_at + max_deferral_seconds.
+                with self.transaction() as conn:
+                    conn.execute(
+                        "UPDATE consolidation_tasks "
+                        "SET scheduled_at = MIN("
+                        "  datetime('now', ?), datetime(created_at, ?)"
+                        ") "
+                        "WHERE node_id = ? AND task_type = ? AND tenant_id = ? "
+                        "AND status = 'PENDING'",
+                        (f"+{int(delay_seconds)} seconds",
+                         f"+{int(max_deferral_seconds)} seconds",
+                         node_id, task_type, tenant_id),
+                    )
             return None
 
     def queue_depth(self, *, tenant_id: str | None = None) -> int:

@@ -28,6 +28,7 @@ from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.neo4j_store import Neo4jStore
 from engram.storage.sqlite import SqliteStore
+from engram.tenancy import DEFAULT_TENANT_ID
 
 log = logging.getLogger(__name__)
 
@@ -131,11 +132,27 @@ def handle_propagate_overview(
     node_id: str,
     sqlite: SqliteStore,
     cfg: ConsolidationConfig,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> None:
-    """Enqueue CONSOLIDATE_OVERVIEW for each ancestor up to the root, deduped."""
+    """Enqueue CONSOLIDATE_OVERVIEW for each ancestor up to the root, deduped.
+
+    Ancestor rebuilds are debounced like the originating write: this walk is the
+    main multiplier on consolidation cost, since every leaf write would
+    otherwise re-summarise every directory above it.
+
+    `tenant_id` must be threaded through explicitly — this runs on the
+    consolidation worker, outside the request context that binds the ambient
+    tenant, so omitting it silently files the work under the default tenant.
+    """
     ancestor = uri_mod.parent_uri(node_id)
     while ancestor is not None:
-        sqlite.enqueue_task(node_id=ancestor, task_type="CONSOLIDATE_OVERVIEW", priority=5)
+        sqlite.enqueue_task(
+            node_id=ancestor,
+            task_type="CONSOLIDATE_OVERVIEW",
+            priority=5,
+            tenant_id=tenant_id,
+            delay_seconds=cfg.overview_debounce_seconds,
+        )
         ancestor = uri_mod.parent_uri(ancestor)
 
 

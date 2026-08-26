@@ -668,10 +668,18 @@ def _enqueue_consolidation(
         if parent is not None:
             touched.add(parent)
     tid = current_tenant_id()
+    # Overview/manifest work is debounced (§7.5): each write pushes the rebuild
+    # deadline back, so a bulk ingest produces one rebuild per directory once
+    # the writes stop instead of one per turn pair.
+    overview_delay = ctx.cfg.consolidation.overview_debounce_seconds
+    manifest_delay = ctx.cfg.consolidation.manifest_update_delay_seconds
     for dir_uri in touched:
         ctx.sqlite.enqueue_task(node_id=dir_uri, task_type="CONSOLIDATE_OVERVIEW",
-                                priority=5, tenant_id=tid)
+                                priority=5, tenant_id=tid,
+                                delay_seconds=overview_delay)
         ctx.sqlite.enqueue_task(node_id=dir_uri, task_type="REGENERATE_MANIFEST",
-                                priority=5, tenant_id=tid)
+                                priority=5, tenant_id=tid,
+                                delay_seconds=manifest_delay)
         ctx.sqlite.enqueue_task(node_id=dir_uri, task_type="PROPAGATE_OVERVIEW",
-                                priority=7, tenant_id=tid)
+                                priority=7, tenant_id=tid,
+                                delay_seconds=overview_delay)

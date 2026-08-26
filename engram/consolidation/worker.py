@@ -1,9 +1,13 @@
 """Consolidation worker — polls the SQLite queue and dispatches tasks (§7.2).
 
 Runs as a daemon thread owned by the FastAPI lifespan (or the CLI when
-invoked from `engram` operations). Uses the unique `idx_tasks_pending_unique`
-index to debounce (§7.5): duplicate enqueues for the same (node_id, task_type)
-while one is PENDING or PROCESSING are silently coalesced.
+invoked from `engram` operations).
+
+Debounce (§7.5) has two parts: the unique `idx_tasks_pending_unique` index
+coalesces duplicate enqueues for the same (node_id, task_type) while one is
+PENDING or PROCESSING, and `scheduled_at` defers the work so a burst of writes
+to one directory yields a single rebuild once the burst ends. Tasks are only
+claimed once `scheduled_at` has passed.
 """
 
 from __future__ import annotations
@@ -37,9 +41,12 @@ class ConsolidationContext:
 def _next_task(sqlite: SqliteStore) -> dict | None:
     conn = sqlite.get_conn()
     with sqlite.transaction():
+        # `scheduled_at` is a deadline, not just a sort key: a debounced task is
+        # queued with a future time so a burst of writes to the same node
+        # collapses into one rebuild. Claiming it early would defeat that.
         row = conn.execute(
             "SELECT * FROM consolidation_tasks "
-            "WHERE status = 'PENDING' "
+            "WHERE status = 'PENDING' AND scheduled_at <= datetime('now') "
             "ORDER BY priority ASC, scheduled_at ASC LIMIT 1"
         ).fetchone()
         if row is None:
@@ -93,7 +100,8 @@ def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
         )
     elif t == "PROPAGATE_OVERVIEW":
         handlers.handle_propagate_overview(
-            node_id=node_id, sqlite=ctx.sqlite, cfg=ctx.cfg.consolidation
+            node_id=node_id, sqlite=ctx.sqlite, cfg=ctx.cfg.consolidation,
+            tenant_id=task["tenant_id"],
         )
     elif t == "ATOMIZE":
         handlers.handle_atomize(
