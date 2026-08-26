@@ -17,6 +17,7 @@ crashed state without data corruption.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -94,7 +95,9 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
         existing = ctx.sqlite.get_extraction(event_id)
         if existing is None:
             extraction = _call_extract(
-                ctx, turn_pair, session_context=payload.get("session_context")
+                ctx, turn_pair,
+                session_context=payload.get("session_context"),
+                turn_timestamp=event_time,
             )
             ctx.sqlite.save_extraction(
                 event_id=event_id,
@@ -114,8 +117,10 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
 
     # --- Step 5: Filesystem write (authoritative) ------------------------
     with _Timed("fs_write"), tracing.span("ingest.fs_write", event_id=event_id):
+        event_date = extraction.get("event_date")
         episode_uri, _ = _write_episode(
-            ctx, event_id, event["session_id"], extraction, event_time=event_time
+            ctx, event_id, event["session_id"], extraction,
+            event_time=event_time, event_date=event_date,
         )
         entity_records: list[tuple[str, str, str]] = []
         for slug, display_name, matched_uri in entities:
@@ -124,7 +129,8 @@ def process_event(ctx: IngestContext, event_id: str) -> str:
                 continue
             ent_uri = _write_entity(
                 ctx, event_id, event["session_id"], slug, display_name,
-                extraction["l0_abstract"], event_time=event_time,
+                extraction["l0_abstract"],
+                event_time=event_time, event_date=event_date,
             )
             entity_records.append((slug, display_name, ent_uri))
         ctx.sqlite.fs_outbox_write(event_id, episode_uri, tenant_id=event_tenant)
@@ -236,9 +242,24 @@ def _call_gate(
 
 
 def _call_extract(
-    ctx: IngestContext, turn_pair: dict[str, str], *, session_context: str | None
+    ctx: IngestContext,
+    turn_pair: dict[str, str],
+    *,
+    session_context: str | None,
+    turn_timestamp: str | None = None,
 ) -> dict:
-    prompt = prompts.render("extract", turn_pair=turn_pair, session_context=session_context)
+    """Extract S-R-O triplets, resolved text, and the event date.
+
+    `turn_timestamp` is what lets the model turn "last Saturday" into a real
+    date. Without it the extractor cannot resolve relative time at all, and
+    memories end up carrying the speaking date as if it were the event date.
+    """
+    prompt = prompts.render(
+        "extract",
+        turn_pair=turn_pair,
+        session_context=session_context,
+        turn_timestamp=turn_timestamp,
+    )
     result = ctx.core.complete(
         system_prompt=prompt,
         user_prompt="Respond with a JSON object matching the schema.",
@@ -249,7 +270,29 @@ def _call_extract(
     out.setdefault("resolved_text", turn_pair["assistant"])
     out.setdefault("triplets", [])
     out.setdefault("l0_abstract", turn_pair["assistant"][:200])
+    out["event_date"] = _clean_event_date(out.get("event_date"))
     return out
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _clean_event_date(value: Any) -> str | None:
+    """Accept only a well-formed YYYY-MM-DD string; reject anything else.
+
+    The model is asked for null when it cannot determine a date, but it may
+    still return "unknown", an empty string, or a full timestamp.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()[:10]
+    if not _ISO_DATE.match(text):
+        return None
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return text
 
 
 def _resolve_entities(
@@ -307,7 +350,8 @@ def _write_episode(
     session_id: str | None,
     extraction: dict[str, Any],
     event_time: str | None = None,
-) -> tuple[str, str]:
+    event_date: str | None = None,
+) ->tuple[str, str]:
     date_str = _event_date_str(event_time)
     summary_slug = slugify(extraction["l0_abstract"], separator="-", lowercase=True)[:60]
     filename = f"{date_str}_{summary_slug or 'episode'}.md"
@@ -325,10 +369,18 @@ def _write_episode(
             "ingest_event_id": event_id,
         },
     }
-    # Anchor the memory to when the event occurred (from the turn timestamp),
-    # not when it was ingested. `created_at` stays the ingest time.
-    if event_time:
-        fm["temporal"] = {"valid_from": event_time, "valid_until": None}
+    # Separate WHEN IT HAPPENED from WHEN IT WAS SAID. `valid_from` is the
+    # extracted event date when the model could determine one, because a memory
+    # asked "when did X happen?" must not answer with the date of the
+    # conversation. `asserted_at` keeps the speaking time. `created_at` remains
+    # the ingest time.
+    if event_time or event_date:
+        fm["temporal"] = {
+            "valid_from": event_date or event_time,
+            "valid_until": None,
+        }
+        if event_time:
+            fm["temporal"]["asserted_at"] = event_time
     body = f"{extraction['l0_abstract']}\n\n{extraction['resolved_text']}\n"
     mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
     path = ctx.fs.write_atomic(uri, mf.serialize())
@@ -343,7 +395,8 @@ def _write_entity(
     display_name: str,
     l0_abstract: str,
     event_time: str | None = None,
-) -> str:
+    event_date: str | None = None,
+) ->str:
     filename = f"{slug}.md"
     uri = f"mem://user/entities/{slug}/{filename}"
     if ctx.fs.exists(uri):

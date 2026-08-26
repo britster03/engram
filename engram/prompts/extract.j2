@@ -55,16 +55,38 @@ Produce three outputs:
    - Domain-specific framings ("the Henderson deal closes in Q3",
      "the auth service is owned by the platform team").
 
+   TIME RESOLUTION: `resolved_text` must be readable years later with no
+   access to when it was written, so relative time expressions are
+   resolved the same way pronouns are. This turn was spoken on
+   {{ turn_timestamp | default("an unknown date", true) }}. Rewrite "yesterday", "last
+   Saturday", "last week", "two weekends ago", "next month" and similar
+   into explicit absolute dates computed from that date, keeping the
+   original phrasing alongside it.
+   e.g. on 2023-05-25, "I ran a race last Saturday" →
+   "Melanie ran a race last Saturday (2023-05-20)".
+   Never resolve a relative expression when the speaking date is
+   unknown — leave it as written.
+
 3. `l0_abstract`: one sentence (≤ 30 words), information-dense and
    self-contained, capturing the most important fact for vector
    retrieval. This string is embedded; it must be useful when matched
-   against future queries with no other context.
+   against future queries with no other context. Use absolute dates here
+   too, for the same reason.
+
+4. `event_date`: ISO-8601 date (YYYY-MM-DD) of when the described event
+   actually happened, which is often NOT when it was spoken about. For
+   "I ran a race last Saturday" said on 2023-05-25, this is "2023-05-20".
+   Use null when the pair describes no datable event, when the event is
+   ongoing/habitual, or when the date cannot be determined — do not
+   guess, and do not fall back to the speaking date.
 
    For pairs with multiple facts, prioritize the fact most likely to be
    queried later. For embedded-signal pairs, the abstract should name
    the entity and its relationship to the user
    ("User is working on the Henderson acquisition contract."), not
    describe the surface task ("User asked for a contract summary.").
+
+This turn pair was spoken on: {{ turn_timestamp | default("(unknown date)", true) }}
 
 Preceding session context:
 {{ session_context or "(none)" }}
@@ -80,5 +102,6 @@ Output schema:
     { "subject": "string", "relation": "snake_case_label",
       "object": "string", "confidence": 0.0-1.0 }
   ],
-  "l0_abstract": "one sentence"
+  "l0_abstract": "one sentence",
+  "event_date": "YYYY-MM-DD or null"
 }
