@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -43,6 +45,20 @@ from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
 from engram.resilience import resilient
 
 log = logging.getLogger(__name__)
+
+
+# OpenCode Zen rejects requests without `x-opencode-session` (HTTP 400
+# MissingSessionID) and asks clients to identify themselves rather than appear
+# as a generic SDK. The id must be STABLE across a conversation so the provider
+# can route consistently and reuse prompt caching, so we mint one per process
+# and reuse it for every call; override via OPENCODE_SESSION_ID to group runs.
+# Other OpenAI-compatible backends ignore unknown headers, so sending this
+# unconditionally is safe.
+_SESSION_ID = os.environ.get("OPENCODE_SESSION_ID") or f"engram-{uuid.uuid4().hex}"
+_CLIENT_HEADERS = {
+    "x-opencode-session": _SESSION_ID,
+    "User-Agent": "engram-memory/1.0",
+}
 
 
 # Transient errors from openai-python >= 1.x.
@@ -105,6 +121,7 @@ class OpenAICompatCoreProvider(CoreModelProvider):
             base_url=cfg.api_base,        # None → api.openai.com/v1
             timeout=cfg.timeout_seconds,
             max_retries=0,                 # we handle retries via @resilient
+            default_headers=_CLIENT_HEADERS,
         )
         self._use_json_mode = _supports_json_mode(cfg.api_base)
         # Per-provider breaker key so one backend outage does not open another.
@@ -198,6 +215,7 @@ class OpenAICompatFrontierProvider(FrontierLLMProvider):
             base_url=getattr(cfg, "api_base", None),
             timeout=60.0,
             max_retries=0,
+            default_headers=_CLIENT_HEADERS,
         )
         self._use_json_mode = _supports_json_mode(getattr(cfg, "api_base", None))
 

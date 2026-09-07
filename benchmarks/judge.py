@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -101,7 +102,15 @@ class OllamaJudge:
         self._use_json_mode = True
         self._http = httpx.Client(
             base_url=base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                # OpenCode Zen 400s without a stable session id, and asks
+                # clients to identify themselves rather than look like a bare
+                # HTTP library. Other providers ignore both headers.
+                "x-opencode-session": os.environ.get("OPENCODE_SESSION_ID")
+                or f"engram-judge-{uuid.uuid4().hex}",
+                "User-Agent": "engram-benchmark-judge/1.0",
+            },
             timeout=timeout_s,
         )
 
