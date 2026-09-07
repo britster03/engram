@@ -23,6 +23,7 @@ from engram.models.embeddings import EmbeddingService
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
 from engram.resilience import CircuitOpenError
 from engram.retrieval.l0_gate import AlwaysClass0Classifier, L0Classifier, run_l0_gate
+from engram.retrieval.rerank import NullReranker, Reranker
 from engram.retrieval.templates import TemplateError, run_template
 from engram.retrieval.tree_render import render_tree
 from engram.storage.filesystem import FilesystemStore
@@ -63,6 +64,7 @@ class RetrievalMetadata:
     l0_decision: str | None = None
     l0_reason: str | None = None
     forced_answer: bool = False  # final answer came from the best-effort fallback
+    reranked_from: int | None = None  # candidates scored before the precision pass
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +78,7 @@ class RetrievalMetadata:
             "l0_decision": self.l0_decision,
             "l0_reason": self.l0_reason,
             "forced_answer": self.forced_answer,
+            "reranked_from": self.reranked_from,
         }
 
 
@@ -94,6 +97,18 @@ class OrchestratorContext:
     frontier: FrontierLLMProvider
     embed: EmbeddingService
     l0_classifier: L0Classifier = field(default_factory=AlwaysClass0Classifier)
+    reranker: Any = None
+
+    def get_reranker(self) -> Any:
+        """Lazily build the reranker from config; cached on the context."""
+        if self.reranker is None:
+            rc = self.cfg.retrieval
+            self.reranker = (
+                Reranker(model_name=rc.rerank_model, device=rc.rerank_device)
+                if getattr(rc, "rerank_enabled", False)
+                else NullReranker()
+            )
+        return self.reranker
 
 
 # ----------------------------------------------------------------------
@@ -216,6 +231,8 @@ def run_query(
 
     # --- MSC assembly --------------------------------------------------------
     t = time.perf_counter()
+    current_results = _rerank_hits(ctx, md, query, current_results)
+    md.nodes_retrieved = len(current_results)
     ltm_blocks = _format_ltm_blocks(ctx, current_results, md.cascade_depth_reached)
     md.latency_ms["msc_assembly"] = (time.perf_counter() - t) * 1000
     msc = _assemble_msc(session_context=session_context, ltm_blocks=ltm_blocks, user_query=query)
@@ -506,6 +523,32 @@ def _summarise_results(results: list[dict[str, Any]], *, limit: int) -> str:
     return "\n".join(lines) or "(no results)"
 
 
+def _rerank_hits(
+    ctx: OrchestratorContext,
+    md: RetrievalMetadata,
+    query: str,
+    hits: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Precision pass: score candidates against the query and keep the best.
+
+    Runs after the cascade rather than inside a level, so hits from L1 vector
+    search, L2 traversal and L3/L4 reads compete on one ranking instead of
+    being concatenated in the order they happened to be found.
+    """
+    rc = ctx.cfg.retrieval
+    if not hits:
+        return hits
+    candidates = hits[: getattr(rc, "rerank_candidates", 40)]
+    top_k = getattr(rc, "rerank_top_k", 8)
+    try:
+        ordered = ctx.get_reranker().rerank(query, candidates, top_k=top_k)
+    except Exception as err:  # never fail a query because ranking failed
+        log.warning("rerank pass failed: %s", err)
+        return hits[:top_k]
+    md.reranked_from = len(candidates)
+    return ordered
+
+
 def _format_ltm_blocks(
     ctx: OrchestratorContext, results: list[dict[str, Any]], cascade_depth: str
 ) -> list[str]:
@@ -734,6 +777,7 @@ def _answer_loop(
             reentry_idx=reentries,
             on_step=on_step,
         )
+        hits = _rerank_hits(ctx, md, query, hits)
         ltm_blocks = _format_ltm_blocks(ctx, hits, md.cascade_depth_reached)
         current_msc = _assemble_msc(
             session_context=session_context,

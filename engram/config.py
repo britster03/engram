@@ -122,6 +122,15 @@ class RetrievalConfig(BaseModel):
     max_reentries: int = 2
     max_depth: Literal["L0", "L1", "L2", "L3", "L4"] = "L4"
     max_l1_vector_results: int = 30
+    # Precision pass over what vector search shortlists. `rerank_candidates`
+    # is how many hits are scored; `rerank_top_k` how many survive into the
+    # context. Passing fewer, better memories is half the point -- baseline
+    # wrong answers carried MORE context than correct ones.
+    rerank_enabled: bool = True
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_device: str = "cpu"
+    rerank_candidates: int = 40
+    rerank_top_k: int = 8
     overview_budget_tokens: int = 6000
     full_doc_budget_tokens: int = 20000
     msc_compression_threshold: float = 0.8
