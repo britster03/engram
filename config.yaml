@@ -74,12 +74,12 @@ retrieval:
   l0_skip: false
   max_reentries: 2
   max_depth: "L4"
-  max_l1_vector_results: 30
+  max_l1_vector_results: 40
   rerank_enabled: true
   rerank_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
   rerank_device: "cpu"
   rerank_candidates: 40                       # hits scored by the cross-encoder
-  rerank_top_k: 8                             # hits kept for the answer context
+  rerank_top_k: 15                            # hits kept for the answer context
   overview_budget_tokens: 6000
   full_doc_budget_tokens: 20000
   msc_compression_threshold: 0.8

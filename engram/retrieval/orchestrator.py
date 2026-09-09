@@ -343,11 +343,26 @@ def _ln_plan(
 # Execution
 # ----------------------------------------------------------------------
 
+def _candidate_k(cfg) -> int:
+    """How many hits vector search should return per query.
+
+    Reranking can only promote a memory that vector search actually returned,
+    so the shortlist has to be WIDER when a precision pass follows -- otherwise
+    the reranker just deletes items from an already-narrow list, losing context
+    without adding any better candidates. Without reranking the old narrow cap
+    stands, because passing 40 unranked memories to the model would dilute it.
+    """
+    rc = cfg.retrieval
+    if getattr(rc, "rerank_enabled", False):
+        return min(rc.max_l1_vector_results, getattr(rc, "rerank_candidates", 40))
+    return min(rc.max_l1_vector_results, 10)
+
+
 def _execute_l1(
     ctx: OrchestratorContext, plan: dict[str, Any], original_query: str
 ) -> list[dict[str, Any]]:
     queries = plan.get("vector_queries") or [original_query]
-    k = min(ctx.cfg.retrieval.max_l1_vector_results, 10)
+    k = _candidate_k(ctx.cfg)
     seen: set[str] = set()
     hits: list[dict[str, Any]] = []
     for q in queries[:3]:
@@ -754,7 +769,7 @@ def _answer_loop(
                 emb = ctx.embed.embed(q)
                 rows = ctx.neo4j.vector_search(
                     emb,
-                    k=min(ctx.cfg.retrieval.max_l1_vector_results, 10),
+                    k=_candidate_k(ctx.cfg),
                     dormant_floor=ctx.cfg.decay.dormant_floor,
                 )
             except Exception as err:
