@@ -126,7 +126,7 @@ class RetrievalConfig(BaseModel):
     # is how many hits are scored; `rerank_top_k` how many survive into the
     # context. Passing fewer, better memories is half the point -- baseline
     # wrong answers carried MORE context than correct ones.
-    rerank_enabled: bool = True
+    rerank_enabled: bool = False
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     rerank_device: str = "cpu"
     rerank_candidates: int = 40
