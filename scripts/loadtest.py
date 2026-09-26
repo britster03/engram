@@ -23,14 +23,13 @@ import random
 import string
 import time
 import uuid
+from typing import ClassVar
 
 try:
     from locust import HttpUser, LoadTestShape, between, events, task
     from locust.env import Environment
 except ImportError as err:  # pragma: no cover
-    raise SystemExit(
-        "locust is not installed. `pip install locust` and re-run."
-    ) from err
+    raise SystemExit("locust is not installed. `pip install locust` and re-run.") from err
 
 
 _QUERY_CORPUS = [
@@ -73,10 +72,12 @@ class EngramUser(HttpUser):
             )
         self.session_id = f"load-{uuid.uuid4().hex[:10]}"
         self.turn_idx = 0
-        self.client.headers.update({
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        })
+        self.client.headers.update(
+            {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+        )
         # Seed with a few ingests so queries have context to find.
         for _ in range(3):
             self._ingest_once()
@@ -111,9 +112,7 @@ class EngramUser(HttpUser):
             catch_response=True,
             name="/api/v1/sessions/{id}/message",
         ) as r:
-            if r.status_code in {202, 200}:
-                r.success()
-            elif r.status_code == 429:
+            if r.status_code in {202, 200} or r.status_code == 429:
                 r.success()
             else:
                 r.failure(f"unexpected {r.status_code}: {r.text[:120]}")
@@ -127,12 +126,15 @@ class EngramUser(HttpUser):
         body = {
             "session_id": self.session_id,
             "turn_pair": {
-                "user":      {"content": user_text, "turn_idx": user_idx},
-                "assistant": {"content": tpl_asst,  "turn_idx": asst_idx},
+                "user": {"content": user_text, "turn_idx": user_idx},
+                "assistant": {"content": tpl_asst, "turn_idx": asst_idx},
             },
         }
         with self.client.post(
-            "/api/v1/ingest", json=body, catch_response=True, name="/api/v1/ingest",
+            "/api/v1/ingest",
+            json=body,
+            catch_response=True,
+            name="/api/v1/ingest",
         ) as r:
             if r.status_code in {202, 200, 429}:
                 r.success()
@@ -146,13 +148,14 @@ class EngramUser(HttpUser):
 # Custom load shape: warm-up → steady-state → spike → cool-down.
 # ----------------------------------------------------------------------
 
+
 class EngramStages(LoadTestShape):
-    stages = [
-        {"duration":  60, "users":  10, "spawn_rate": 2},    # warm-up
-        {"duration": 300, "users":  50, "spawn_rate": 5},    # steady
-        {"duration": 120, "users": 200, "spawn_rate": 20},   # spike
-        {"duration": 300, "users":  50, "spawn_rate": 10},   # steady
-        {"duration":  60, "users":   5, "spawn_rate": 1},    # cool-down
+    stages: ClassVar[list[dict[str, int]]] = [
+        {"duration": 60, "users": 10, "spawn_rate": 2},  # warm-up
+        {"duration": 300, "users": 50, "spawn_rate": 5},  # steady
+        {"duration": 120, "users": 200, "spawn_rate": 20},  # spike
+        {"duration": 300, "users": 50, "spawn_rate": 10},  # steady
+        {"duration": 60, "users": 5, "spawn_rate": 1},  # cool-down
     ]
 
     def tick(self):
@@ -175,8 +178,7 @@ _errors_in_window: list[tuple[float, bool]] = []
 
 
 @events.request.add_listener
-def _on_request(request_type, name, response_time, response_length, exception,
-                context, **kwargs):  # noqa: ANN001
+def _on_request(request_type, name, response_time, response_length, exception, context, **kwargs):
     now = time.time()
     _errors_in_window.append((now, exception is not None))
     while _errors_in_window and now - _errors_in_window[0][0] > _ERROR_WINDOW_SECS:
@@ -184,11 +186,12 @@ def _on_request(request_type, name, response_time, response_length, exception,
     if len(_errors_in_window) >= 100:
         errs = sum(1 for _, e in _errors_in_window if e)
         if errs / len(_errors_in_window) > _ERROR_THRESHOLD:
-            print(f"[!] error rate {errs}/{len(_errors_in_window)} over {_ERROR_WINDOW_SECS}s; stopping.")
+            print(
+                f"[!] error rate {errs}/{len(_errors_in_window)} over {_ERROR_WINDOW_SECS}s; stopping."
+            )
             Environment().runner.quit()
 
 
 @events.init_command_line_parser.add_listener
 def _cli_parser(parser):
-    parser.add_argument("--api-key", default=None,
-                        help="Bearer token for the Engram API")
+    parser.add_argument("--api-key", default=None, help="Bearer token for the Engram API")

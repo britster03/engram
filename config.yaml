@@ -18,20 +18,23 @@ gating:
   memory_hit_threshold: 0.75
 
 core_model:
-  provider: "anthropic"                       # "local" | "anthropic" | "openai" | "ollama"
-  model_path: "claude-sonnet-4-6"             # bootstrap-mode model for Core tasks
-  api_base: null
-  api_key: ${CORE_MODEL_API_KEY}
-  temperature: 0.1
+  provider: "openai_responses"
+  model_path: "muse-spark-1.3-contributor"
+  api_base: "https://opencode.ai/zen/go/v1"
+  api_key: ${OPENCODE_GO_API_KEY}
+  temperature: 1.0
   max_tokens: 2048
-  timeout_seconds: 30
+  reasoning_effort: "low"
+  timeout_seconds: 60
 
 frontier_llm:
-  provider: "anthropic"
-  model_path: "claude-sonnet-4-6"
-  api_key: ${FRONTIER_LLM_API_KEY}
-  temperature: 0.3
+  provider: "openai_responses"
+  model_path: "muse-spark-1.3-contributor"
+  api_base: "https://opencode.ai/zen/go/v1"
+  api_key: ${OPENCODE_GO_API_KEY}
+  temperature: 1.0
   max_tokens: 4096
+  reasoning_effort: "low"
 
 filesystem:
   data_dir: "./data/mem"
@@ -52,12 +55,25 @@ knowledge_graph:
   max_hops: 4
 
 event_ledger:
-  backend: "sqlite"
-  path: "./data/event_ledger.db"
+  backend: "postgres"
+  dsn: ${ENGRAM_DATABASE_URL}
   reconciliation_interval_seconds: 60
 
+# Enable Temporal when its server and workers are available. Workflow histories
+# contain identifiers only; durable event payloads stay in PostgreSQL.
+temporal:
+  enabled: false
+  address: "temporal:7233"
+  namespace: "engram-prod"
+  ingest_task_queue: "engram-ingest"
+  consolidation_task_queue: "engram-consolidation"
+  maintenance_task_queue: "engram-maintenance"
+  worker_concurrency: 4
+  maintenance_worker_concurrency: 1
+  dispatch_interval_seconds: 1.0
+  history_retention_days: 14
+
 consolidation:
-  db_path: "./data/consolidation.db"
   poll_interval_seconds: 10
   max_concurrent_tasks: 4
   overview_max_tokens: 2048
@@ -73,7 +89,7 @@ retrieval:
   l0_skip: false
   max_reentries: 2
   max_depth: "L4"
-  max_l1_vector_results: 30
+  max_l1_vector_results: 12
   overview_budget_tokens: 6000
   full_doc_budget_tokens: 20000
   msc_compression_threshold: 0.8
@@ -81,6 +97,7 @@ retrieval:
 decay:
   preset: "personal_conversation"             # personal_conversation | coding_agent | knowledge_base
   schedule: "0 3 * * *"
+  schedule_timezone: "UTC"
   dormant_floor: 0.05
 
 session:

@@ -1,0 +1,473 @@
+{% extends "base.html" %}
+
+{% block title %}Chat - Engram Admin{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ static('css/dashboard.css') }}">
+<style>
+  /* Keep this action compact even if the checked-in Tailwind build is stale. */
+  @media (min-width: 640px) {
+    .chat-new-session { width: auto; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-white flex flex-col overflow-x-hidden" x-data="chat()" data-theme="light">
+  {% include "dashboard/_navbar.html" %}
+
+  <main class="flex-grow relative overflow-hidden">
+    <div class="absolute inset-0 bg-grain pointer-events-none z-0"></div>
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10 relative z-10 h-full flex flex-col">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+        <div class="min-w-0">
+          <h2 class="text-xs font-bold uppercase tracking-widest text-blue-600 mb-1">Codebase memory</h2>
+          <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+            <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Ask your uploaded knowledge</h3>
+            <span x-show="sessionId" class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-50 text-xs font-medium text-emerald-700">
+              <i class="w-1.5 h-1.5 rounded-full bg-emerald-500"></i>
+              <span>Memory ready</span>
+              <span class="font-mono" x-text="sessionId ? '· ' + sessionId : ''"></span>
+            </span>
+          </div>
+          <p class="mt-1.5 text-sm text-neutral-500">Ask about files, functions, dependencies, or the architecture behind your project.</p>
+        </div>
+        <div class="w-full sm:w-auto text-left sm:text-right">
+          <button @click="newSession()" :disabled="creatingSession || loading" type="button" class="chat-new-session w-full sm:w-auto px-4 py-2 bg-white border border-neutral-200 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 text-sm font-semibold rounded-xl transition-all">
+            <span x-text="creatingSession ? 'Creating session…' : 'New Session'"></span>
+          </button>
+          <p x-show="sessionNotice" x-text="sessionNotice" role="status" class="mt-1 text-xs text-emerald-700"></p>
+          <p x-show="sessionError" x-text="sessionError" role="alert" class="mt-1 text-xs text-red-600"></p>
+        </div>
+      </div>
+
+      <div class="flex-1 bg-white rounded-2xl border border-neutral-200 shadow-sm flex flex-col overflow-hidden" style="min-height: 400px;">
+        <div class="flex-1 overflow-y-auto p-4 space-y-4" id="chat-history" x-ref="history">
+          <div x-show="messages.length <= 1 && !loading" class="chat-welcome rounded-2xl border border-blue-100 bg-blue-50/60 p-5 sm:p-6">
+            <p class="text-sm font-semibold text-blue-950">Try a useful codebase question</p>
+            <p class="mt-1 text-sm text-blue-800/80">Engram searches the memories and relationships created from your uploaded files.</p>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <template x-for="prompt in suggestions" :key="prompt">
+                <button @click="useSuggestion(prompt)" type="button" class="chat-suggestion" x-text="prompt"></button>
+              </template>
+            </div>
+          </div>
+          <template x-for="msg in messages" :key="msg.id">
+            <div :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+              <div :class="msg.role === 'user' ? 'bg-neutral-900 text-white rounded-2xl rounded-tr-sm' : 'chat-answer rounded-2xl rounded-tl-sm'" class="max-w-[92%] sm:max-w-[82%] px-4 py-3 text-sm leading-relaxed">
+                <template x-if="msg.role === 'assistant'">
+                  <div class="flex items-center justify-between gap-3 mb-2">
+                    <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-700"><i class="w-1.5 h-1.5 rounded-full bg-blue-600"></i> Engram answer</span>
+                    <span x-show="msg.loading" class="inline-flex items-center gap-1.5 text-xs text-blue-700"><i class="w-3 h-3 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin"></i> Searching memories</span>
+                  </div>
+                </template>
+                <template x-if="msg.role === 'assistant' && (msg.retrievalSteps.length > 0 || msg.loading)">
+                  <details class="retrieval-card mb-3 group" :open="msg.loading">
+                    <summary class="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-neutral-600 hover:text-neutral-900 select-none">
+                      <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+                      <span x-text="msg.loading ? 'Searching uploaded knowledge…' : retrievalSummary(msg)"></span>
+                    </summary>
+                    <div x-show="!msg.loading && msg.retrievalSteps.length" class="mt-3">
+                      <div class="grid grid-cols-3 gap-2">
+                        <div class="retrieval-stat"><span>Knowledge reviewed</span><strong x-text="retrievalNodes(msg)"></strong></div>
+                        <div class="retrieval-stat"><span>Search scope</span><strong x-text="retrievalScope(msg)"></strong></div>
+                        <div class="retrieval-stat"><span>Answer time</span><strong x-text="retrievalTime(msg)"></strong></div>
+                      </div>
+                      <details class="technical-trace mt-3">
+                        <summary class="cursor-pointer text-xs text-neutral-500 hover:text-neutral-800">Technical retrieval details</summary>
+                        <div class="mt-2 space-y-1 text-xs text-neutral-500">
+                          <template x-for="(step, si) in msg.retrievalSteps" :key="si">
+                            <div class="flex items-center gap-2 py-0.5">
+                              <span class="inline-block w-1.5 h-1.5 rounded-full" :class="stepColor(step.step)"></span>
+                              <span class="font-medium text-neutral-700" x-text="friendlyStepLabel(step.step)"></span>
+                              <span x-show="formatStepLatency(step)" class="text-neutral-400" x-text="formatStepLatency(step)"></span>
+                            </div>
+                          </template>
+                        </div>
+                      </details>
+                    </div>
+                  </details>
+                </template>
+                <p x-html="purify(msg.content)"></p>
+              </div>
+            </div>
+          </template>
+          <div x-show="loading && !messages.some(m => m.role === 'assistant' && m.loading)" class="flex justify-start">
+            <div class="bg-neutral-100 text-neutral-900 rounded-2xl rounded-tl-sm px-4 py-3 text-sm flex items-center gap-2">
+              <div class="w-4 h-4 border-2 border-neutral-300 border-t-neutral-900 rounded-full animate-spin"></div>
+              Thinking...
+            </div>
+          </div>
+        </div>
+
+        <div class="border-t border-neutral-200 p-4">
+          <form @submit.prevent="send()" class="flex gap-2">
+            <input x-model="input" type="text" class="chat-input flex-1 px-4 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all" placeholder="Ask about a module, function, dependency, or architecture…" required>
+            <button type="submit" class="shrink-0 px-3 sm:px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-2">
+              <i data-lucide="send" class="w-4 h-4"></i>
+              <span class="hidden sm:inline">Ask</span>
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin/static/js/purify.min.js"></script>
+<script>
+function purify(raw) {
+  if (!raw) return '';
+  return (window.DOMPurify && DOMPurify.sanitize) ? DOMPurify.sanitize(raw, { ALLOWED_TAGS: ['b','i','em','strong','code','pre','a','ul','ol','li','p','br'], ALLOWED_ATTR: ['href'] }) : raw.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function chat() {
+  return {
+    messages: [],
+    input: '',
+    loading: false,
+    creatingSession: false,
+    sessionNotice: '',
+    sessionError: '',
+    streamAbort: null,
+    sessionId: null,
+    _msgId: 0,
+    _nextId() { return ++this._msgId; },
+    mainTab: 'chat',
+    suggestions: [
+      'What does this project do?',
+      'Show the authentication flow.',
+      'What depends on database_models.py?',
+      'Where is create_user used?'
+    ],
+    useSuggestion(prompt) {
+      this.input = prompt;
+      this.$nextTick(() => this.send());
+    },
+    _authHeaders() {
+      var h = {};
+      var t = localStorage.getItem('engram_api_key');
+      if (t) h['Authorization'] = 'Bearer ' + t;
+      return h;
+    },
+    stepColor(step) {
+      var name = String(step || '');
+      if (name.includes('frontier')) return 'bg-sky-500';
+      if (name.includes('msc')) return 'bg-violet-500';
+      if (name.includes('l0')) return 'bg-neutral-500';
+      if (name.includes('l1')) return 'bg-emerald-500';
+      if (name.includes('l2') || name.includes('l3') || name.includes('l4')) return 'bg-amber-500';
+      return 'bg-neutral-400';
+    },
+    stepLabel(step) {
+      var name = String(step || '');
+      return name
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+    },
+    friendlyStepLabel(step) {
+      var labels = {
+        l1_plan: 'Finding relevant memories',
+        l1_execute: 'Reading relevant memories',
+        l2_plan: 'Broadening the relationship search',
+        l2_execute: 'Reading connected memories',
+        l3_plan: 'Exploring deeper connections',
+        l3_execute: 'Reading deeper connections',
+        l4_plan: 'Exploring full memory history',
+        l4_execute: 'Reading full memory history',
+        msc_assembly: 'Preparing answer context'
+      };
+      var name = String(step || '');
+      if (labels[name]) return labels[name];
+      if (name.indexOf('frontier_answer') === 0) return 'Writing the answer';
+      return this.stepLabel(name);
+    },
+    formatStepLatency(step) {
+      var latency = (step && step.latency_ms) || {};
+      var value = latency[step.step];
+      if (value === undefined || value === null) return '';
+      if (value >= 1000) return (value / 1000).toFixed(1) + 's';
+      return Math.round(value) + 'ms';
+    },
+    retrievalNodes(msg) {
+      var values = (msg.retrievalSteps || []).map(function (step) { return Number(step.nodes_retrieved) || 0; }).filter(Boolean);
+      return values.length ? Math.max.apply(null, values) + ' memory records' : 'Memory search';
+    },
+    retrievalScope(msg) {
+      var values = (msg.retrievalSteps || []).map(function (step) { return String(step.cascade_depth_reached || ''); }).filter(Boolean);
+      var depth = values.length ? values[values.length - 1].toUpperCase() : '';
+      if (depth === 'L1') return 'Focused';
+      if (depth === 'L2') return 'Connected';
+      if (depth === 'L3') return 'Broad';
+      if (depth === 'L4') return 'Deep';
+      return 'Focused';
+    },
+    retrievalTime(msg) {
+      var max = 0;
+      (msg.retrievalSteps || []).forEach(function (step) {
+        var latency = step.latency_ms || {};
+        Object.keys(latency).forEach(function (key) { max = Math.max(max, Number(latency[key]) || 0); });
+      });
+      if (!max) return '—';
+      return max >= 1000 ? (max / 1000).toFixed(1) + 's' : Math.round(max) + 'ms';
+    },
+    retrievalSummary(msg) {
+      return 'How this answer was found · ' + this.retrievalNodes(msg) + ' · ' + this.retrievalScope(msg) + ' search';
+    },
+    setMainTab(tab) { if (tab !== 'chat') window.location.href = '/admin/dashboard?tab=' + tab; },
+    logout() {
+      document.cookie = 'engram_session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT;';
+      localStorage.removeItem('engram_api_key');
+      window.location.href = '/admin/login';
+    },
+    async createSession(resetMessages) {
+      this.sessionError = '';
+      this.creatingSession = true;
+      try {
+        const r = await fetch('/admin/api/sessions', { method: 'POST', headers: this._authHeaders() });
+        if (r.status === 401) {
+          window.location.href = '/admin/login';
+          return false;
+        }
+        if (!r.ok) {
+          const text = await r.text();
+          let detail = text;
+          try { detail = JSON.parse(text).detail || text; } catch (_) {}
+          throw new Error(detail || ('HTTP ' + r.status));
+        }
+        const obj = await r.json();
+        if (!obj.session_id) throw new Error('The server returned no session ID.');
+        this.sessionId = obj.session_id;
+        localStorage.setItem('engram_chat_session_id', this.sessionId);
+        if (resetMessages) {
+          this.messages = [];
+          this.messages.push({id: this._nextId(), role: 'assistant', content: 'Hello. I am the Engram admin assistant. Ask me about sessions, memories, or system status.', retrievalSteps: [], loading: false});
+          this.sessionNotice = 'New session started: ' + this.sessionId;
+        }
+        return true;
+      } catch (err) {
+        this.sessionError = 'Unable to create a new session' + (err && err.message ? ': ' + err.message : '.');
+        return false;
+      } finally {
+        this.creatingSession = false;
+      }
+    },
+    async restoreOrCreateSession() {
+      var stored = localStorage.getItem('engram_chat_session_id');
+      if (stored) {
+        try {
+          const r = await fetch('/admin/api/sessions', { headers: this._authHeaders() });
+          if (r.ok) {
+            const obj = await r.json();
+            if ((obj.sessions || []).some(function (session) { return session.id === stored; })) {
+              this.sessionId = stored;
+              return;
+            }
+          }
+        } catch (_) {}
+        localStorage.removeItem('engram_chat_session_id');
+      }
+      await this.createSession(false);
+    },
+    async init() {
+      await this.restoreOrCreateSession();
+      this.messages.push({id: this._nextId(), role: 'assistant', content: 'Hello. I am the Engram admin assistant. Ask me about sessions, memories, or system status.', retrievalSteps: [], loading: false});
+    },
+    async newSession() {
+      if (this.creatingSession || this.loading) return;
+      await this.createSession(true);
+    },
+    async send() {
+      if (!this.input.trim()) return;
+      const userMsg = {id: this._nextId(), role: 'user', content: this.input};
+      this.messages.push(userMsg);
+      this.input = '';
+      this.loading = true;
+      const scroll = () => { this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; }); };
+      scroll();
+
+      try {
+        const ctrl = new AbortController();
+        this.streamAbort = ctrl;
+        let resp = await fetch('/admin/api/chat/completions', {
+          method: 'POST',
+          headers: {
+            ...this._authHeaders(),
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+          },
+          body: JSON.stringify({messages: this.messages, session_id: this.sessionId, stream: true}),
+          signal: ctrl.signal
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          // A server restart or Redis expiry can invalidate the browser's
+          // saved session ID. Recover transparently and send this message once
+          // with a new session rather than presenting a misleading 404 error.
+          if (resp.status === 404 && text.includes('session not found') && await this.createSession(false)) {
+            resp = await fetch('/admin/api/chat/completions', {
+              method: 'POST',
+              headers: {
+                ...this._authHeaders(),
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+              },
+              body: JSON.stringify({messages: this.messages, session_id: this.sessionId, stream: true}),
+              signal: ctrl.signal
+            });
+          }
+        }
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error('HTTP ' + resp.status + ': ' + text);
+        }
+
+        this.messages.push({id: this._nextId(), role: 'assistant', content: '', retrievalSteps: [], loading: true});
+        const assistantIdx = this.messages.length - 1;
+
+        const contentType = resp.headers.get('content-type') || '';
+        if (!contentType.includes('text/event-stream')) {
+          const obj = await resp.json();
+          this.messages[assistantIdx].content = String(obj.answer || obj.response || JSON.stringify(obj));
+          if (obj.retrieval_metadata) {
+            this.messages[assistantIdx].retrievalSteps = this._stepsFromMetadata(obj.retrieval_metadata);
+          }
+          this.messages[assistantIdx].loading = false;
+          this.messages = [...this.messages];
+          this.loading = false;
+          this.streamAbort = null;
+          scroll();
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, {stream: true});
+          let eventName = '';
+          let data = '';
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventName = line.replace(/^event:\s*/, '');
+            } else if (line.startsWith('data:')) {
+              data = line.replace(/^data:\s*/, '');
+            } else if (line.trim() === '') {
+              if (eventName === 'retrieval_step' && data) {
+                try {
+                  const step = JSON.parse(data);
+                  this.messages[assistantIdx].retrievalSteps = [...this.messages[assistantIdx].retrievalSteps, step];
+                  this.messages = [...this.messages];
+                  scroll();
+                } catch (_) {}
+              }
+              if (eventName === 'metadata' && data) {
+                try {
+                  const md = JSON.parse(data);
+                  this.messages[assistantIdx].retrievalSteps = this._stepsFromMetadata(md);
+                  this.messages = [...this.messages];
+                } catch (_) {}
+              }
+              if (eventName === 'delta' && data) {
+                try {
+                  const obj = JSON.parse(data);
+                  if (typeof obj.text === 'string') this.messages[assistantIdx].content += obj.text;
+                  if (typeof obj.content === 'string') this.messages[assistantIdx].content += obj.content;
+                  this.messages = [...this.messages];
+                  this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; });
+                } catch (_) {}
+              }
+              if (eventName === 'done') {
+                this.messages[assistantIdx].loading = false;
+                this.messages = [...this.messages];
+                this.loading = false;
+                this.streamAbort = null;
+                scroll();
+                return;
+              }
+              if (eventName === 'error') {
+                throw new Error(data || 'Stream error');
+              }
+              eventName = '';
+              data = '';
+            }
+          }
+        }
+
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          const lastMsg = this.messages[this.messages.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content === '') {
+            this.messages[this.messages.length - 1].content = 'Error: ' + e.message;
+            this.messages[this.messages.length - 1].loading = false;
+          } else {
+            this.messages.push({id: this._nextId(), role: 'assistant', content: 'Error: ' + e.message, retrievalSteps: [], loading: false});
+          }
+          this.messages = [...this.messages];
+        }
+      }
+      this.loading = false;
+      this.streamAbort = null;
+      scroll();
+    },
+    _stepsFromMetadata(md) {
+      var steps = [];
+      var latency = md.latency_ms || {};
+      var levels = md.levels_visited || [];
+      for (var i = 0; i < levels.length; i++) {
+        var lvl = levels[i];
+        var planKey = lvl.toLowerCase() + '_plan';
+        var execKey = lvl.toLowerCase() + '_execute';
+        if (latency[planKey] !== undefined || latency[execKey] !== undefined) {
+          steps.push({
+            step: planKey,
+            cascade_depth_reached: lvl,
+            nodes_retrieved: md.nodes_retrieved,
+            latency_ms: latency,
+            l0_decision: md.l0_decision,
+            l0_reason: md.l0_reason,
+            reentries: md.reentries || 0,
+          });
+        }
+        if (latency[execKey] !== undefined) {
+          steps.push({
+            step: execKey,
+            cascade_depth_reached: lvl,
+            nodes_retrieved: md.nodes_retrieved,
+            latency_ms: latency,
+            l0_decision: md.l0_decision,
+            l0_reason: md.l0_reason,
+            reentries: md.reentries || 0,
+          });
+        }
+      }
+      if (latency['msc_assembly'] !== undefined) {
+        steps.push({
+          step: 'msc_assembly',
+          cascade_depth_reached: md.cascade_depth_reached,
+          nodes_retrieved: md.nodes_retrieved,
+          latency_ms: latency,
+          total_context_tokens: md.total_context_tokens,
+          reentries: md.reentries || 0,
+        });
+      }
+      for (var k in latency) {
+        if (k.startsWith('frontier_answer')) {
+          steps.push({
+            step: k,
+            cascade_depth_reached: md.cascade_depth_reached,
+            latency_ms: latency,
+            reentries: md.reentries || 0,
+          });
+        }
+      }
+      return steps;
+    }
+  }
+}
+</script>
+{% endblock %}

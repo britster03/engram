@@ -1,4 +1,4 @@
-"""Consolidation worker — polls the SQLite queue and dispatches tasks (§7.2).
+"""Consolidation worker — polls the PostgreSQL queue and dispatches tasks (§7.2).
 
 Runs as a daemon thread owned by the FastAPI lifespan (or the CLI when
 invoked from `engram` operations). Uses the unique `idx_tasks_pending_unique`
@@ -10,34 +10,39 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
+from typing import Any
 
 from engram.config import EngramConfig
 from engram.consolidation import tasks as handlers
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.neo4j_store import Neo4jStore
-from engram.storage.sqlite import SqliteStore
+from engram.storage.memory_repository import MemoryRepository
+from engram.storage.postgres import PostgresStore
 
 log = logging.getLogger(__name__)
+
+
+class UnknownConsolidationTaskTypeError(ValueError):
+    """Raised when a queued task cannot be routed to a handler."""
 
 
 @dataclass
 class ConsolidationContext:
     cfg: EngramConfig
-    sqlite: SqliteStore
-    fs: FilesystemStore
-    neo4j: Neo4jStore
+    control_plane: PostgresStore
+    fs: FilesystemStore | None
+    neo4j: Any
     core: CoreModelProvider
     embed: EmbeddingService
     overview_cache: object | None = None
+    memory_repository: MemoryRepository | None = None
 
 
-def _next_task(sqlite: SqliteStore) -> dict | None:
-    conn = sqlite.get_conn()
-    with sqlite.transaction():
+def _next_task(control_plane: PostgresStore) -> dict | None:
+    conn = control_plane.get_conn()
+    with control_plane.transaction():
         row = conn.execute(
             "SELECT * FROM consolidation_tasks "
             "WHERE status = 'PENDING' "
@@ -46,17 +51,20 @@ def _next_task(sqlite: SqliteStore) -> dict | None:
         if row is None:
             return None
         conn.execute(
-            "UPDATE consolidation_tasks SET status = 'PROCESSING', started_at = datetime('now') "
+            "UPDATE consolidation_tasks SET status = 'PROCESSING', "
+            "started_at = CURRENT_TIMESTAMP "
             "WHERE task_id = ?",
             (row["task_id"],),
         )
     return dict(row)
 
 
-def _complete_task(sqlite: SqliteStore, task_id: str, status: str, err: str | None = None) -> None:
-    with sqlite.transaction() as conn:
+def _complete_task(
+    control_plane: PostgresStore, task_id: str, status: str, err: str | None = None
+) -> None:
+    with control_plane.transaction() as conn:
         conn.execute(
-            "UPDATE consolidation_tasks SET status = ?, completed_at = datetime('now'), "
+            "UPDATE consolidation_tasks SET status = ?, completed_at = CURRENT_TIMESTAMP, "
             "error_message = ? WHERE task_id = ?",
             (status, err, task_id),
         )
@@ -64,25 +72,53 @@ def _complete_task(sqlite: SqliteStore, task_id: str, status: str, err: str | No
 
 def process_one(ctx: ConsolidationContext) -> bool:
     """Return True if a task was processed; False if the queue was empty."""
-    task = _next_task(ctx.sqlite)
+    task = _next_task(ctx.control_plane)
     if task is None:
         return False
     try:
         _dispatch(ctx, task)
-        _complete_task(ctx.sqlite, task["task_id"], "COMPLETE")
-    except Exception as err:  # noqa: BLE001
+        _complete_task(ctx.control_plane, task["task_id"], "COMPLETE")
+    except Exception as err:
         log.exception("consolidation task %s failed", task["task_id"])
-        _complete_task(ctx.sqlite, task["task_id"], "FAILED", str(err))
+        _complete_task(ctx.control_plane, task["task_id"], "FAILED", str(err))
     return True
 
 
 def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
     t = task["task_type"]
     node_id = task["node_id"]
-    if t == "REGENERATE_MANIFEST":
-        handlers.handle_regenerate_manifest(
-            node_id=node_id, fs=ctx.fs, cfg=ctx.cfg.consolidation
+    if ctx.cfg.canonical_memory.enabled:
+        from engram.consolidation.canonical import consolidate_overview, unmerge_entity
+
+        if ctx.memory_repository is None:
+            raise RuntimeError("canonical consolidation requires MemoryRepository")
+        tenant_id = str(task.get("tenant_id") or "_default")
+        if t == "CONSOLIDATE_OVERVIEW":
+            consolidate_overview(
+                node_id=node_id,
+                repository=ctx.memory_repository,
+                core=ctx.core,
+                cfg=ctx.cfg.consolidation,
+                tenant_id=tenant_id,
+                overview_cache=ctx.overview_cache,
+            )
+            return
+        if t == "UNMERGE_CANONICAL":
+            unmerge_entity(
+                node_id=node_id,
+                task_id=str(task["task_id"]),
+                repository=ctx.memory_repository,
+                core=ctx.core,
+                tenant_id=tenant_id,
+            )
+            return
+        raise UnknownConsolidationTaskTypeError(
+            f"legacy consolidation task {t} is disabled in canonical-memory mode"
         )
+    if ctx.fs is None:
+        raise RuntimeError("legacy consolidation requires FilesystemStore")
+    if t == "REGENERATE_MANIFEST":
+        handlers.handle_regenerate_manifest(node_id=node_id, fs=ctx.fs, cfg=ctx.cfg.consolidation)
     elif t == "CONSOLIDATE_OVERVIEW":
         handlers.handle_consolidate_overview(
             node_id=node_id,
@@ -94,32 +130,38 @@ def _dispatch(ctx: ConsolidationContext, task: dict) -> None:
         )
     elif t == "PROPAGATE_OVERVIEW":
         handlers.handle_propagate_overview(
-            node_id=node_id, sqlite=ctx.sqlite, cfg=ctx.cfg.consolidation
+            node_id=node_id, control_plane=ctx.control_plane, cfg=ctx.cfg.consolidation
         )
     elif t == "ATOMIZE":
         handlers.handle_atomize(
-            node_id=node_id, sqlite=ctx.sqlite, cfg=ctx.cfg.consolidation
+            node_id=node_id, control_plane=ctx.control_plane, cfg=ctx.cfg.consolidation
         )
     elif t == "NORMALIZE":
         handlers.handle_normalize(
-            node_id=node_id, sqlite=ctx.sqlite, neo4j=ctx.neo4j,
-            embed=ctx.embed, cfg=ctx.cfg.consolidation,
+            node_id=node_id,
+            control_plane=ctx.control_plane,
+            neo4j=ctx.neo4j,
+            embed=ctx.embed,
+            cfg=ctx.cfg.consolidation,
         )
     elif t == "TEMPORALIZE":
-        handlers.handle_temporalize(
-            node_id=node_id, fs=ctx.fs, cfg=ctx.cfg.consolidation
-        )
+        handlers.handle_temporalize(node_id=node_id, fs=ctx.fs, cfg=ctx.cfg.consolidation)
     elif t == "INTEGRATE":
         handlers.handle_integrate(
-            node_id=node_id, sqlite=ctx.sqlite, cfg=ctx.cfg.consolidation
+            node_id=node_id, control_plane=ctx.control_plane, cfg=ctx.cfg.consolidation
         )
     elif t == "UNMERGE":
         handlers.handle_unmerge(
-            node_id=node_id, fs=ctx.fs, neo4j=ctx.neo4j, sqlite=ctx.sqlite,
-            core=ctx.core, embed=ctx.embed, cfg=ctx.cfg.consolidation,
+            node_id=node_id,
+            fs=ctx.fs,
+            neo4j=ctx.neo4j,
+            control_plane=ctx.control_plane,
+            core=ctx.core,
+            embed=ctx.embed,
+            cfg=ctx.cfg.consolidation,
         )
     else:
-        log.warning("unknown consolidation task type %r; marking complete", t)
+        raise UnknownConsolidationTaskTypeError(f"unknown consolidation task type: {t}")
 
 
 def run_forever(ctx: ConsolidationContext, stop: threading.Event) -> None:
@@ -137,7 +179,9 @@ def run_forever(ctx: ConsolidationContext, stop: threading.Event) -> None:
 
 
 def start_background(
-    ctx: ConsolidationContext, *, redis_url: str | None = None,
+    ctx: ConsolidationContext,
+    *,
+    redis_url: str | None = None,
 ) -> tuple[threading.Thread, threading.Event]:
     """Start the consolidation worker, optionally under a Redis-backed lease.
 
@@ -158,8 +202,10 @@ def start_background(
         )
     else:
         thread = threading.Thread(
-            target=run_forever, args=(ctx, stop),
-            name="engram-consolidation", daemon=True,
+            target=run_forever,
+            args=(ctx, stop),
+            name="engram-consolidation",
+            daemon=True,
         )
     thread.start()
     return thread, stop

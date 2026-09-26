@@ -15,39 +15,42 @@ from engram.consolidation.tasks import (
     handle_temporalize,
 )
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.sqlite import SqliteStore
-
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from tests.integration.providers import DeterministicEmbeddingService
+from tests.postgres_support import PostgresTestStore
 
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> EngramConfig:
-    return EngramConfig.model_validate({
-        "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
-        "filesystem": {"data_dir": str(tmp_path / "mem")},
-        "event_ledger": {"path": str(tmp_path / "ev.db")},
-        "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
-    })
+    return EngramConfig.model_validate(
+        {
+            "api": {"api_key": "test-key"},
+            "core_model": {"provider": "openai_responses", "api_key": "x"},
+            "frontier_llm": {"provider": "openai_responses", "api_key": "x"},
+            "filesystem": {"data_dir": str(tmp_path / "mem")},
+            "event_ledger": {"dsn": "postgresql://test:test/test"},
+            "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
+        }
+    )
 
 
 def _seed_extraction(
-    sqlite: SqliteStore, triplets: list[dict], event_id: str = "evt-1"
+    store: PostgresTestStore, triplets: list[dict], event_id: str = "evt-1"
 ) -> None:
-    sqlite.record_event(
+    store.record_event(
         pair_id=f"p-{event_id}",
         session_id="s",
         source="test",
         event_type="INGEST",
         payload={},
     )
-    actual_ids = sqlite.get_conn().execute(
-        "SELECT event_id FROM events WHERE pair_id = ?", (f"p-{event_id}",)
-    ).fetchone()
+    actual_ids = (
+        store.get_conn()
+        .execute("SELECT event_id FROM events WHERE pair_id = ?", (f"p-{event_id}",))
+        .fetchone()
+    )
     eid = actual_ids["event_id"]
-    sqlite.save_extraction(
+    store.save_extraction(
         event_id=eid,
         resolved_text="x",
         triplets=triplets,
@@ -57,26 +60,27 @@ def _seed_extraction(
 
 
 def test_atomize_splits_compound_objects(cfg: EngramConfig):
-    sqlite = SqliteStore(cfg.event_ledger.path)
+    store = PostgresTestStore()
     eid = _seed_extraction(
-        sqlite,
-        [{"subject": "alice", "relation": "likes",
-          "object": "coffee and tea", "confidence": 0.9}],
+        store,
+        [{"subject": "alice", "relation": "likes", "object": "coffee and tea", "confidence": 0.9}],
     )
-    handle_atomize(node_id=eid, sqlite=sqlite, cfg=cfg.consolidation)
-    row = sqlite.get_conn().execute(
-        "SELECT triplets FROM extractions WHERE event_id = ?", (eid,)
-    ).fetchone()
+    handle_atomize(node_id=eid, control_plane=store, cfg=cfg.consolidation)
+    row = (
+        store.get_conn()
+        .execute("SELECT triplets FROM extractions WHERE event_id = ?", (eid,))
+        .fetchone()
+    )
     triplets = json.loads(row["triplets"])
     objects = sorted(t["object"] for t in triplets)
     assert objects == ["coffee", "tea"]
 
 
 def test_normalize_adds_canonical_form_when_similar(cfg: EngramConfig):
-    sqlite = SqliteStore(cfg.event_ledger.path)
+    store = PostgresTestStore()
     # Extracted form is "Bob"; the canonical form in the KG is "Robert".
     eid = _seed_extraction(
-        sqlite,
+        store,
         [{"subject": "Bob", "relation": "is", "object": "friend", "confidence": 0.9}],
     )
     neo = InMemoryKnowledgeGraph()
@@ -97,14 +101,16 @@ def test_normalize_adds_canonical_form_when_similar(cfg: EngramConfig):
     )
     handle_normalize(
         node_id=eid,
-        sqlite=sqlite,
+        control_plane=store,
         neo4j=neo,  # type: ignore[arg-type]
         embed=embed,  # type: ignore[arg-type]
         cfg=cfg.consolidation,
     )
-    row = sqlite.get_conn().execute(
-        "SELECT triplets FROM extractions WHERE event_id = ?", (eid,)
-    ).fetchone()
+    row = (
+        store.get_conn()
+        .execute("SELECT triplets FROM extractions WHERE event_id = ?", (eid,))
+        .fetchone()
+    )
     triplets = json.loads(row["triplets"])
     assert triplets[0].get("subject_canonical") == "Robert"
 
@@ -120,15 +126,16 @@ def test_temporalize_attaches_date_from_body(cfg: EngramConfig):
     )
     handle_temporalize(node_id=uri, fs=fs, cfg=cfg.consolidation)
     from engram import frontmatter
+
     mf = frontmatter.parse(fs.read(uri))
     assert mf.frontmatter["temporal"]["valid_from"] == "2026-05-04"
 
 
 def test_integrate_resets_event_status(cfg: EngramConfig):
-    sqlite = SqliteStore(cfg.event_ledger.path)
-    eid = _seed_extraction(sqlite, [])
-    sqlite.set_event_status(eid, "INDEXED")
-    handle_integrate(node_id=eid, sqlite=sqlite, cfg=cfg.consolidation)
-    refreshed = sqlite.get_event(eid)
+    store = PostgresTestStore()
+    eid = _seed_extraction(store, [])
+    store.set_event_status(eid, "INDEXED")
+    handle_integrate(node_id=eid, control_plane=store, cfg=cfg.consolidation)
+    refreshed = store.get_event(eid)
     assert refreshed is not None
-    assert refreshed["status"] == "GATED_STORE"
+    assert refreshed["status"] == "RECEIVED"

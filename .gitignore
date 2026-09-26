@@ -9,6 +9,8 @@ dist/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 .envrc
 .ruff_cache/
 .mypy_cache/
@@ -23,3 +25,24 @@ htmlcov/
 /data/
 /models/
 /logs/
+
+# Sisyphus agent workspace
+.sisyphus/
+
+# Playwright / browser automation
+.playwright-mcp/
+
+# Node modules (for clients/)
+node_modules/
+package-lock.json
+
+# Local screenshots / debug artifacts
+*.png
+*_scope_check.*
+
+# Runtime artifacts
+chromedriver
+event_ledger.db
+
+# benchmark run outputs
+benchmarks/results/

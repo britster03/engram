@@ -24,8 +24,9 @@ import functools
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from tenacity import (
     RetryError,
@@ -109,8 +110,8 @@ def resilient(
     """Decorator: apply a circuit breaker + bounded exponential-backoff retry.
 
     Usage:
-        @resilient(breaker="anthropic", max_attempts=3)
-        def call_claude(...): ...
+        @resilient(breaker="muse_spark", max_attempts=3)
+        def call_model(...): ...
 
     Failures bump the named breaker; after `failure_threshold` failures the
     breaker opens for `cool_down` seconds and subsequent calls raise
@@ -144,7 +145,9 @@ def resilient(
                 state.record_failure()
                 log.warning(
                     "resilient call %s exhausted retries (breaker=%s): %s",
-                    log_context or fn.__name__, breaker, err,
+                    log_context or fn.__name__,
+                    breaker,
+                    err,
                 )
                 raise
             except Exception:
@@ -173,7 +176,7 @@ def with_timeout(seconds: float, thread_name: str | None = None):
             def target() -> None:
                 try:
                     result.append(fn(*args, **kwargs))
-                except BaseException as e:  # noqa: BLE001
+                except BaseException as e:
                     err.append(e)
 
             t = threading.Thread(target=target, name=thread_name or fn.__name__, daemon=True)

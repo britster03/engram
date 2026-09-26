@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 import redis
 from fastapi import Request
@@ -89,9 +89,7 @@ class InMemoryLimiter:
                 self._buckets[key] = bucket
             else:
                 elapsed = now - bucket.last_refill
-                bucket.tokens = min(
-                    self.capacity, bucket.tokens + elapsed * self.refill_rate_per_s
-                )
+                bucket.tokens = min(self.capacity, bucket.tokens + elapsed * self.refill_rate_per_s)
                 bucket.last_refill = now
             if bucket.tokens >= 1.0:
                 bucket.tokens -= 1.0
@@ -104,9 +102,7 @@ class InMemoryLimiter:
 class RedisLimiter:
     """Token bucket backed by a Redis Lua script for atomic multi-worker accounting."""
 
-    def __init__(
-        self, url: str, capacity: int, refill_per_minute: int, *, name: str
-    ) -> None:
+    def __init__(self, url: str, capacity: int, refill_per_minute: int, *, name: str) -> None:
         self.client = redis.Redis.from_url(url, decode_responses=True)
         self.capacity = float(capacity)
         self.refill_rate_per_s = refill_per_minute / 60.0
@@ -152,9 +148,7 @@ class _FallbackWrapper:
             with self._lock:
                 self._failures += 1
                 if self._failures == 1 or self._failures % 50 == 0:
-                    log.warning(
-                        "redis rate limiter failed (%s); using in-memory fallback", err
-                    )
+                    log.warning("redis rate limiter failed (%s); using in-memory fallback", err)
             return self._fallback.allow(key)
 
 
@@ -182,16 +176,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         mem_query = InMemoryLimiter(capacity=query_per_min, refill_per_minute=query_per_min)
         mem_ingest = InMemoryLimiter(capacity=ingest_per_min, refill_per_minute=ingest_per_min)
+        self._legacy_query: RateLimiterBackend
+        self._legacy_ingest: RateLimiterBackend
         if redis_url:
             try:
                 self._legacy_query = _FallbackWrapper(
-                    RedisLimiter(redis_url, query_per_min, query_per_min,
-                                 name="query_default"),
+                    RedisLimiter(redis_url, query_per_min, query_per_min, name="query_default"),
                     mem_query,
                 )
                 self._legacy_ingest = _FallbackWrapper(
-                    RedisLimiter(redis_url, ingest_per_min, ingest_per_min,
-                                 name="ingest_default"),
+                    RedisLimiter(redis_url, ingest_per_min, ingest_per_min, name="ingest_default"),
                     mem_ingest,
                 )
                 log.info("rate limiter using Redis backend")
@@ -203,7 +197,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             self._legacy_query = mem_query
             self._legacy_ingest = mem_ingest
 
-        self._per_tenant: dict[tuple[str, str], Any] = {}
+        self._per_tenant: dict[tuple[str, str], RateLimiterBackend] = {}
         self._per_tenant_lock = threading.Lock()
 
     # Public accessors for existing tests
@@ -216,19 +210,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return self._legacy_ingest
 
     def _bucket_for_tenant(
-        self, tenant_id: str, dimension: str, capacity: int,
-    ):
+        self,
+        tenant_id: str,
+        dimension: str,
+        capacity: int,
+    ) -> RateLimiterBackend:
         key = (tenant_id, dimension)
         with self._per_tenant_lock:
             existing = self._per_tenant.get(key)
             if existing is not None:
                 return existing
             mem = InMemoryLimiter(capacity=capacity, refill_per_minute=capacity)
+            limiter: RateLimiterBackend
             if self.redis_url:
                 try:
                     limiter = _FallbackWrapper(
                         RedisLimiter(
-                            self.redis_url, capacity, capacity,
+                            self.redis_url,
+                            capacity,
+                            capacity,
                             name=f"{dimension}_{tenant_id}",
                         ),
                         mem,
@@ -243,7 +243,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         path = request.url.path
         dimension: str | None = None
-        if path.startswith("/api/v1/query"):
+        if path.startswith("/api/v1/query") or path.startswith("/api/v1/chat"):
             dimension = "query"
         elif path.startswith("/api/v1/ingest") or path.endswith("/message"):
             dimension = "ingest"
@@ -281,6 +281,7 @@ def _resolve_tenant(api_key: str):
     """Best-effort tenant lookup. Returns None if registry is unavailable."""
     try:
         from engram.deps import get_state
+
         state = get_state()
         return state.tenant_registry.resolve_key(api_key)
     except Exception:

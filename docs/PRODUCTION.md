@@ -10,21 +10,20 @@ What this codebase is ready for, today:
 
 - **Single-tenant** deployments (one API key, one operator, one organisation).
 - **Multi-tenant** deployments: tenant isolation enforced at the filesystem
-  (per-tenant sub-directory), SQLite (`tenant_id` column on every row),
+  (per-tenant sub-directory), PostgreSQL (`tenant_id` column on every row),
   Neo4j (`tenant_id` property on every node, filtered in every Cypher
   template), session cache (`session:{tenant_id}:{session_id}` keys).
   Per-tenant rate limits + quotas via the admin API. Admin CRUD +
   key rotation audited in an append-only log. See [SCALING.md](SCALING.md).
 - **Air-gapped / offline** deployments via the Ollama backend — point
   `core_model.provider=ollama` at a local Ollama server and no outbound
-  HTTPS is required. Same interface works with OpenAI, Groq, Gemini,
-  Anthropic, OpenRouter, Together, DeepSeek.
+  HTTPS is required. Hosted inference defaults to Ollama Cloud.
 - Single primary region. Backups replicated off-host.
-- 1–2 gunicorn workers behind nginx TLS, or a Kubernetes deployment (3+
-  replicas with HPA). Leader-election via Redis lease keeps the
-  consolidation + reconciliation workers as singletons across replicas.
+- A single-host Docker Compose deployment, or multiple API/Temporal worker
+  replicas through the Helm chart. PostgreSQL and Temporal coordinate all
+  durable background work; SQLite is not supported in production.
 - Throughput up to ~20 queries/s and ~200 ingests/s on a 4-vCPU / 16 GB
-  host with Neo4j co-located. Empirically verified against real OpenAI
+  host with Neo4j co-located. Empirically verified against remote model APIs
   + real Neo4j in [VALIDATION.md](VALIDATION.md).
 
 What it is **not** ready for:
@@ -60,7 +59,7 @@ Before the first boot:
 - [ ] DNS record points at this host.
 - [ ] Filesystem at `./data/mem` (or whatever `ENGRAM_DATA_DIR` names) has
       at least 50 GB free and is on a volume that is snapshot-backed.
-- [ ] Anthropic account has quota sufficient for the expected call volume.
+- [ ] Ollama Cloud account has quota sufficient for the expected call volume.
       Rough ratio: each query consumes 2–5 Core Model calls plus 1 Frontier
       call; each ingest consumes 2–4 Core Model calls.
 - [ ] Neo4j admin password rotated from the `docker-compose.yml` default.
@@ -73,10 +72,10 @@ Before the first boot:
 ## Boot procedure
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-docker compose exec engram engram migrate
-docker compose exec engram engram init
-docker compose ps       # all services Healthy
+cp deploy/env.prod.example .env.prod
+chmod 600 .env.prod
+# Fill every required value, then:
+./scripts/deploy.sh --env-file .env.prod --with-nginx
 ```
 
 Validate end-to-end:
@@ -88,7 +87,7 @@ curl -fsS -H "Authorization: Bearer ${ENGRAM_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"session_id":"s1","turn_pair":{"user":{"content":"I just joined Meta","turn_idx":0},"assistant":{"content":"Nice.","turn_idx":1}}}' \
   https://engram.example.com/api/v1/ingest
-# (wait a few seconds for the durable worker)
+# (wait a few seconds for the Temporal ingest workflow)
 curl -fsS -H "Authorization: Bearer ${ENGRAM_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"query":"Where does the user work?"}' \
@@ -106,40 +105,33 @@ curl -fsS -H "Authorization: Bearer ${ENGRAM_API_KEY}" \
                 ▼
            ┌──────────┐
            │  engram  │ gunicorn + uvicorn worker
-           │   app    │   - REST API
-           │          │   - durable ingest worker (daemon thread)
-           │          │   - consolidation worker (daemon thread)
-           │          │   - reconciliation worker (daemon thread)
-           └─┬────┬───┘
-             │    └────────────────────────┐
-       ┌─────▼─────┐  ┌──────────┐  ┌─────▼─────┐  ┌──────────────┐
-       │   Neo4j   │  │  Redis   │  │  SQLite   │  │ Filesystem   │
-       │ (KG idx)  │  │ (session │  │ (ledger)  │  │ (mem:// au-  │
-       │           │  │  cache)  │  │           │  │  thoritative)│
-       └───────────┘  └──────────┘  └───────────┘  └──────────────┘
+           │   API    │ REST/query + transactional event/outbox writes
+           └────┬─────┘
+                │
+       ┌────────▼───────┐       ┌──────────┐
+       │   PostgreSQL   │◄─────►│Temporal  │
+       │ control plane  │       │workers + │
+       └────────┬───────┘       │schedules │
+                │               └────┬─────┘
+       ┌────────▼───┐  ┌──────────┐  │  ┌──────────────┐
+       │   Neo4j    │  │  Redis   │  └─►│ Filesystem   │
+       │ (KG index) │  │ sessions │     │ authoritative│
+       └────────────┘  └──────────┘     └──────────────┘
 ```
 
-A single gunicorn worker is the supported production configuration. Adding
-workers is **safe for the API surface** (requests are stateless) but the
-current durable ingest worker / consolidation worker / reconciliation worker
-are per-process daemon threads. Multi-worker support requires either:
-
-1. Running the background workers in a separate container (supervisor
-   process) that shares `./data/` with the API workers, or
-2. Leader election (Redis SET NX) so only one worker runs the background
-   loops.
-
-For Phase 1 we recommend approach (1) as the incremental path.
+The API never starts legacy poller threads when Temporal is enabled. Ingest,
+consolidation, reconciliation, stale-overview scanning, and decay run in the
+dedicated Temporal worker service. The dispatcher contains no model or Neo4j
+dependency and only bridges the PostgreSQL transaction outbox to Temporal.
 
 ## Resilience
 
-**Durable ingest.** The API endpoint does exactly one synchronous write: an
-INSERT into the SQLite event ledger. If this process crashes immediately
-after the 202 response, the next process to boot picks the event up on the
-first poll (default 1 second). Reconciliation catches rarer stuck states
-every 60 seconds.
+**Durable ingest.** The API transaction creates the PostgreSQL event and its
+Temporal dispatch-outbox row atomically. Dispatcher retries are idempotent,
+and Temporal owns activity retries. Scheduled reconciliation repairs missing
+dispatches without duplicating active workflows.
 
-**LLM retries + circuit breakers.** Every call into Anthropic goes through
+**LLM retries + circuit breakers.** Every outbound model call goes through
 `engram/resilience.py::resilient`. Breakers are per-provider (one for
 `core`, one for `frontier`); 5 failures in a rolling window open the
 breaker for 30s.
@@ -157,18 +149,16 @@ the consolidation queue depth exceeds `max_backlog` (default 10 000).
 
 ## Backup / restore
 
-### Daily backup (recommended cron @ 02:30 local)
+### Coordinated backup
 
 ```bash
 DATE=$(date +%F)
 # Filesystem (authoritative)
 tar --exclude='*.tmp' -czf /var/backups/engram/mem-${DATE}.tar.gz /var/lib/engram/mem
 
-# SQLite — use the online backup API (WAL-aware)
-sqlite3 /var/lib/engram/event_ledger.db \
-  ".backup /var/backups/engram/ledger-${DATE}.db"
-sqlite3 /var/lib/engram/consolidation.db \
-  ".backup /var/backups/engram/cons-${DATE}.db"
+# PostgreSQL control plane (enable PITR/WAL archiving as the primary control)
+docker compose exec -T postgres pg_dump -Fc -U engram_app engram \
+  > /var/backups/engram/control-plane-${DATE}.dump
 
 # Neo4j (optional — always re-derivable)
 docker compose exec -T neo4j neo4j-admin database dump \
@@ -186,7 +176,7 @@ Retain 30 dailies, 6 weeklies, 12 monthlies.
 |---|---|
 | Redis | Nothing. Sessions are ephemeral. |
 | Neo4j | `engram rebuild-kg` (walks the filesystem + replays extractions). |
-| SQLite | Restore the latest snapshot. Re-run `engram migrate` + `engram init`. Consolidation backlog from between snapshot and crash is rebuilt by the reconciliation worker. |
+| PostgreSQL | Restore the base backup/PITR target, run `engram postgres-migrate`, then start Temporal workers and dispatcher. |
 | Filesystem | Restore from snapshot, then `engram rebuild-kg`. Committed memories from between snapshot and crash are lost — this is why the filesystem is authoritative and the snapshot interval drives the RPO. |
 
 ## Observability
@@ -229,19 +219,19 @@ at `http://<host>:3000` (default admin/admin — change immediately).
 
 1. Check `engram_ingest_events_total{final_status="FAILED"}` — is it a burst
    or a steady elevated rate?
-2. Check the Anthropic status page. If it's an outage: the circuit breaker
-   for `anthropic_core` should be open (visible on `/readyz`). Wait it out.
-3. If Anthropic is up: tail the JSON logs for `event=CoreModelError` — is
+2. Check Ollama Cloud status. If it's an outage: the model provider circuit
+   breaker should be open (visible on `/readyz`). Wait it out.
+3. If Ollama Cloud is up: tail the JSON logs for `event=CoreModelError` — is
    there a schema change in the Core Model response? If so, look for a
    recent prompt template change and revert.
-4. Use `POST /api/v1/events/{event_id}/retry` to replay individual failed
-   events. The durable worker picks them up on the next poll.
+4. Use `POST /api/v1/events/{event_id}/retry` to create a new durable Temporal
+   workflow generation for an individual failed event.
 
 ### Query latency regression
 
 1. Look at `engram_query_latency_seconds{phase}` breakdown — which phase
    regressed?
-   - `frontier_answer_*` — frontier is slow. Check Anthropic status.
+   - `frontier_answer_*` — frontier is slow. Check Ollama Cloud status.
    - `l1_plan` / `l2_plan` — Core Model is slow.
    - `l1_execute` / `vector_search` — Neo4j is slow. Check
      `docker compose logs neo4j` and vector index health.
@@ -291,17 +281,17 @@ at `http://<host>:3000` (default admin/admin — change immediately).
 | Resource | Rough ceiling on a 4-vCPU / 16 GB host |
 |---|---|
 | Query QPS | ~20 (LLM-bound) |
-| Ingest QPS | ~200 (SQLite-bound; async LLM consumption separate) |
+| Ingest QPS | PostgreSQL/LLM bound; validate against the target environment |
 | KG nodes | ~1M with Neo4j page cache of 512 MB |
 | Filesystem | 10k memories ≈ 40 MB |
-| SQLite WAL size | ~200 MB sustained with heavy ingest; checkpoint tunable |
+| PostgreSQL | Size pool, IOPS, WAL retention, and PITR storage from load tests |
 
 For each ~10× increase in traffic, plan one of:
 
-1. Split background workers out of the API process.
-2. Move Neo4j to a dedicated host (or Neo4j AuraDB).
-3. Move Redis to a dedicated host (or ElastiCache).
-4. Add nginx workers / replicas.
+1. Add Temporal worker replicas and tune activity concurrency.
+2. Scale PostgreSQL and Neo4j using their production HA offerings.
+3. Move Redis to a managed/Sentinel/Cluster deployment.
+4. Scale stateless API replicas behind the edge load balancer.
 
 ## Upgrade procedure
 
@@ -313,9 +303,9 @@ For each ~10× increase in traffic, plan one of:
 git pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml build
 
-# 3. Apply migrations ON THE OLD SCHEMA BOOT (runs pending scripts + clears
-#    maintenance flag on success)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm engram engram migrate
+# 3. Apply the forward-only PostgreSQL control-plane migration
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  run --rm engram-control-plane-migrate
 
 # 4. Hot-swap
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
@@ -324,6 +314,6 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 curl -fsS https://engram.example.com/readyz | jq
 ```
 
-Rollback: restore the pre-upgrade snapshot (filesystem + SQLite) and
-redeploy the previous container image. Neo4j re-derives from the restored
-filesystem via `engram rebuild-kg`.
+Rollback: deploy the previous compatible image. If a data rollback is truly
+required, stop API/worker/dispatcher writes and restore the coordinated
+PostgreSQL/filesystem backup. Alembic migrations are forward-only.

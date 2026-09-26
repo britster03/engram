@@ -158,9 +158,9 @@ CREATE CONSTRAINT     node_source_uri_unique FOR (n:Node) REQUIRE n.source_uri I
 Created by `engram.storage.neo4j_store.Neo4jStore.ensure_indexes()` at
 startup (CLI: `engram init`).
 
-## 3. SQLite — control plane (§16.1)
+## 3. PostgreSQL — control plane
 
-One file: `./data/event_ledger.db`, WAL mode. Contains five tables:
+The `ENGRAM_DATABASE_URL` database contains the durable relational tables.
 
 ### `events` — ingest event ledger
 
@@ -175,8 +175,8 @@ status        TEXT                   # RECEIVED | GATED_STORE | GATED_SKIP
                                      # | INDEXED | COMPLETE | FAILED
 retry_count   INTEGER DEFAULT 0
 error_message TEXT
-created_at    TEXT DEFAULT datetime('now')
-processed_at  TEXT
+created_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+processed_at  TIMESTAMPTZ
 ```
 
 `pair_id` uniqueness is the idempotency anchor: duplicate submissions return
@@ -189,8 +189,8 @@ event_id      TEXT PRIMARY KEY
 source_uri    TEXT NOT NULL
 state         TEXT               # WRITTEN | INDEXED | INDEX_FAILED
 retry_count   INTEGER DEFAULT 0
-written_at    TEXT NOT NULL
-last_attempt  TEXT
+written_at    TIMESTAMPTZ NOT NULL
+last_attempt  TIMESTAMPTZ
 error_message TEXT
 ```
 
@@ -205,7 +205,7 @@ event_id      TEXT PRIMARY KEY
 resolved_text TEXT NOT NULL         # coreference-resolved assistant turn
 triplets      TEXT NOT NULL         # JSON array of { subject, relation, object, confidence }
 l0_abstract   TEXT NOT NULL
-created_at    TEXT DEFAULT datetime('now')
+created_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 ```
 
 ### `linked_entities` — triplet → KG node mapping
@@ -252,7 +252,7 @@ updated_at  TEXT DEFAULT datetime('now')
 
 ## 4. Redis — session cache (§9.2)
 
-One key per session: `session:{session_id}` → JSON payload:
+One key per tenant/session pair: `session:{tenant_id}:{session_id}` -> JSON payload:
 
 ```json
 {

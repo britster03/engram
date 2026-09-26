@@ -13,7 +13,6 @@ import pytest
 
 from engram.training.synthetic_data import (
     _TASKS,
-    generate_all,
     gen_dedup,
     gen_entity_link,
     gen_extract,
@@ -24,6 +23,7 @@ from engram.training.synthetic_data import (
     gen_overview,
     gen_session_compact,
     gen_unmerge,
+    generate_all,
     validate_record,
     write_jsonl,
 )
@@ -31,8 +31,15 @@ from engram.training.synthetic_data import (
 
 def test_all_task_generators_registered():
     expected = {
-        "gate_write", "extract", "l1_plan", "ln_plan", "dedup",
-        "entity_link", "overview", "session_compact", "unmerge",
+        "gate_write",
+        "extract",
+        "l1_plan",
+        "ln_plan",
+        "dedup",
+        "entity_link",
+        "overview",
+        "session_compact",
+        "unmerge",
         "gate_classifier",
     }
     assert set(_TASKS.keys()) == expected
@@ -151,8 +158,9 @@ def test_core_sft_load_traces_accepts_generated_data(tmp_path: Path):
     actual torch training)."""
     generate_all(tmp_path, counts={t: 3 for t in _TASKS}, seed=0)
     from engram.training.core_sft import load_traces
+
     rows = load_traces(tmp_path)
-    # gate_classifier.jsonl is skipped by load_traces; other 9 tasks × 3 each = 27
+    # gate_classifier.jsonl is skipped by load_traces; other 9 tasks x 3 each = 27
     assert len(rows) == 27
     for r in rows:
         assert "task_type" in r

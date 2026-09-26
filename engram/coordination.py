@@ -23,7 +23,6 @@ import logging
 import os
 import socket
 import threading
-import time
 import uuid
 from typing import Protocol
 
@@ -34,7 +33,7 @@ log = logging.getLogger(__name__)
 
 class LeaseBackend(Protocol):
     def acquire(self) -> bool: ...  # pragma: no cover
-    def renew(self) -> bool: ...    # pragma: no cover
+    def renew(self) -> bool: ...  # pragma: no cover
     def release(self) -> None: ...  # pragma: no cover
     def is_held(self) -> bool: ...  # pragma: no cover
 
@@ -42,10 +41,17 @@ class LeaseBackend(Protocol):
 class NoOpLease:
     """Single-replica fallback: always the leader."""
 
-    def acquire(self) -> bool: return True
-    def renew(self) -> bool: return True
-    def release(self) -> None: return None
-    def is_held(self) -> bool: return True
+    def acquire(self) -> bool:
+        return True
+
+    def renew(self) -> bool:
+        return True
+
+    def release(self) -> None:
+        return None
+
+    def is_held(self) -> bool:
+        return True
 
 
 class RedisLease:
@@ -134,10 +140,11 @@ def build_lease(redis_url: str | None, name: str, *, ttl_seconds: float = 30.0) 
 # Leader loop: run `fn` only while we hold the lease, renewing periodically.
 # ----------------------------------------------------------------------
 
+
 def run_as_leader(
     lease: LeaseBackend,
     stop: threading.Event,
-    fn,                            # callable taking `stop: Event` → None
+    fn,  # callable taking `stop: Event` → None
     *,
     poll_interval_s: float = 1.0,
     renew_interval_s: float = 10.0,

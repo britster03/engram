@@ -17,8 +17,10 @@ resources:
   - servicemonitor.yaml
   - neo4j.yaml
   - redis.yaml
-  - cronjob-decay.yaml
+  - temporal-workers.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: engram
-  app.kubernetes.io/managed-by: kustomize
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: engram
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: true

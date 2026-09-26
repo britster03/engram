@@ -11,7 +11,9 @@ spec:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
   selector:
-    matchLabels: {{- include "engram.selectorLabels" . | nindent 6 }}
+    matchLabels:
+      {{- include "engram.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
   template:
     metadata:
       labels:
@@ -24,6 +26,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "engram.fullname" . }}
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.image.pullSecrets }}
@@ -47,20 +50,20 @@ spec:
             - { name: OTEL_SERVICE_NAME, value: engram }
             {{- end }}
             - name: ENGRAM_API_KEY
-              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: ENGRAM_API_KEY } }
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_API_KEY } }
             - name: ENGRAM_ADMIN_KEY
-              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: ENGRAM_ADMIN_KEY } }
-            - name: CORE_MODEL_API_KEY
-              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: CORE_MODEL_API_KEY } }
-            - name: FRONTIER_LLM_API_KEY
-              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: FRONTIER_LLM_API_KEY } }
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_ADMIN_KEY } }
+            - name: ENGRAM_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_SECRET_KEY } }
+            - name: OPENCODE_GO_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: OPENCODE_GO_API_KEY } }
             - name: NEO4J_ADMIN_PASSWORD
-              valueFrom: { secretKeyRef: { name: {{ include "engram.fullname" . }}-secrets, key: NEO4J_ADMIN_PASSWORD } }
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: NEO4J_ADMIN_PASSWORD } }
+            - name: ENGRAM_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_DATABASE_URL } }
           volumeMounts:
             - { name: config, mountPath: /etc/engram, readOnly: true }
-            {{- if .Values.persistence.enabled }}
-            - { name: data,   mountPath: /var/lib/engram }
-            {{- end }}
+            - { name: tmp, mountPath: /tmp }
           startupProbe:
             httpGet: { path: /livez, port: http }
             initialDelaySeconds: 10
@@ -84,11 +87,10 @@ spec:
         - name: config
           configMap:
             name: {{ include "engram.fullname" . }}-config
-        {{- if .Values.persistence.enabled }}
-        - name: data
-          persistentVolumeClaim:
-            claimName: {{ include "engram.fullname" . }}-data
-        {{- end }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
       {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints: {{- toYaml . | nindent 8 }}
       {{- end }}

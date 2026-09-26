@@ -28,7 +28,8 @@ engram/
 │       └── consolidation.py# /api/v1/consolidation/{status,trigger}
 │
 ├── storage/
-│   ├── sqlite.py           # event ledger + outbox + consolidation queue
+│   ├── postgres.py         # PostgreSQL connection and control-plane writes
+│   ├── control_plane.py    # shared control-plane queries
 │   ├── neo4j_store.py      # writer/reader drivers + vector search
 │   ├── filesystem.py       # atomic write + manifest + overview helpers
 │   └── redis_cache.py      # SessionCache with redis / memory backends
@@ -38,7 +39,7 @@ engram/
 │   ├── frontier.py         # FrontierLLMProvider ABC + streaming contract
 │   ├── embeddings.py       # BGE-Small service (singleton)
 │   └── providers/
-│       └── anthropic_provider.py   # Claude adapter (core + frontier)
+│       └── openai_compat.py        # Responses/OpenAI-compatible adapters
 │
 ├── ingest/
 │   ├── worker.py           # 7-step pipeline
@@ -56,13 +57,12 @@ engram/
 │   └── manager.py          # session lifecycle + compaction + re-ingest
 │
 ├── consolidation/
-│   ├── worker.py           # SQLite queue poller + dispatcher
+│   ├── worker.py           # PostgreSQL queue poller + dispatcher
 │   ├── tasks.py            # handlers for all 7 task types
 │   └── reconciliation.py   # stuck-state scanner + directory staleness
 │
 ├── migrations/
-│   ├── runner.py           # pending-migration runner + meta table
-│   └── scripts/            # numbered migration scripts
+│   └── alembic/            # forward-only PostgreSQL migrations
 │
 ├── training/               # optional ML scripts (deferred until traces exist)
 │   ├── trace_collector.py
@@ -130,7 +130,7 @@ LIMIT, and are status-filtered by default.
 ### Add a consolidation task
 
 1. Add a handler in `engram/consolidation/tasks.py` with the signature
-   `(*, node_id: str, sqlite: ..., fs: ..., neo4j: ..., core: ..., embed: ..., cfg: ...)`.
+   `(*, node_id: str, control_plane: ..., fs: ..., neo4j: ..., core: ..., embed: ..., cfg: ...)`.
 2. Add a dispatch branch in `engram/consolidation/worker.py::_dispatch`.
 3. Whitelist the task_type in `engram/api/routes/consolidation.py::trigger`.
 4. Enqueue instances from the appropriate call site (ingest worker, session
@@ -152,7 +152,7 @@ Tests are split across `tests/unit/` and `tests/integration/`:
 
 | Layer | What we cover | Backends |
 |---|---|---|
-| Unit | Pure functions, parsers, classifiers, schemas | in-memory SQLite |
+| Unit | Pure functions, parsers, classifiers, schemas | isolated PostgreSQL schemas where persistence is required |
 | Integration | Full ingest → KG → retrieval flow | `StubCoreProvider`, `StubFrontierProvider`, `StubEmbeddingService`, `FakeNeo4jStore` |
 
 There are **no live-API tests**: tests must run green without network,
@@ -192,19 +192,18 @@ These are non-negotiable; protect them in review:
 4. **Reserved metadata keys are typed.** `validate_metadata()` runs before
    every KG merge; malformed frontmatter produces `FrontmatterError` →
    event status FAILED.
-5. **Control-plane data lives in SQLite, not Neo4j.** Don't reach for
+5. **Control-plane data lives in PostgreSQL, not Neo4j.** Don't reach for
    Neo4j to track retry counts, queue depth, or event status.
 
 ## Common gotchas
 
-* **`executescript` commits implicitly.** Don't call it inside a
-  `sqlite.transaction()` — you'll hit "no transaction is active" on commit.
-  See `engram/migrations/runner.py::ensure_meta` for the pattern.
+* **PostgreSQL tests require `ENGRAM_TEST_DATABASE_URL`.** Each persistent
+  test gets a unique schema and drops it during teardown.
 * **BGE-Small returns unit-normalised vectors when `normalize_embeddings=True`.**
   Cosine similarity then reduces to a dot product. Our `_cosine` helper
   still computes the full form — don't "optimise" by removing the norm.
 * **Neo4j `shortestPath` doesn't accept property predicates inline** —
   filter after the MATCH. See `templates/cypher/t_path_between.cypher`.
-* **`anthropic` SDK requires an API key at constructor time.** The
+* **Remote provider SDKs require API keys at constructor time.** The
   `build_core_provider` and `build_frontier_provider` functions raise
   early if the key is missing; don't defer this check.

@@ -42,10 +42,7 @@ def load_traces(traces: Path) -> list[dict]:
     if traces.is_file():
         files = [traces]
     elif traces.is_dir():
-        files = [
-            p for p in sorted(traces.glob("*.jsonl"))
-            if p.stem != "gate_classifier"
-        ]
+        files = [p for p in sorted(traces.glob("*.jsonl")) if p.stem != "gate_classifier"]
     else:
         raise FileNotFoundError(f"--traces path not found: {traces}")
 
@@ -81,15 +78,25 @@ def _format_record(rec: dict) -> dict[str, str]:
 
 
 def train(
-    traces_path: Path, base_model: str, out_dir: Path, *,
-    epochs: int = 3, lr: float = 1e-4, batch_size: int = 8,
-    grad_accum: int = 8, lora_rank: int = 64, max_seq: int = 2048,
+    traces_path: Path,
+    base_model: str,
+    out_dir: Path,
+    *,
+    epochs: int = 3,
+    lr: float = 1e-4,
+    batch_size: int = 8,
+    grad_accum: int = 8,
+    lora_rank: int = 64,
+    max_seq: int = 2048,
 ) -> None:
     try:
         from datasets import Dataset  # type: ignore
         from peft import LoraConfig, get_peft_model  # type: ignore
         from transformers import (  # type: ignore
-            AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments,
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            Trainer,
+            TrainingArguments,
         )
     except ImportError as err:
         raise SystemExit(
@@ -109,8 +116,11 @@ def train(
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(base_model)
     lora = LoraConfig(
-        r=lora_rank, lora_alpha=2 * lora_rank, bias="none",
-        task_type="CAUSAL_LM", target_modules="all-linear",
+        r=lora_rank,
+        lora_alpha=2 * lora_rank,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules="all-linear",
     )
     model = get_peft_model(model, lora)
 
@@ -119,13 +129,23 @@ def train(
 
     ds_tok = ds.map(tokenize, batched=True, remove_columns=["text"])
     args = TrainingArguments(
-        output_dir=str(out_dir), num_train_epochs=epochs, learning_rate=lr,
-        per_device_train_batch_size=batch_size, gradient_accumulation_steps=grad_accum,
-        warmup_ratio=0.1, lr_scheduler_type="cosine", logging_steps=20, save_steps=500,
-        bf16=True, report_to="none",
+        output_dir=str(out_dir),
+        num_train_epochs=epochs,
+        learning_rate=lr,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+        logging_steps=20,
+        save_steps=500,
+        bf16=True,
+        report_to="none",
     )
     trainer = Trainer(
-        model=model, args=args, train_dataset=ds_tok, tokenizer=tokenizer,
+        model=model,
+        args=args,
+        train_dataset=ds_tok,
+        processing_class=tokenizer,
     )
     trainer.train()
     model.save_pretrained(out_dir)
@@ -135,8 +155,9 @@ def train(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--traces", required=True, type=Path,
-                        help="JSONL file or directory of JSONL files")
+    parser.add_argument(
+        "--traces", required=True, type=Path, help="JSONL file or directory of JSONL files"
+    )
     parser.add_argument("--base", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--epochs", type=int, default=3)
@@ -147,10 +168,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-seq", type=int, default=2048)
     args = parser.parse_args(argv)
     train(
-        args.traces, args.base, args.out,
-        epochs=args.epochs, lr=args.lr,
-        batch_size=args.batch_size, grad_accum=args.grad_accum,
-        lora_rank=args.lora_rank, max_seq=args.max_seq,
+        args.traces,
+        args.base,
+        args.out,
+        epochs=args.epochs,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        grad_accum=args.grad_accum,
+        lora_rank=args.lora_rank,
+        max_seq=args.max_seq,
     )
     return 0
 

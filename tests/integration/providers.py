@@ -5,9 +5,8 @@ FrontierLLMProvider, and EmbeddingService interfaces — not mocks. They
 produce output deterministically so tests can assert on pipeline behaviour
 without requiring live LLM APIs or GPU-accelerated embedders.
 
-If you need to test against real providers, swap these for the production
-Anthropic adapter and run against a sandbox account. See
-`tests/integration/test_live.py` for that pattern.
+If you need to test against a real provider, use the Muse Spark live smoke
+test with an OpenCode Go sandbox credential.
 """
 
 from __future__ import annotations
@@ -66,7 +65,10 @@ def _handle_extract(prompt: str) -> dict[str, Any]:
     user, asst = _extract_turn_pair(prompt)
     triplets: list[dict[str, Any]] = []
     patterns = [
-        (r"I (?:just )?(?:accepted a|work(?:ing)?|started|took) (?:a )?(?:job|role|position) at ([A-Z][\w\s]+)", "works_at"),
+        (
+            r"I (?:just )?(?:accepted a|work(?:ing)?|started|took) (?:a )?(?:job|role|position) at ([A-Z][\w\s]+)",
+            "works_at",
+        ),
         (r"I (?:will be|am|'m) in ([A-Z][\w\s]+?)(?: by| on|\.|$)", "located_in"),
         (r"renting (?:a place )?in ([A-Z][\w\s]+)", "renting_in"),
         (r"(?:my )?wife's birthday is ([A-Z][\w\s0-9]+)", "wife_birthday"),
@@ -76,9 +78,14 @@ def _handle_extract(prompt: str) -> dict[str, Any]:
     for pat, rel in patterns:
         for match in re.finditer(pat, user, flags=re.IGNORECASE):
             obj = match.group(1).strip()
-            triplets.append({
-                "subject": "user", "relation": rel, "object": obj, "confidence": 0.85,
-            })
+            triplets.append(
+                {
+                    "subject": "user",
+                    "relation": rel,
+                    "object": obj,
+                    "confidence": 0.85,
+                }
+            )
     abstract = user or asst
     if len(abstract) > 200:
         abstract = abstract[:200]
@@ -126,8 +133,7 @@ def _handle_compact(_prompt: str) -> dict[str, Any]:
 
 
 def _handle_dedup(_prompt: str) -> dict[str, Any]:
-    return {"case": "CO_EXISTENCE", "existing_edge_id": None,
-            "reason": "deterministic-coexistence"}
+    return {"case": "CO_EXISTENCE", "existing_edge_id": None, "reason": "deterministic-coexistence"}
 
 
 def _default(_prompt: str) -> dict[str, Any]:
@@ -159,8 +165,10 @@ class DeterministicFrontierProvider(FrontierLLMProvider):
     ) -> FrontierVerdict:
         lines = [line.strip() for line in msc.splitlines() if line.strip()]
         citations = [
-            line for line in lines
-            if line and not line.startswith("#")
+            line
+            for line in lines
+            if line
+            and not line.startswith("#")
             and not line.startswith("[")
             and "(source:" not in line
         ][:3]

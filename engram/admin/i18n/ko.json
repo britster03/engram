@@ -1,0 +1,19 @@
+{
+  "app.title": "Engram Admin",
+  "app.tagline": "지속적인 메모리 관리",
+  "dashboard.title": "대시보드 - Engram Admin",
+  "login.title_login": "로그인 - Engram Admin",
+  "login.login.label_api_key": "API 키",
+  "navbar.brand": "Engram",
+  "navbar.logout": "로그아웃",
+  "status.heading": "시스템 상태",
+  "status.stat.kg_nodes": "KG 노드",
+  "status.stat.kg_edges": "KG 엣지",
+  "sessions.heading": "활성 세션",
+  "memories.heading": "메모리",
+  "ingest.heading": "데이터 수집",
+  "settings.heading": "설정",
+  "settings.language_label": "표시 언어",
+  "chat.title": "채팅 - Engram Admin",
+  "chat.input_placeholder": "메시지를 입력하세요..."
+}

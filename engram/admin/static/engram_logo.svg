@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <rect width="500" height="500" fill="#000000" rx="24"/>
+
+  <path d="M 150 120 H 80 V 180
+           M 250 120 V 60
+           M 350 120 H 420 V 180 M 350 120 V 180
+           M 150 250 H 80 V 310
+           M 300 250 H 370 V 310 M 300 250 V 310
+           M 150 380 H 80 V 440 M 150 380 V 440
+           M 250 380 V 440
+           M 350 380 H 420 V 440 M 350 380 V 440"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="3" stroke-linejoin="miter" stroke-linecap="square"/>
+
+  <path d="M 350 120 H 150 V 380 H 350 M 150 250 H 300"
+        fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linejoin="miter" stroke-linecap="square"/>
+
+  <g fill="#000000" stroke="#FFFFFF" stroke-opacity="0.3" stroke-width="2">
+    <circle cx="80" cy="120" r="4"/>
+    <circle cx="80" cy="180" r="4"/>
+    <circle cx="250" cy="60" r="4"/>
+    <circle cx="420" cy="120" r="4"/>
+    <circle cx="420" cy="180" r="4"/>
+    <circle cx="350" cy="180" r="4"/>
+    <circle cx="80" cy="250" r="4"/>
+    <circle cx="80" cy="310" r="4"/>
+    <circle cx="370" cy="250" r="4"/>
+    <circle cx="370" cy="310" r="4"/>
+    <circle cx="300" cy="310" r="4"/>
+    <circle cx="80" cy="380" r="4"/>
+    <circle cx="80" cy="440" r="4"/>
+    <circle cx="150" cy="440" r="4"/>
+    <circle cx="250" cy="440" r="4"/>
+    <circle cx="420" cy="380" r="4"/>
+    <circle cx="420" cy="440" r="4"/>
+    <circle cx="350" cy="440" r="4"/>
+  </g>
+
+  <circle cx="150" cy="120" r="10" fill="#FFFFFF"/>
+  <circle cx="250" cy="120" r="6" fill="#000000" stroke="#FFFFFF" stroke-width="3"/>
+  <circle cx="150" cy="250" r="6" fill="#000000" stroke="#FFFFFF" stroke-width="3"/>
+  <circle cx="150" cy="380" r="6" fill="#000000" stroke="#FFFFFF" stroke-width="3"/>
+  <circle cx="250" cy="380" r="6" fill="#000000" stroke="#FFFFFF" stroke-width="3"/>
+
+  <g fill="#000000" stroke="#FFFFFF" stroke-width="4">
+    <circle cx="350" cy="120" r="14"/>
+    <circle cx="300" cy="250" r="14"/>
+    <circle cx="350" cy="380" r="14"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="350" cy="120" r="5"/>
+    <circle cx="300" cy="250" r="5"/>
+    <circle cx="350" cy="380" r="5"/>
+  </g>
+</svg>

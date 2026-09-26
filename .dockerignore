@@ -1,0 +1,12 @@
+# Deny by default so local credentials, databases, Git history, and virtual
+# environments are never sent to a local or remote Docker builder.
+**
+
+!Dockerfile
+!pyproject.toml
+!README.md
+!config.yaml
+!engram/
+!engram/**
+!templates/
+!templates/**

@@ -7,27 +7,33 @@ from pathlib import Path
 import pytest
 
 from engram.config import EngramConfig
-from engram.models.core import CompletionResult, CoreModelError, CoreModelProvider
+from engram.models.core import CoreModelError, CoreModelProvider
 from engram.models.frontier import FrontierLLMProvider, FrontierVerdict
 from engram.retrieval.orchestrator import OrchestratorContext, run_query
 from engram.storage.filesystem import FilesystemStore
-
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
-from .providers import DeterministicCoreProvider, DeterministicEmbeddingService, DeterministicFrontierProvider
+
+from .providers import (
+    DeterministicCoreProvider,
+    DeterministicEmbeddingService,
+    DeterministicFrontierProvider,
+)
 
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> EngramConfig:
-    return EngramConfig.model_validate({
-        "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
-        "filesystem": {"data_dir": str(tmp_path / "mem")},
-        "event_ledger": {"path": str(tmp_path / "ev.db")},
-        "session_cache": {"backend": "memory"},
-        "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
-        "retrieval": {"l0_skip": True},  # avoid needing real vectors
-    })
+    return EngramConfig.model_validate(
+        {
+            "api": {"api_key": "test-key"},
+            "core_model": {"provider": "openai_responses", "api_key": "x"},
+            "frontier_llm": {"provider": "openai_responses", "api_key": "x"},
+            "filesystem": {"data_dir": str(tmp_path / "mem")},
+            "event_ledger": {"dsn": "postgresql://test:test/test"},
+            "session_cache": {"backend": "memory"},
+            "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
+            "retrieval": {"l0_skip": True},  # avoid needing real vectors
+        }
+    )
 
 
 class BrokenNeo(InMemoryKnowledgeGraph):
@@ -52,8 +58,12 @@ def _ctx(cfg, *, neo, core, frontier) -> OrchestratorContext:
     fs = FilesystemStore(cfg.filesystem.data_dir)
     embed = DeterministicEmbeddingService()
     return OrchestratorContext(
-        cfg=cfg, fs=fs, neo4j=neo,  # type: ignore[arg-type]
-        core=core, frontier=frontier, embed=embed,  # type: ignore[arg-type]
+        cfg=cfg,
+        fs=fs,
+        neo4j=neo,  # type: ignore[arg-type]
+        core=core,
+        frontier=frontier,
+        embed=embed,  # type: ignore[arg-type]
     )
 
 

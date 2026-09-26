@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engram-temporal-worker
+  namespace: engram
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: engram
+      app.kubernetes.io/component: temporal-worker
+      engram.ai/task-queue: all
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: engram
+        app.kubernetes.io/component: temporal-worker
+        engram.ai/task-queue: all
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: temporal-worker
+          image: ghcr.io/your-org/engram:latest
+          # A single pod hosts Temporal Workers for all Engram task queues,
+          # including projection. Scale this deployment horizontally instead
+          # of operating a separate projection deployment.
+          command: ["python", "-m", "engram.temporal.worker", "--queue", "all"]
+          env:
+            - { name: ENGRAM_CONFIG_PATH, value: /etc/engram/config.yaml }
+            - { name: ENGRAM_LOG_FORMAT, value: json }
+            - { name: ENGRAM_API_KEY, valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } } }
+            - { name: ENGRAM_ADMIN_KEY, valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_ADMIN_KEY } } }
+            - { name: OPENCODE_GO_API_KEY, valueFrom: { secretKeyRef: { name: engram-secrets, key: OPENCODE_GO_API_KEY } } }
+            - { name: NEO4J_ADMIN_PASSWORD, valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } } }
+            - { name: ENGRAM_DATABASE_URL, valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_DATABASE_URL } } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/engram, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: "1000m", memory: "2Gi" }
+            limits: { cpu: "3000m", memory: "6Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - { name: config, configMap: { name: engram-config } }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 512Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engram-temporal-dispatcher
+  namespace: engram
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: engram
+      app.kubernetes.io/component: temporal-dispatcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: engram
+        app.kubernetes.io/component: temporal-dispatcher
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: temporal-dispatcher
+          image: ghcr.io/your-org/engram:latest
+          command: ["python", "-m", "engram.temporal.dispatcher"]
+          env:
+            - { name: ENGRAM_CONFIG_PATH, value: /etc/engram/config.yaml }
+            - { name: ENGRAM_LOG_FORMAT, value: json }
+            - { name: ENGRAM_API_KEY, valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } } }
+            - { name: ENGRAM_ADMIN_KEY, valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_ADMIN_KEY } } }
+            - { name: OPENCODE_GO_API_KEY, valueFrom: { secretKeyRef: { name: engram-secrets, key: OPENCODE_GO_API_KEY } } }
+            - { name: NEO4J_ADMIN_PASSWORD, valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } } }
+            - { name: ENGRAM_DATABASE_URL, valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_DATABASE_URL } } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/engram, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - { name: config, configMap: { name: engram-config } }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }

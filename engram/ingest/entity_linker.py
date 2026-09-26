@@ -52,7 +52,7 @@ def resolve(
             uri_prefix="mem://user/entities/",
             dormant_floor=0.0,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         candidates = []
     # Filter by token-overlap
     filtered: list[dict[str, Any]] = []
@@ -102,10 +102,11 @@ def resolve(
                 return LinkResult(matched, conf, reason)
             log.info(
                 "entity_link rejected: matched_id %r is not in candidate list %s",
-                matched, list(candidate_uris),
+                matched,
+                list(candidate_uris),
             )
         return LinkResult(None, conf, reason or "core-model-said-no")
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.warning("entity_link core call failed; defaulting to new entity", exc_info=True)
         return LinkResult(None, 0.0, "core-model-error")
 

@@ -42,9 +42,7 @@ def get_request_id() -> str:
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "@timestamp": time.strftime(
-                "%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)
-            )
+            "@timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
             + f".{int(record.msecs):03d}Z",
             "level": record.levelname,
             "logger": record.name,
@@ -55,10 +53,27 @@ class JsonFormatter(logging.Formatter):
         # Include extra fields the caller passed via logger.extra=
         for k, v in record.__dict__.items():
             if k in {
-                "name", "msg", "args", "levelname", "levelno", "pathname",
-                "filename", "module", "exc_info", "exc_text", "stack_info",
-                "lineno", "funcName", "created", "msecs", "relativeCreated",
-                "thread", "threadName", "processName", "process", "message",
+                "name",
+                "msg",
+                "args",
+                "levelname",
+                "levelno",
+                "pathname",
+                "filename",
+                "module",
+                "exc_info",
+                "exc_text",
+                "stack_info",
+                "lineno",
+                "funcName",
+                "created",
+                "msecs",
+                "relativeCreated",
+                "thread",
+                "threadName",
+                "processName",
+                "process",
+                "message",
                 "taskName",
             }:
                 continue
@@ -89,14 +104,12 @@ def configure_logging(level: int | str | None = None) -> None:
     handler = logging.StreamHandler(sys.stderr)
     if fmt == "plain":
         handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s"
-            )
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(threadName)s] %(message)s")
         )
     else:
         handler.setFormatter(JsonFormatter())
     root.addHandler(handler)
     root.setLevel(level)
     # Noisy third-party loggers
-    for name in ("urllib3", "httpx", "httpcore", "anthropic", "neo4j.notifications"):
+    for name in ("urllib3", "httpx", "httpcore", "neo4j.notifications"):
         logging.getLogger(name).setLevel(max(logging.WARNING, logging.getLogger().level))

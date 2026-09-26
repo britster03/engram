@@ -1,0 +1,169 @@
+<div x-show="mainTab === 'ingest'" x-cloak>
+    <div class="animate-fade-in-up">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Data Ingestion</h2>
+                <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Ingest Pipeline</h3>
+            </div>
+        </div>
+        <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-6 mb-6">
+            <form @submit.prevent="submitIngest()" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-neutral-700 mb-1.5">Session ID</label>
+                    <input x-model="ingest.session_id" type="text" class="w-full px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all" placeholder="Optional session identifier">
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-neutral-700 mb-1.5">User Message</label>
+                        <textarea x-model="ingest.user" rows="3" class="w-full px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all resize-none" placeholder="Enter user turn..."></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-neutral-700 mb-1.5">Assistant Message</label>
+                        <textarea x-model="ingest.assistant" rows="3" class="w-full px-4 py-2 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all resize-none" placeholder="Enter assistant turn..."></textarea>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="submit" class="px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all">Submit Ingest</button>
+                    <span x-show="ingestStatus" x-text="ingestStatus" class="text-sm text-neutral-600"></span>
+                </div>
+            </form>
+        </div>
+        <div class="bg-white rounded-2xl border border-neutral-200 p-5 sm:p-6">
+            <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5">
+                <div>
+                    <h4 class="text-sm font-bold tracking-tight text-neutral-900">Bulk Upload</h4>
+                    <p class="text-xs text-neutral-500 mt-1">JSONL, CSV, or ZIP. Source ZIPs support Python, TypeScript, JavaScript, Markdown, and text.</p>
+                </div>
+                <label class="flex items-center gap-2 text-sm text-neutral-600">
+                    <input type="checkbox" x-model="bulk.dryRun" data-testid="bulk-dry-run" class="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900">
+                    Dry run
+                </label>
+            </div>
+            <form @submit.prevent="submitBulkUpload()" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-[1fr_180px_180px_160px] gap-3">
+                    <input type="file" @change="bulk.file = $event.target.files[0]" data-testid="bulk-file-input" accept=".jsonl,.ndjson,.csv,.zip" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm">
+                    <input x-model="bulk.sessionId" data-testid="bulk-session-id" type="text" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm" placeholder="Session ID">
+                    <input x-model="bulk.projectName" data-testid="bulk-project-name" type="text" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm" placeholder="Project name for code ZIP">
+                    <select x-model="bulk.fileFormat" data-testid="bulk-file-format" class="px-3 py-2 rounded-xl border border-neutral-200 bg-white text-sm">
+                        <option value="">Infer format</option>
+                        <option value="jsonl">JSONL</option>
+                        <option value="csv">CSV</option>
+                        <option value="zip">ZIP</option>
+                    </select>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="submit" data-testid="bulk-upload-submit" class="px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-1.5">
+                        <i data-lucide="upload" class="w-4 h-4"></i>
+                        Upload
+                    </button>
+                    <span x-show="bulkStatus" x-text="bulkStatus" data-testid="bulk-status" class="text-sm text-neutral-600"></span>
+                </div>
+            </form>
+            <div x-show="bulkJob" x-cloak class="mt-5 border-t border-neutral-100 pt-4">
+                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
+                    <div>
+                        <h5 class="text-sm font-bold text-neutral-900">Upload progress</h5>
+                        <p class="mt-1 text-xs text-neutral-500">Each accepted item moves through memory creation and then Neo4j graph indexing.</p>
+                    </div>
+                    <button @click="refreshBulkJob()" type="button" class="self-start px-3 py-2 rounded-lg border border-neutral-200 hover:bg-neutral-50 text-xs font-semibold text-neutral-700">Refresh progress</button>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                    <div>
+                        <p class="text-xs text-neutral-400">Status</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.status" data-testid="bulk-result-status"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-neutral-400">Accepted</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.accepted_count" data-testid="bulk-result-accepted"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-neutral-400">Rejected</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.rejected_count" data-testid="bulk-result-rejected"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-neutral-400">Events</p>
+                        <p class="text-sm font-semibold text-neutral-800" x-text="bulkJob?.event_ids?.length || 0" data-testid="bulk-result-events"></p>
+                    </div>
+                </div>
+                <div x-show="bulkJob?.events?.length" class="overflow-x-auto rounded-xl border border-neutral-200 mb-4" data-testid="bulk-event-progress">
+                    <table class="w-full text-xs">
+                        <thead class="bg-neutral-50">
+                            <tr>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">File or row</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Memory</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Knowledge graph</th>
+                                <th class="text-right px-3 py-2 font-semibold text-neutral-600">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-neutral-100">
+                            <template x-for="event in (bulkJob?.events || [])" :key="event.event_id">
+                                <tr>
+                                    <td class="px-3 py-3 max-w-[260px]">
+                                        <p class="font-semibold text-neutral-800 truncate" x-text="event.label"></p>
+                                        <p class="mt-0.5 font-mono text-[10px] text-neutral-400" x-text="event.event_id"></p>
+                                        <p x-show="event.error_message" class="mt-1 text-red-600 leading-relaxed" x-text="event.error_message"></p>
+                                    </td>
+                                    <td class="px-3 py-3"><span class="inline-flex items-center rounded-full px-2 py-1 font-semibold" :class="eventPipelineClass(event)" x-text="eventPipelineLabel(event)"></span></td>
+                                    <td class="px-3 py-3"><span class="inline-flex items-center rounded-full px-2 py-1 font-semibold" :class="eventGraphClass(event)" x-text="eventGraphLabel(event)"></span></td>
+                                    <td class="px-3 py-3 text-right">
+                                        <button x-show="event.status === 'FAILED'" @click="retryBulkEvent(event)" :disabled="retryingEventId === event.event_id" type="button" class="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white font-semibold">
+                                            <span x-text="retryingEventId === event.event_id ? 'Retrying…' : 'Retry failed item'"></span>
+                                        </button>
+                                        <span x-show="event.status !== 'FAILED'" class="text-neutral-400">—</span>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <div x-show="bulkJob?.code_items?.length" class="overflow-x-auto rounded-xl border border-neutral-200 mb-4" data-testid="bulk-code-progress">
+                    <div class="flex items-center justify-between gap-3 px-3 py-3 border-b border-neutral-100 bg-blue-50/50">
+                        <div>
+                            <p class="text-xs font-bold text-neutral-800">Code graph analysis</p>
+                            <p class="mt-0.5 text-xs text-neutral-500">Static parsing creates files, symbols, imports, calls, and inheritance relationships.</p>
+                        </div>
+                        <a x-show="bulkJob?.project_uri" :href="'/admin/kg?view=code&project=' + encodeURIComponent(bulkJob.project_uri)" class="shrink-0 px-3 py-2 rounded-lg bg-neutral-900 text-white text-xs font-semibold hover:bg-neutral-800">Open Code map</a>
+                    </div>
+                    <table class="w-full text-xs">
+                        <thead class="bg-neutral-50">
+                            <tr>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Source file</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Parser status</th>
+                                <th class="text-right px-3 py-2 font-semibold text-neutral-600">Graph stages</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-neutral-100">
+                            <template x-for="item in (bulkJob?.code_items || [])" :key="item.path">
+                                <tr>
+                                    <td class="px-3 py-3 font-mono text-neutral-700" x-text="item.path"></td>
+                                    <td class="px-3 py-3"><span class="inline-flex items-center rounded-full px-2 py-1 font-semibold" :class="item.status === 'FAILED' ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'" x-text="item.status"></span><p x-show="item.error_message" class="mt-1 text-red-600" x-text="item.error_message"></p></td>
+                                    <td class="px-3 py-3 text-right text-neutral-600"><span x-text="item.node_count"></span> nodes · <span x-text="item.relationship_count"></span> links</td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <div x-show="bulkJob?.rejected_rows?.length" class="overflow-x-auto rounded-xl border border-neutral-200">
+                    <table class="w-full text-xs">
+                        <thead class="bg-neutral-50">
+                            <tr>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Row</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Reason</th>
+                                <th class="text-left px-3 py-2 font-semibold text-neutral-600">Preview</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-neutral-100">
+                            <template x-for="row in (bulkJob?.rejected_rows || [])" :key="row.row_number + row.reason">
+                                <tr>
+                                    <td class="px-3 py-2 font-mono text-neutral-600" x-text="row.row_number"></td>
+                                    <td class="px-3 py-2 text-neutral-700" x-text="row.reason"></td>
+                                    <td class="px-3 py-2 text-neutral-500" x-text="row.preview || ''"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

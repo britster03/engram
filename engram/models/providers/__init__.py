@@ -3,9 +3,10 @@
 `build_providers(core_cfg, frontier_cfg)` returns a (core, frontier) pair
 built from the configured provider name. Supported:
 
-  - "anthropic"       → engram.models.providers.anthropic_provider
+  - "local"           → engram.models.providers.local_provider (Transformers)
   - "openai"          → engram.models.providers.openai_compat (api.openai.com)
   - "openai_compat"   → engram.models.providers.openai_compat (any base URL)
+  - "openai_responses" → OpenAI Responses API adapter (any compatible base URL)
   - "ollama"          → openai_compat with base URL http://localhost:11434/v1
   - "groq"            → openai_compat with base URL https://api.groq.com/openai/v1
   - "gemini"          → openai_compat with base URL https://generativelanguage.googleapis.com/v1beta/openai
@@ -20,21 +21,25 @@ having to remember the base URL.
 
 from __future__ import annotations
 
+import os
+
 from engram.config import CoreModelConfig, FrontierLlmConfig
 from engram.models.core import CoreModelProvider
 from engram.models.frontier import FrontierLLMProvider
 
-
 _OPENAI_COMPAT_BASES: dict[str, str | None] = {
-    "openai":         None,  # default client endpoint
-    "openai_compat":  None,  # requires explicit api_base in config
-    "ollama":         "http://localhost:11434/v1",
-    "groq":           "https://api.groq.com/openai/v1",
-    "gemini":         "https://generativelanguage.googleapis.com/v1beta/openai",
-    "openrouter":     "https://openrouter.ai/api/v1",
-    "together":       "https://api.together.xyz/v1",
-    "deepseek":       "https://api.deepseek.com",
+    "openai": None,  # default client endpoint
+    "openai_compat": None,  # requires explicit api_base in config
+    "ollama": "http://localhost:11434/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "together": "https://api.together.xyz/v1",
+    "deepseek": "https://api.deepseek.com",
 }
+
+_MUSE_SPARK_MODEL = "muse-spark-1.3-contributor"
+_OPENCODE_GO_BASE = "https://opencode.ai/zen/go/v1"
 
 
 def _resolve_base(provider: str, configured_base: str | None) -> str | None:
@@ -47,46 +52,75 @@ def _resolve_base(provider: str, configured_base: str | None) -> str | None:
 
 def build_core_provider(cfg: CoreModelConfig) -> CoreModelProvider:
     provider = cfg.provider.lower()
-    if provider == "anthropic":
-        from engram.models.providers.anthropic_provider import AnthropicCoreProvider
-        return AnthropicCoreProvider(cfg)
+    if provider == "local":
+        from engram.models.providers.local_provider import LocalCoreProvider
+
+        return LocalCoreProvider(cfg)
+    if provider == "openai_responses":
+        from engram.models.providers.openai_compat import OpenAIResponsesCoreProvider
+
+        return OpenAIResponsesCoreProvider(_patch_responses_core(cfg))
     if provider in _OPENAI_COMPAT_BASES:
         from engram.models.providers.openai_compat import OpenAICompatCoreProvider
+
         # Swap in the resolved base URL without mutating the caller's config.
         patched = cfg.model_copy(update={"api_base": _resolve_base(provider, cfg.api_base)})
         return OpenAICompatCoreProvider(patched)
     raise NotImplementedError(
         f"core_model.provider={cfg.provider!r} is not wired. "
-        f"Supported: anthropic, {', '.join(_OPENAI_COMPAT_BASES)}."
+        f"Supported: local, openai_responses, {', '.join(_OPENAI_COMPAT_BASES)}."
     )
 
 
 def build_frontier_provider(cfg: FrontierLlmConfig) -> FrontierLLMProvider:
     provider = cfg.provider.lower()
-    if provider == "anthropic":
-        from engram.models.providers.anthropic_provider import AnthropicFrontierProvider
-        return AnthropicFrontierProvider(cfg)
+    if provider == "openai_responses":
+        from engram.models.providers.openai_compat import OpenAIResponsesFrontierProvider
+
+        return OpenAIResponsesFrontierProvider(_patch_responses_frontier(cfg))
     if provider in _OPENAI_COMPAT_BASES:
         from engram.models.providers.openai_compat import OpenAICompatFrontierProvider
-        # FrontierLlmConfig doesn't have api_base today; rely on the canonical
-        # mapping. Extending the schema is a small follow-up.
+
         configured_base = getattr(cfg, "api_base", None)
         base = _resolve_base(provider, configured_base)
-        if base is not None:
-            # Attach api_base for the adapter to pick up via getattr.
-            object.__setattr__(cfg, "api_base", base)
-        return OpenAICompatFrontierProvider(cfg)
+        patched = cfg.model_copy(update={"api_base": base})
+        return OpenAICompatFrontierProvider(patched)
     raise NotImplementedError(
         f"frontier_llm.provider={cfg.provider!r} is not wired. "
-        f"Supported: anthropic, {', '.join(_OPENAI_COMPAT_BASES)}."
+        f"Supported: openai_responses, {', '.join(_OPENAI_COMPAT_BASES)}."
     )
 
 
 def build_providers(
-    core_cfg: CoreModelConfig, frontier_cfg: FrontierLlmConfig,
+    core_cfg: CoreModelConfig,
+    frontier_cfg: FrontierLlmConfig,
 ) -> tuple[CoreModelProvider, FrontierLLMProvider]:
     """Single-call helper used by `engram.deps.build_state`."""
     return build_core_provider(core_cfg), build_frontier_provider(frontier_cfg)
+
+
+def _responses_connection(
+    model: str,
+    configured_base: str | None,
+    configured_key: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the canonical Muse Spark endpoint without breaking custom gateways."""
+    if model != _MUSE_SPARK_MODEL:
+        return configured_base, configured_key
+    return (
+        configured_base or _OPENCODE_GO_BASE,
+        configured_key or os.environ.get("OPENCODE_GO_API_KEY"),
+    )
+
+
+def _patch_responses_core(cfg: CoreModelConfig) -> CoreModelConfig:
+    api_base, api_key = _responses_connection(cfg.model_path, cfg.api_base, cfg.api_key)
+    return cfg.model_copy(update={"api_base": api_base, "api_key": api_key})
+
+
+def _patch_responses_frontier(cfg: FrontierLlmConfig) -> FrontierLlmConfig:
+    api_base, api_key = _responses_connection(cfg.model_path, cfg.api_base, cfg.api_key)
+    return cfg.model_copy(update={"api_base": api_base, "api_key": api_key})
 
 
 __all__ = [

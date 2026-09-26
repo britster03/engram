@@ -5,8 +5,7 @@
 #
 # This file assumes you have a `.env.prod` with:
 #   ENGRAM_API_KEY=...
-#   CORE_MODEL_API_KEY=...
-#   FRONTIER_LLM_API_KEY=...
+#   OPENCODE_GO_API_KEY=...
 #   NEO4J_ADMIN_PASSWORD=...
 #
 # TLS certs must be placed at deploy/tls/{fullchain.pem,privkey.pem} (see
@@ -17,24 +16,296 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: engram:latest
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
     container_name: engram-app
-    env_file:
-      - .env.prod
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
     environment:
       ENGRAM_LOG_FORMAT: "json"
       ENGRAM_LOG_LEVEL: "INFO"
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     volumes:
-      - engram_data:/var/lib/engram
-      - ./config.yaml:/etc/engram/config.yaml:ro
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    # Loopback-only by default. Set ENGRAM_BIND_ADDRESS deliberately for LAN
+    # access, or use --with-nginx with trusted TLS certificates.
+    ports:
+      - "${ENGRAM_BIND_ADDRESS:-127.0.0.1}:8000:8000"
     depends_on:
-      neo4j:
+      postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      engram-control-plane-migrate:
+        condition: service_completed_successfully
+      engram-neo4j-init:
+        condition: service_completed_successfully
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    mem_limit: 3g
+    cpus: 2.0
+    networks: [edge, backend]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/livez"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  postgres:
+    image: postgres:16.6-alpine
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ENGRAM_DB_PASSWORD: ${ENGRAM_DB_PASSWORD}
+    command:
+      - postgres
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - wal_compression=on
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: 2.0
+    networks: [backend]
+
+  temporal-schema:
+    image: temporalio/admin-tools:${TEMPORAL_ADMIN_VERSION:-1.30.6}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-ec"]
+    # A one-item list preserves this entire shell program as the argument to
+    # `sh -c`; Compose otherwise tokenizes a string command before entrypoint.
+    command:
+      - >-
+        (temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal setup-schema --version 0.0 ||
+         temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned) &&
+        temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned &&
+        (temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal_visibility setup-schema --version 0.0 ||
+         temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned) &&
+        temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+    networks: [backend]
+
+  temporal:
+    image: temporalio/server:${TEMPORAL_SERVER_VERSION:-1.30.4.1}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      # The server image renders its embedded, version-matched configuration
+      # template from these values. Schema setup remains a separate one-shot
+      # service above; this is not the auto-setup image.
+      DB: postgres12
+      DBNAME: temporal
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: temporal_app
+      POSTGRES_PWD: ${ENGRAM_DB_PASSWORD}
+      VISIBILITY_DBNAME: temporal_visibility
+      VISIBILITY_POSTGRES_SEEDS: postgres
+      VISIBILITY_POSTGRES_USER: temporal_app
+      VISIBILITY_POSTGRES_PWD: ${ENGRAM_DB_PASSWORD}
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
+    volumes:
+      - ./deploy/temporal/dynamicconfig/docker.yaml:/etc/temporal/config/dynamicconfig/docker.yaml:ro
+    depends_on:
+      temporal-schema: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 1.0
+    # The server remains un-published on the internal backend network.
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+
+  temporal-ui:
+    image: temporalio/ui:2.36.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: engram-prod
+      TEMPORAL_DEFAULT_NAMESPACE: engram-prod
+    ports:
+      - "${ENGRAM_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    depends_on:
+      temporal: { condition: service_started }
+    restart: unless-stopped
+    networks: [edge, backend]
+
+  temporal-namespace:
+    image: temporalio/admin-tools:${TEMPORAL_ADMIN_VERSION:-1.30.6}
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        temporal operator namespace describe --namespace engram-prod ||
+        temporal operator namespace create --namespace engram-prod --retention 14d
+    restart: on-failure:5
+    networks: [backend]
+
+  engram-control-plane-migrate:
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+    command: ["engram", "postgres-migrate"]
+    volumes:
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [backend]
+
+  engram-neo4j-init:
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+    command: ["engram", "init"]
+    volumes:
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    depends_on:
+      neo4j: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      engram-control-plane-migrate: { condition: service_completed_successfully }
+    restart: "no"
+    networks: [backend]
+
+  engram-temporal-worker:
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+      ENGRAM_LOG_FORMAT: json
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    # One supervised process hosts Temporal Workers for every task queue.
+    # Projection is still a Temporal workflow/activity; it is not a separate
+    # application daemon that operators can accidentally omit at startup.
+    command: ["python", "-m", "engram.temporal.worker", "--queue", "all"]
+    volumes:
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    depends_on:
+      temporal: { condition: service_started }
+      temporal-namespace: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      engram-control-plane-migrate: { condition: service_completed_successfully }
+      engram-neo4j-init: { condition: service_completed_successfully }
+      neo4j: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    mem_limit: 6g
+    cpus: 3.0
+    # The worker needs outbound DNS/HTTPS access for the configured OpenCode Go
+    # model provider. It still exposes no host ports.
+    networks: [backend, edge]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  engram-dispatcher:
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+      ENGRAM_LOG_FORMAT: json
+    command: ["python", "-m", "engram.temporal.dispatcher"]
+    volumes:
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    depends_on:
+      temporal: { condition: service_started }
+      temporal-namespace: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      engram-control-plane-migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  engram-reconciler:
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+      ENGRAM_LOG_FORMAT: json
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    command: ["python", "-m", "engram.reconciler"]
+    # Rollback-only. Temporal schedules own reconciliation in production.
+    profiles: ["legacy-maintenance"]
+    volumes:
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      engram-control-plane-migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  engram-decay:
+    image: engram:${ENGRAM_IMAGE_TAG:-0.1.0}
+    env_file: ["${ENGRAM_ENV_FILE:-.env.prod}"]
+    environment:
+      ENGRAM_CONFIG_PATH: /etc/engram/config.yaml
+      ENGRAM_LOG_FORMAT: json
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    command: ["python", "-m", "engram.decay_worker"]
+    # Rollback-only. Temporal schedules own decay in production.
+    profiles: ["legacy-maintenance"]
+    volumes:
+      - ./config.prod.yaml:/etc/engram/config.yaml:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      engram-control-plane-migrate: { condition: service_completed_successfully }
+      neo4j: { condition: service_healthy }
+    restart: unless-stopped
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -52,6 +323,16 @@ services:
     depends_on:
       - engram
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge, backend]
+
+  neo4j:
+    ports: !reset []
+    networks: [backend]
+
+  redis:
+    ports: !reset []
+    networks: [backend]
 
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -65,9 +346,12 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
+    ports:
+      - "${ENGRAM_BIND_ADDRESS:-127.0.0.1}:9090:9090"
     restart: unless-stopped
     depends_on:
       - engram
+    networks: [backend]
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -80,11 +364,19 @@ services:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
+    ports:
+      - "${ENGRAM_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped
+    networks: [backend]
 
 volumes:
-  engram_data:
+  postgres_data:
   prometheus_data:
   grafana_data:
+
+networks:
+  edge: {}
+  backend:
+    internal: true

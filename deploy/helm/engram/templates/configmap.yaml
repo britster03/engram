@@ -17,15 +17,27 @@ data:
       classification_threshold: 0.3
       device: "cpu"
     core_model:
-      provider: "anthropic"
-      model_path: "claude-sonnet-4-6"
-      api_key: ${CORE_MODEL_API_KEY}
+      provider: "openai_responses"
+      model_path: "muse-spark-1.3-contributor"
+      api_base: "https://opencode.ai/zen/go/v1"
+      api_key: ${OPENCODE_GO_API_KEY}
+      temperature: 1.0
     frontier_llm:
-      provider: "anthropic"
-      model_path: "claude-sonnet-4-6"
-      api_key: ${FRONTIER_LLM_API_KEY}
+      provider: "openai_responses"
+      model_path: "muse-spark-1.3-contributor"
+      api_base: "https://opencode.ai/zen/go/v1"
+      api_key: ${OPENCODE_GO_API_KEY}
+      temperature: 1.0
+      reasoning_effort: "low"
     filesystem:
-      data_dir: "/var/lib/engram/mem"
+      data_dir: "/var/lib/engram/export"
+      create_dirs: false
+    canonical_memory:
+      enabled: true
+      require_temporal: true
+      allow_filesystem_runtime: false
+      legacy_uri_status_code: 410
+      artifact_retention_hours: 24
     knowledge_graph:
       backend: "neo4j"
       uri: {{ .Values.neo4j.uri | default (printf "bolt://%s-neo4j:7687" (include "engram.fullname" .)) | quote }}
@@ -34,9 +46,24 @@ data:
       reader_username: "neo4j"
       reader_password: ${NEO4J_ADMIN_PASSWORD}
     event_ledger:
-      path: "/var/lib/engram/event_ledger.db"
+      backend: "postgres"
+      dsn: ${ENGRAM_DATABASE_URL}
+      reconciliation_interval_seconds: 60
+      stale_overview_scan_interval_seconds: 86400
+    temporal:
+      enabled: true
+      address: {{ .Values.temporal.address | quote }}
+      namespace: {{ .Values.temporal.namespace | quote }}
+      ingest_task_queue: {{ .Values.temporal.ingestTaskQueue | quote }}
+      code_ingest_task_queue: {{ .Values.temporal.codeIngestTaskQueue | quote }}
+      projection_task_queue: {{ .Values.temporal.projectionTaskQueue | quote }}
+      consolidation_task_queue: {{ .Values.temporal.consolidationTaskQueue | quote }}
+      maintenance_task_queue: {{ .Values.temporal.maintenanceTaskQueue | quote }}
+      worker_concurrency: {{ .Values.temporal.workerConcurrency }}
+      maintenance_worker_concurrency: {{ .Values.temporal.maintenanceWorkerConcurrency }}
+      dispatch_interval_seconds: {{ .Values.temporal.dispatchIntervalSeconds }}
+      history_retention_days: {{ .Values.temporal.historyRetentionDays }}
     consolidation:
-      db_path: "/var/lib/engram/consolidation.db"
       max_concurrent_tasks: {{ .Values.config.consolidation.max_concurrent_tasks }}
       max_backlog: {{ .Values.config.consolidation.max_backlog }}
     session_cache:
@@ -49,5 +76,6 @@ data:
     decay:
       preset: "personal_conversation"
       schedule: "0 3 * * *"
+      schedule_timezone: "UTC"
     session:
       timeout_minutes: {{ .Values.config.session.timeout_minutes }}

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import httpx
 
@@ -64,7 +65,7 @@ class EngramClient:
     def close(self) -> None:
         self._http.close()
 
-    def __enter__(self) -> "EngramClient":
+    def __enter__(self) -> EngramClient:
         return self
 
     def __exit__(self, *_a) -> None:
@@ -137,6 +138,65 @@ class EngramClient:
         ) as r:
             r.raise_for_status()
             # Very small SSE parser — handles the events we emit: metadata, delta, done, error
+            event = None
+            for line in r.iter_lines():
+                if line.startswith("event:"):
+                    event = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    data = line[len("data:"):].strip()
+                    if event == "delta":
+                        try:
+                            payload = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        yield payload.get("text", "")
+                    elif event == "error":
+                        raise EngramError(500, data)
+                    elif event == "done":
+                        return
+
+    def chat_completions(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        session_id: str | None = None,
+        stream: bool = False,
+        session_context: str | None = None,
+        max_depth: str | None = None,
+        max_reentries: int | None = None,
+    ) -> dict[str, Any]:
+        body = {
+            "messages": messages,
+            "session_id": session_id,
+            "stream": stream,
+            "session_context": session_context,
+            "max_depth": max_depth,
+            "max_reentries": max_reentries,
+        }
+        return self._post("/api/v1/chat/completions", body)
+
+    def chat_completions_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        session_id: str | None = None,
+        session_context: str | None = None,
+        max_depth: str | None = None,
+        max_reentries: int | None = None,
+    ) -> Iterator[str]:
+        body = {
+            "messages": messages,
+            "session_id": session_id,
+            "session_context": session_context,
+            "max_depth": max_depth,
+            "max_reentries": max_reentries,
+            "stream": True,
+        }
+        with self._http.stream(
+            "POST", "/api/v1/chat/completions", json=body,
+            headers=self._auth_headers(),
+        ) as r:
+            r.raise_for_status()
             event = None
             for line in r.iter_lines():
                 if line.startswith("event:"):

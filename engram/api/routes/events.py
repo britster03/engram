@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from engram.api.auth import AuthDep
-from engram.deps import AppState, get_state, make_ingest_context
-from engram.ingest.worker import process_event
-
-log = logging.getLogger(__name__)
+from engram.deps import get_state
+from engram.projection_status import projection_status_for_event
+from engram.tenancy import current_tenant_id
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"], dependencies=[AuthDep])
 
@@ -21,33 +17,54 @@ class EventResponse(BaseModel):
     event_id: str
     status: str
     retry_count: int
+    projection_status: str
+
+
+@router.get("/{event_id}", response_model=EventResponse)
+def get_event(event_id: str) -> EventResponse:
+    state = get_state()
+    tenant_id = current_tenant_id()
+    event = state.control_plane.get_event(event_id, tenant_id=tenant_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="event not found")
+    return EventResponse(
+        event_id=event_id,
+        status=str(event["status"]),
+        retry_count=int(event.get("retry_count") or 0),
+        projection_status=(
+            projection_status_for_event(state, event_id, tenant_id=tenant_id) or "PENDING"
+        ),
+    )
 
 
 @router.post("/{event_id}/retry", response_model=EventResponse)
-def retry_event(event_id: str, background: BackgroundTasks) -> EventResponse:
+def retry_event(event_id: str) -> EventResponse:
     state = get_state()
-    event = state.sqlite.get_event(event_id)
+    tenant_id = current_tenant_id()
+    event = state.control_plane.get_event(event_id, tenant_id=tenant_id)
     if event is None:
         raise HTTPException(status_code=404, detail="event not found")
-    # Reset to RECEIVED and let the background worker try again.
-    with state.sqlite.transaction() as conn:
-        conn.execute(
-            "UPDATE events SET status = 'RECEIVED', error_message = NULL, "
-            "retry_count = retry_count + 1 WHERE event_id = ?",
-            (event_id,),
-        )
-    background.add_task(_drive, state, event_id)
-    refreshed = state.sqlite.get_event(event_id) or event
+    if event.get("status") != "FAILED":
+        raise HTTPException(status_code=409, detail="only failed events can be retried")
+    # Postgres/Temporal retries create a new workflow generation in the same
+    # transaction as the status reset. Non-Temporal mode uses PostgreSQL polling.
+    if hasattr(state.control_plane, "retry_event") and state.cfg.temporal.enabled:
+        refreshed = state.control_plane.retry_event(event_id, tenant_id=tenant_id)
+        if refreshed is None:
+            raise HTTPException(status_code=409, detail="only failed events can be retried")
+    else:
+        with state.control_plane.transaction() as conn:
+            conn.execute(
+                "UPDATE events SET status = 'RECEIVED', error_message = NULL, "
+                "retry_count = retry_count + 1 WHERE event_id = ? AND tenant_id = ?",
+                (event_id, tenant_id),
+            )
+        refreshed = state.control_plane.get_event(event_id, tenant_id=tenant_id) or event
     return EventResponse(
         event_id=event_id,
         status=refreshed["status"],
         retry_count=refreshed.get("retry_count", 0),
+        projection_status=(
+            projection_status_for_event(state, event_id, tenant_id=tenant_id) or "PENDING"
+        ),
     )
-
-
-def _drive(state: AppState, event_id: str) -> None:
-    try:
-        ctx = make_ingest_context(state)
-        process_event(ctx, event_id)
-    except Exception:
-        log.exception("retry worker failed for %s", event_id)

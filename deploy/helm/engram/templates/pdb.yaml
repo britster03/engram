@@ -7,5 +7,39 @@ metadata:
 spec:
   minAvailable: {{ .Values.pdb.minAvailable }}
   selector:
-    matchLabels: {{- include "engram.selectorLabels" . | nindent 6 }}
+    matchLabels:
+      {{- include "engram.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+{{- end }}
+{{- if .Values.worker.pdb.enabled }}
+{{- $root := . }}
+{{- range .Values.worker.queues }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "engram.fullname" $root }}-worker-{{ .name }}
+  labels: {{- include "engram.labels" $root | nindent 4 }}
+spec:
+  minAvailable: {{ $root.Values.worker.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "engram.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: temporal-worker
+      engram.ai/task-queue: {{ .name | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.dispatcher.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "engram.fullname" . }}-dispatcher
+  labels: {{- include "engram.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.dispatcher.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "engram.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: temporal-dispatcher
 {{- end }}

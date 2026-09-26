@@ -14,7 +14,6 @@ from engram.frontmatter import FrontmatterError
 from engram.storage.filesystem import FilesystemStore
 from engram.uri import path_to_uri
 
-
 MIN_NODE_TOKENS = 20
 
 
@@ -36,14 +35,16 @@ def render_tree(
 ) -> str:
     """Produce a compact breadth-first tree sketch under `max_tokens`.
 
-    Always renders at least depth 1–2. Emits ellipsis markers for truncated
+    Always renders at least depth 1-2. Emits ellipsis markers for truncated
     subtrees so the Core Model knows what is missing.
     """
-    root_path = fs.data_dir
+    root_path = fs.tenant_scope_path()
     if not root_path.exists():
         return "(filesystem is empty)"
     # Level-0 root
-    nodes_by_level: list[list[_Node]] = [[_Node(uri=root_uri, path=root_path, is_dir=True, depth=0)]]
+    nodes_by_level: list[list[_Node]] = [
+        [_Node(uri=root_uri, path=root_path, is_dir=True, depth=0)]
+    ]
     # Expand BFS
     for depth in range(max_display_depth):
         parents = nodes_by_level[-1]
@@ -58,7 +59,7 @@ def render_tree(
             for child in items:
                 if child.name.startswith("."):
                     continue
-                uri = path_to_uri(child, fs.data_dir)
+                uri = path_to_uri(child, fs.tenant_scope_path())
                 node = _Node(
                     uri=uri,
                     path=child,

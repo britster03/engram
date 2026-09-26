@@ -1,0 +1,3 @@
+# Intentionally empty dynamic configuration. Keeping this file explicit makes
+# the server's version-matched embedded template fail closed if it is absent.
+{}

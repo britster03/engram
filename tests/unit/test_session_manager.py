@@ -1,9 +1,14 @@
 """Tests for the session manager and compaction."""
 
+from pathlib import Path
+
 from engram.config import SessionCacheConfig
-from engram.session.manager import SessionManager, compact_session
-from engram.storage.redis_cache import SessionCache
 from engram.models.core import CompletionResult, CoreModelProvider
+from engram.session.manager import SessionManager, commit_session, compact_session
+from engram.storage.filesystem import FilesystemStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
+from engram.storage.redis_cache import SessionCache
+from tests.postgres_support import PostgresTestStore
 
 
 class _InMemoryCache(SessionCache):
@@ -25,10 +30,16 @@ class _StubCore(CoreModelProvider):
         )
 
 
+class _StubEmbed:
+    def embed(self, _text: str) -> list[float]:
+        return [0.1] * 384
+
+
 def test_create_and_get_roundtrip():
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=50, session_ttl_minutes=30)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=50, session_ttl_minutes=30
+    )
     s = mgr.create()
     assert s.status == "ACTIVE"
     assert len(s.turns) == 0
@@ -39,8 +50,9 @@ def test_create_and_get_roundtrip():
 
 def test_append_turn_pair_tracks_indices():
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=50, session_ttl_minutes=30)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=50, session_ttl_minutes=30
+    )
     s = mgr.create()
     s, needs = mgr.append_turn_pair(s.session_id, "hello", "hi")
     assert len(s.turns) == 2
@@ -54,8 +66,9 @@ def test_append_turn_pair_tracks_indices():
 
 def test_compaction_updates_bound():
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=4, session_ttl_minutes=30)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=4, session_ttl_minutes=30
+    )
     s = mgr.create()
     for i in range(6):
         mgr.append_turn_pair(s.session_id, f"user msg {i}", f"asst msg {i}")
@@ -66,3 +79,69 @@ def test_compaction_updates_bound():
     assert s.compacted is not None and "(summary here)" in s.compacted
     assert s.compacted_turns_idx_upper_bound > before_bound
     assert "user moved to NYC" in s.key_facts
+
+
+def test_compaction_reenqueue_preserves_tenant(tmp_path: Path):
+    cache = _InMemoryCache(ttl=60)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=4, session_ttl_minutes=30
+    )
+    store = PostgresTestStore()
+    s = mgr.create()
+    for i in range(6):
+        mgr.append_turn_pair(s.session_id, f"user msg {i}", f"asst msg {i}")
+    s = mgr.get(s.session_id)
+    assert s is not None
+
+    compact_session(mgr, s, _StubCore(), control_plane=store, tenant_id="tenant-a")
+
+    rows = (
+        store.get_conn()
+        .execute("SELECT DISTINCT tenant_id FROM events WHERE source = 'session_compact'")
+        .fetchall()
+    )
+    assert [row["tenant_id"] for row in rows] == ["tenant-a"]
+
+
+def test_commit_session_writes_summary_and_reenqueues_turns(tmp_path: Path):
+    cache = _InMemoryCache(ttl=60)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=50, session_ttl_minutes=30
+    )
+    store = PostgresTestStore()
+    fs = FilesystemStore(tmp_path / "mem")
+    kg = InMemoryKnowledgeGraph()
+    s = mgr.create()
+    mgr.append_turn_pair(s.session_id, "I moved to Berlin.", "Stored.")
+    s = mgr.get(s.session_id)
+    assert s is not None
+
+    committed = commit_session(
+        mgr,
+        s,
+        _StubCore(),
+        control_plane=store,
+        fs=fs,
+        neo4j=kg,
+        embed=_StubEmbed(),  # type: ignore[arg-type]
+        tenant_id="tenant-a",
+    )
+
+    assert committed.status == "COMMITTED"
+    rows = (
+        store.get_conn()
+        .execute(
+            "SELECT tenant_id, status FROM events WHERE session_id = ?",
+            (s.session_id,),
+        )
+        .fetchall()
+    )
+    assert [(row["tenant_id"], row["status"]) for row in rows] == [("tenant-a", "RECEIVED")]
+    summary_uri = f"mem://user/session_summaries/{s.session_id}.md"
+    assert fs.exists(summary_uri)
+    node = next(
+        n
+        for n in kg.graph(root_uri=summary_uri, tenant_id="tenant-a")["nodes"]
+        if n["source_uri"] == summary_uri
+    )
+    assert node["node_type"] == "SESSION_SUMMARY"
