@@ -37,47 +37,111 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
-
+from typing import Any
 
 # ----------------------------------------------------------------------
 # Grammar building blocks
 # ----------------------------------------------------------------------
 
 _PEOPLE = [
-    "Alice", "Bob", "Carol", "Dan", "Eve", "Frank", "Grace", "Henry",
-    "Iris", "Jack", "Kate", "Leo", "Mia", "Noah", "Olivia", "Priya",
-    "Quinn", "Ravi", "Sam", "Tara", "Uma", "Vera", "Will", "Xavier",
-    "Yara", "Zane",
+    "Alice",
+    "Bob",
+    "Carol",
+    "Dan",
+    "Eve",
+    "Frank",
+    "Grace",
+    "Henry",
+    "Iris",
+    "Jack",
+    "Kate",
+    "Leo",
+    "Mia",
+    "Noah",
+    "Olivia",
+    "Priya",
+    "Quinn",
+    "Ravi",
+    "Sam",
+    "Tara",
+    "Uma",
+    "Vera",
+    "Will",
+    "Xavier",
+    "Yara",
+    "Zane",
 ]
 _COMPANIES = [
-    "Meta", "Google", "Anthropic", "Stripe", "Figma", "OpenAI",
-    "Cloudflare", "Shopify", "Vercel", "Snowflake", "Databricks",
-    "GitHub", "DeepMind", "Notion", "Ramp",
+    "Meta",
+    "Google",
+    "Ollama",
+    "Stripe",
+    "Figma",
+    "OpenAI",
+    "Cloudflare",
+    "Shopify",
+    "Vercel",
+    "Snowflake",
+    "Databricks",
+    "GitHub",
+    "DeepMind",
+    "Notion",
+    "Ramp",
 ]
 _CITIES = [
-    "San Francisco", "New York", "Seattle", "Austin", "Berlin", "London",
-    "Tokyo", "Menlo Park", "Palo Alto", "Boston", "Chicago", "Toronto",
-    "Sydney", "Amsterdam",
+    "San Francisco",
+    "New York",
+    "Seattle",
+    "Austin",
+    "Berlin",
+    "London",
+    "Tokyo",
+    "Menlo Park",
+    "Palo Alto",
+    "Boston",
+    "Chicago",
+    "Toronto",
+    "Sydney",
+    "Amsterdam",
 ]
 _ROLES = [
-    "software engineer", "staff ML engineer", "product manager",
-    "data scientist", "designer", "researcher", "technical writer",
-    "engineering manager", "CTO",
+    "software engineer",
+    "staff ML engineer",
+    "product manager",
+    "data scientist",
+    "designer",
+    "researcher",
+    "technical writer",
+    "engineering manager",
+    "CTO",
 ]
 _PROJECTS = [
-    "Project Atlas", "Project Helios", "Project Nebula", "Project Aurora",
-    "Project Beacon", "the ranking pipeline", "the onboarding flow",
+    "Project Atlas",
+    "Project Helios",
+    "Project Nebula",
+    "Project Aurora",
+    "Project Beacon",
+    "the ranking pipeline",
+    "the onboarding flow",
     "the billing service",
 ]
 _PETS = [
-    "a golden retriever named Rex", "a siamese cat named Ada",
-    "a parrot named Mango", "a rabbit named Juno",
+    "a golden retriever named Rex",
+    "a siamese cat named Ada",
+    "a parrot named Mango",
+    "a rabbit named Juno",
 ]
 _DATES = [
-    "March 5th", "April 12th", "June 21st", "July 12th", "October 3rd",
-    "2026-05-04", "2026-07-12", "2026-09-01",
+    "March 5th",
+    "April 12th",
+    "June 21st",
+    "July 12th",
+    "October 3rd",
+    "2026-05-04",
+    "2026-07-12",
+    "2026-09-01",
 ]
 
 _PLEASANTRIES = [
@@ -121,6 +185,7 @@ def _seed(seed: int) -> random.Random:
 # Per-task generators
 # ----------------------------------------------------------------------
 
+
 def gen_gate_write(n: int, *, seed: int = 0) -> list[dict[str, Any]]:
     rnd = _seed(seed)
     out: list[dict[str, Any]] = []
@@ -130,7 +195,6 @@ def gen_gate_write(n: int, *, seed: int = 0) -> list[dict[str, Any]]:
             store = False
             reason = "pleasantry / no durable content"
         else:
-            person = rnd.choice(_PEOPLE)
             company = rnd.choice(_COMPANIES)
             city = rnd.choice(_CITIES)
             kind = rnd.choice(["job", "move", "project", "event", "preference", "fact"])
@@ -158,12 +222,14 @@ def gen_gate_write(n: int, *, seed: int = 0) -> list[dict[str, Any]]:
             f"[GATE] Write-path gate — §5.4.2.\n\nPreceding session summary (if any):\n"
             f"(none)\n\nTurn pair:\nUSER: {user}\nASSISTANT: {asst}\n"
         )
-        out.append({
-            "task_type": "gate_write",
-            "system_prompt": sys_p,
-            "user_prompt": "Respond with a JSON object matching the schema.",
-            "output": {"store": store, "reason": reason},
-        })
+        out.append(
+            {
+                "task_type": "gate_write",
+                "system_prompt": sys_p,
+                "user_prompt": "Respond with a JSON object matching the schema.",
+                "output": {"store": store, "reason": reason},
+            }
+        )
     return out
 
 
@@ -175,55 +241,70 @@ def gen_extract(n: int, *, seed: int = 1) -> list[dict[str, Any]]:
         company = rnd.choice(_COMPANIES)
         city = rnd.choice(_CITIES)
         role = rnd.choice(_ROLES)
-        template = rnd.choice([
-            (
-                f"I just accepted a {role} role at {company}.",
-                "Congrats!",
-                f"User accepted a {role} role at {company}.",
-                [
-                    {"subject": "user", "relation": "works_at",
-                     "object": company, "confidence": 0.92},
-                    {"subject": "user", "relation": "role",
-                     "object": role, "confidence": 0.88},
-                ],
-                f"User accepted a {role} role at {company}.",
-            ),
-            (
-                f"I'm moving to {city} next month.",
-                "Noted.",
-                f"User is moving to {city} next month.",
-                [
-                    {"subject": "user", "relation": "moving_to",
-                     "object": city, "confidence": 0.9},
-                ],
-                f"User is moving to {city} next month.",
-            ),
-            (
-                f"My manager's name is {person}.",
-                "Got it.",
-                f"User's manager is {person}.",
-                [
-                    {"subject": "user", "relation": "reports_to",
-                     "object": person, "confidence": 0.95},
-                ],
-                f"User reports to {person}.",
-            ),
-        ])
+        template = rnd.choice(
+            [
+                (
+                    f"I just accepted a {role} role at {company}.",
+                    "Congrats!",
+                    f"User accepted a {role} role at {company}.",
+                    [
+                        {
+                            "subject": "user",
+                            "relation": "works_at",
+                            "object": company,
+                            "confidence": 0.92,
+                        },
+                        {"subject": "user", "relation": "role", "object": role, "confidence": 0.88},
+                    ],
+                    f"User accepted a {role} role at {company}.",
+                ),
+                (
+                    f"I'm moving to {city} next month.",
+                    "Noted.",
+                    f"User is moving to {city} next month.",
+                    [
+                        {
+                            "subject": "user",
+                            "relation": "moving_to",
+                            "object": city,
+                            "confidence": 0.9,
+                        },
+                    ],
+                    f"User is moving to {city} next month.",
+                ),
+                (
+                    f"My manager's name is {person}.",
+                    "Got it.",
+                    f"User's manager is {person}.",
+                    [
+                        {
+                            "subject": "user",
+                            "relation": "reports_to",
+                            "object": person,
+                            "confidence": 0.95,
+                        },
+                    ],
+                    f"User reports to {person}.",
+                ),
+            ]
+        )
         user, asst, resolved, triplets, l0 = template
         sys_p = (
             f"[EXTRACT] S-R-O extraction + L0 abstract — §5.4.3.\n\n"
             f"Preceding session context:\n(none)\n\nTurn pair:\nUSER: {user}\nASSISTANT: {asst}\n"
         )
-        out.append({
-            "task_type": "extract",
-            "system_prompt": sys_p,
-            "user_prompt": "Respond with a JSON object matching the schema.",
-            "output": {
-                "resolved_text": resolved,
-                "triplets": triplets,
-                "l0_abstract": l0,
-            },
-        })
+        out.append(
+            {
+                "task_type": "extract",
+                "system_prompt": sys_p,
+                "user_prompt": "Respond with a JSON object matching the schema.",
+                "output": {
+                    "resolved_text": resolved,
+                    "triplets": triplets,
+                    "l0_abstract": l0,
+                },
+            }
+        )
     return out
 
 
@@ -232,32 +313,35 @@ def gen_l1_plan(n: int, *, seed: int = 2) -> list[dict[str, Any]]:
     out = []
     depths = ["L1", "L2", "L3", "L4"]
     modes = ["AGFS", "KG", "HYBRID"]
+    questions = [
+        *_QUESTIONS_CONTEXT_DEPENDENT,
+        "Where does the user work?",
+        "What's the user's home city?",
+        "Who is the user's manager?",
+        "What projects does the user contribute to?",
+    ]
     for _ in range(n):
-        q = rnd.choice(_QUESTIONS_CONTEXT_DEPENDENT + [
-            f"Where does the user work?",
-            f"What's the user's home city?",
-            f"Who is the user's manager?",
-            f"What projects does the user contribute to?",
-        ])
+        q = rnd.choice(questions)
         depth = rnd.choice(depths)
         mode = rnd.choice(modes)
         sys_p = f"[L1_PLAN] Level-1 retrieval planner — §3.2.\n\n…User query:\n{q}\n"
-        out.append({
-            "task_type": "l1_plan",
-            "system_prompt": sys_p,
-            "user_prompt": "Return the plan JSON.",
-            "output": {
-                "session_sufficient": False,
-                "predicted_depth": depth,
-                "mode": mode,
-                "entry_points": [],
-                "vector_queries": [q],
-                "commands": [
-                    {"template": "t_top_k_vector",
-                     "params": {"query": q, "k": 10}},
-                ],
-            },
-        })
+        out.append(
+            {
+                "task_type": "l1_plan",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the plan JSON.",
+                "output": {
+                    "session_sufficient": False,
+                    "predicted_depth": depth,
+                    "mode": mode,
+                    "entry_points": [],
+                    "vector_queries": [q],
+                    "commands": [
+                        {"template": "t_top_k_vector", "params": {"query": q, "k": 10}},
+                    ],
+                },
+            }
+        )
     return out
 
 
@@ -266,25 +350,37 @@ def gen_ln_plan(n: int, *, seed: int = 3) -> list[dict[str, Any]]:
     out = []
     for _ in range(n):
         terminate = rnd.random() < 0.4
-        level = rnd.choice(["L2", "L3", "L4"])
-        sys_p = f"[LN_PLAN] Fused plan-with-judge — §4.2.\n\n…Previous level (L1) results:\n(stub)\n"
+        sys_p = "[LN_PLAN] Fused plan-with-judge — §4.2.\n\n…Previous level (L1) results:\n(stub)\n"
         body = {
             "previous_level_sufficient": terminate,
             "terminate_cascade": terminate,
-            "commands": [] if terminate else [
-                {"template": "t_neighbours_by_relation",
-                 "params": {"node_id": "mem://user/entities/alice/",
-                            "relation": "works_at", "hops": 1}},
+            "commands": []
+            if terminate
+            else [
+                {
+                    "template": "t_neighbours_by_relation",
+                    "params": {
+                        "node_id": "mem://user/entities/alice/",
+                        "relation": "works_at",
+                        "hops": 1,
+                    },
+                },
             ],
             "coverage": {
-                "aspects_covered": ["who is alice", "where she works"] if terminate else ["who is alice"],
+                "aspects_covered": ["who is alice", "where she works"]
+                if terminate
+                else ["who is alice"],
                 "aspects_missing": [] if terminate else ["when did the project start"],
             },
         }
-        out.append({
-            "task_type": "ln_plan", "system_prompt": sys_p,
-            "user_prompt": "Return the fused plan-judge JSON.", "output": body,
-        })
+        out.append(
+            {
+                "task_type": "ln_plan",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the fused plan-judge JSON.",
+                "output": body,
+            }
+        )
     return out
 
 
@@ -297,15 +393,18 @@ def gen_dedup(n: int, *, seed: int = 4) -> list[dict[str, Any]]:
             weights=[1, 1, 2],
         )[0]
         sys_p = "[DEDUP] Dedup + conflict classification — §6.5.\n\n…"
-        out.append({
-            "task_type": "dedup", "system_prompt": sys_p,
-            "user_prompt": "Return the dedup JSON.",
-            "output": {
-                "case": case,
-                "existing_edge_id": 42 if case != "CO_EXISTENCE" else None,
-                "reason": f"{case.lower()} by construction",
-            },
-        })
+        out.append(
+            {
+                "task_type": "dedup",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the dedup JSON.",
+                "output": {
+                    "case": case,
+                    "existing_edge_id": 42 if case != "CO_EXISTENCE" else None,
+                    "reason": f"{case.lower()} by construction",
+                },
+            }
+        )
     return out
 
 
@@ -316,15 +415,18 @@ def gen_entity_link(n: int, *, seed: int = 5) -> list[dict[str, Any]]:
         person = rnd.choice(_PEOPLE)
         match = rnd.random() < 0.4
         sys_p = f"[LINK] Entity-link disambiguation — §5.4.4.\n\nEntity mention: {person}\n"
-        out.append({
-            "task_type": "entity_link", "system_prompt": sys_p,
-            "user_prompt": "Return the disambiguation JSON.",
-            "output": {
-                "matched_id": f"mem://user/entities/{person.lower()}/" if match else None,
-                "confidence": 0.9 if match else 0.2,
-                "reason": "name + role match" if match else "names alone don't decide",
-            },
-        })
+        out.append(
+            {
+                "task_type": "entity_link",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the disambiguation JSON.",
+                "output": {
+                    "matched_id": f"mem://user/entities/{person.lower()}/" if match else None,
+                    "confidence": 0.9 if match else 0.2,
+                    "reason": "name + role match" if match else "names alone don't decide",
+                },
+            }
+        )
     return out
 
 
@@ -334,17 +436,20 @@ def gen_overview(n: int, *, seed: int = 6) -> list[dict[str, Any]]:
     for _ in range(n):
         person = rnd.choice(_PEOPLE)
         sys_p = f"[OVERVIEW] Directory overview generation — §7.3.\n\nDirectory URI: mem://user/entities/{person.lower()}/"
-        out.append({
-            "task_type": "overview", "system_prompt": sys_p,
-            "user_prompt": "Return the overview as Markdown.",
-            "output": {
-                "overview": (
-                    f"# {person}\n\n"
-                    f"{person} works at {rnd.choice(_COMPANIES)}.\n\n"
-                    f"## Relationships\n- reports_to → {rnd.choice(_PEOPLE)}\n"
-                ),
-            },
-        })
+        out.append(
+            {
+                "task_type": "overview",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the overview as Markdown.",
+                "output": {
+                    "overview": (
+                        f"# {person}\n\n"
+                        f"{person} works at {rnd.choice(_COMPANIES)}.\n\n"
+                        f"## Relationships\n- reports_to → {rnd.choice(_PEOPLE)}\n"
+                    ),
+                },
+            }
+        )
     return out
 
 
@@ -353,15 +458,18 @@ def gen_session_compact(n: int, *, seed: int = 7) -> list[dict[str, Any]]:
     out = []
     for _ in range(n):
         sys_p = "[COMPACT] Session compaction — §8.3.\n\nTurn history (oldest first):\n…"
-        out.append({
-            "task_type": "session_compact", "system_prompt": sys_p,
-            "user_prompt": "Return the compaction JSON.",
-            "output": {
-                "compacted": f"User discussed {rnd.choice(_PROJECTS)} and moving to {rnd.choice(_CITIES)}.",
-                "key_facts": [f"user plans to move to {rnd.choice(_CITIES)}"],
-                "key_entities": [rnd.choice(_PEOPLE), rnd.choice(_COMPANIES)],
-            },
-        })
+        out.append(
+            {
+                "task_type": "session_compact",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the compaction JSON.",
+                "output": {
+                    "compacted": f"User discussed {rnd.choice(_PROJECTS)} and moving to {rnd.choice(_CITIES)}.",
+                    "key_facts": [f"user plans to move to {rnd.choice(_CITIES)}"],
+                    "key_entities": [rnd.choice(_PEOPLE), rnd.choice(_COMPANIES)],
+                },
+            }
+        )
     return out
 
 
@@ -371,19 +479,30 @@ def gen_unmerge(n: int, *, seed: int = 8) -> list[dict[str, Any]]:
     for _ in range(n):
         p1, p2 = rnd.sample(_PEOPLE, 2)
         sys_p = "[UNMERGE] Manual unmerge — §8.6.\n\n…"
-        out.append({
-            "task_type": "unmerge", "system_prompt": sys_p,
-            "user_prompt": "Return the split JSON.",
-            "output": {
-                "splits": [
-                    {"name": p1, "l0_abstract": f"{p1} — ML engineer at Meta.",
-                     "triplets": [{"subject": p1, "relation": "works_at",
-                                   "object": "Meta", "confidence": 0.9}]},
-                    {"name": p2, "l0_abstract": f"{p2} — user's sister.",
-                     "triplets": []},
-                ]
-            },
-        })
+        out.append(
+            {
+                "task_type": "unmerge",
+                "system_prompt": sys_p,
+                "user_prompt": "Return the split JSON.",
+                "output": {
+                    "splits": [
+                        {
+                            "name": p1,
+                            "l0_abstract": f"{p1} — ML engineer at Meta.",
+                            "triplets": [
+                                {
+                                    "subject": p1,
+                                    "relation": "works_at",
+                                    "object": "Meta",
+                                    "confidence": 0.9,
+                                }
+                            ],
+                        },
+                        {"name": p2, "l0_abstract": f"{p2} — user's sister.", "triplets": []},
+                    ]
+                },
+            }
+        )
     return out
 
 
@@ -412,22 +531,23 @@ def gen_gate_classifier(n: int, *, seed: int = 9) -> list[dict[str, Any]]:
 # ----------------------------------------------------------------------
 
 _TASKS: dict[str, tuple[Callable[..., list[dict[str, Any]]], int]] = {
-    "gate_write":       (gen_gate_write, 8_000),
-    "extract":          (gen_extract, 15_000),
-    "l1_plan":          (gen_l1_plan, 10_000),
-    "ln_plan":          (gen_ln_plan, 10_000),
-    "dedup":            (gen_dedup, 5_000),
-    "entity_link":      (gen_entity_link, 5_000),
-    "overview":         (gen_overview, 3_000),
-    "session_compact":  (gen_session_compact, 2_000),
-    "unmerge":          (gen_unmerge, 500),
-    "gate_classifier":  (gen_gate_classifier, 70_000),
+    "gate_write": (gen_gate_write, 8_000),
+    "extract": (gen_extract, 15_000),
+    "l1_plan": (gen_l1_plan, 10_000),
+    "ln_plan": (gen_ln_plan, 10_000),
+    "dedup": (gen_dedup, 5_000),
+    "entity_link": (gen_entity_link, 5_000),
+    "overview": (gen_overview, 3_000),
+    "session_compact": (gen_session_compact, 2_000),
+    "unmerge": (gen_unmerge, 500),
+    "gate_classifier": (gen_gate_classifier, 70_000),
 }
 
 
 # ----------------------------------------------------------------------
 # Writer + validator
 # ----------------------------------------------------------------------
+
 
 def validate_record(rec: dict[str, Any]) -> None:
     """Raise ValueError if a record doesn't satisfy its declared shape.
@@ -463,7 +583,10 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> int:
 
 
 def generate_all(
-    out_dir: Path, *, counts: dict[str, int] | None = None, seed: int = 0,
+    out_dir: Path,
+    *,
+    counts: dict[str, int] | None = None,
+    seed: int = 0,
 ) -> dict[str, int]:
     counts = counts or {}
     summary: dict[str, int] = {}
@@ -479,19 +602,24 @@ def generate_all(
 # CLI
 # ----------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate synthetic training data for Engram's Core Model tasks.",
     )
-    parser.add_argument("--out", required=True, type=Path,
-                        help="Output directory (e.g. ./data/train)")
     parser.add_argument(
-        "--count", action="append", default=[],
+        "--out", required=True, type=Path, help="Output directory (e.g. ./data/train)"
+    )
+    parser.add_argument(
+        "--count",
+        action="append",
+        default=[],
         help="Per-task override: --count gate_write=1000 (repeatable)",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--tasks", default="all",
+        "--tasks",
+        default="all",
         help=f"Comma-separated subset; default=all. Available: {','.join(_TASKS)}",
     )
     args = parser.parse_args(argv)

@@ -10,62 +10,78 @@ from engram.config import EngramConfig
 from engram.ingest.worker import IngestContext, process_event
 from engram.retrieval.orchestrator import OrchestratorContext, run_query
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.sqlite import SqliteStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.tenancy import (
     Tenant,
     TenantQuotas,
     set_current_tenant,
 )
 from engram.uri import pair_id as pair_id_fn
+from tests.postgres_support import PostgresTestStore
 
-from engram.storage.memory_kg import InMemoryKnowledgeGraph
-from .providers import DeterministicCoreProvider, DeterministicEmbeddingService, DeterministicFrontierProvider
+from .providers import (
+    DeterministicCoreProvider,
+    DeterministicEmbeddingService,
+    DeterministicFrontierProvider,
+)
 
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> EngramConfig:
-    return EngramConfig.model_validate({
-        "api": {"api_key": "test-key"},
-        "core_model": {"provider": "anthropic", "api_key": "x"},
-        "frontier_llm": {"provider": "anthropic", "api_key": "x"},
-        "filesystem": {"data_dir": str(tmp_path / "mem")},
-        "event_ledger": {"path": str(tmp_path / "ev.db")},
-        "session_cache": {"backend": "memory"},
-        "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
-        "retrieval": {"l0_skip": True},
-    })
+    return EngramConfig.model_validate(
+        {
+            "api": {"api_key": "test-key"},
+            "core_model": {"provider": "openai_responses", "api_key": "x"},
+            "frontier_llm": {"provider": "openai_responses", "api_key": "x"},
+            "filesystem": {"data_dir": str(tmp_path / "mem")},
+            "event_ledger": {"dsn": "postgresql://test:test/test"},
+            "session_cache": {"backend": "memory"},
+            "knowledge_graph": {"writer_password": "x", "reader_password": "x"},
+            "retrieval": {"l0_skip": True},
+        }
+    )
 
 
 def _tenant(tid: str) -> Tenant:
     return Tenant(
-        tenant_id=tid, display_name=tid, api_key_hashes=[],
-        quotas=TenantQuotas(), status="ACTIVE",
+        tenant_id=tid,
+        display_name=tid,
+        api_key_hashes=[],
+        quotas=TenantQuotas(),
+        status="ACTIVE",
     )
 
 
 def _ingest_for_tenant(
     tenant_id: str,
     *,
-    sqlite: SqliteStore,
+    store: PostgresTestStore,
     fs: FilesystemStore,
     neo: InMemoryKnowledgeGraph,
     n: int,
 ) -> None:
     set_current_tenant(_tenant(tenant_id))
     ingest = IngestContext(
-        cfg=_cfg_stub, sqlite=sqlite, fs=fs, neo4j=neo,  # type: ignore[arg-type]
+        cfg=_cfg_stub,
+        control_plane=store,
+        fs=fs,
+        neo4j=neo,  # type: ignore[arg-type]
         core=DeterministicCoreProvider(),  # type: ignore[arg-type]
         embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
     )
     for i in range(n):
         pid = pair_id_fn(f"sess-{tenant_id}", i * 2, i * 2 + 1)
-        eid, _ = sqlite.record_event(
-            pair_id=pid, session_id=f"sess-{tenant_id}", source="test",
+        eid, _ = store.record_event(
+            pair_id=pid,
+            session_id=f"sess-{tenant_id}",
+            source="test",
             event_type="INGEST",
             payload={
                 "turn_pair": {
-                    "user": {"content": f"{tenant_id} fact #{i}: user moved to city-{i}",
-                             "turn_idx": i * 2},
+                    "user": {
+                        "content": f"{tenant_id} fact #{i}: user moved to city-{i}",
+                        "turn_idx": i * 2,
+                    },
                     "assistant": {"content": "noted.", "turn_idx": i * 2 + 1},
                 },
             },
@@ -81,12 +97,12 @@ def test_tenant_a_cannot_read_tenant_b(cfg: EngramConfig):
     """Ingest for two tenants, then query as one — hits only from that tenant."""
     global _cfg_stub
     _cfg_stub = cfg
-    sqlite = SqliteStore(cfg.event_ledger.path)
+    store = PostgresTestStore()
     fs = FilesystemStore(cfg.filesystem.data_dir)
     neo = InMemoryKnowledgeGraph()
 
-    _ingest_for_tenant("acme", sqlite=sqlite, fs=fs, neo=neo, n=3)
-    _ingest_for_tenant("globex", sqlite=sqlite, fs=fs, neo=neo, n=3)
+    _ingest_for_tenant("acme", store=store, fs=fs, neo=neo, n=3)
+    _ingest_for_tenant("globex", store=store, fs=fs, neo=neo, n=3)
 
     # Every KG node has tenant_id set correctly
     tenants_in_nodes = {n.get("tenant_id") for n in neo.nodes.values()}
@@ -104,13 +120,17 @@ def test_tenant_a_cannot_read_tenant_b(cfg: EngramConfig):
     for p in globex_files:
         assert "acme" not in p.read_text()
 
-    # SQLite events are separable by tenant_id
-    acme_count = sqlite.get_conn().execute(
-        "SELECT COUNT(*) AS c FROM events WHERE tenant_id = 'acme'"
-    ).fetchone()["c"]
-    globex_count = sqlite.get_conn().execute(
-        "SELECT COUNT(*) AS c FROM events WHERE tenant_id = 'globex'"
-    ).fetchone()["c"]
+    # PostgreSQL events are separable by tenant_id
+    acme_count = (
+        store.get_conn()
+        .execute("SELECT COUNT(*) AS c FROM events WHERE tenant_id = 'acme'")
+        .fetchone()["c"]
+    )
+    globex_count = (
+        store.get_conn()
+        .execute("SELECT COUNT(*) AS c FROM events WHERE tenant_id = 'globex'")
+        .fetchone()["c"]
+    )
     assert acme_count == 3
     assert globex_count == 3
 
@@ -120,18 +140,20 @@ def test_vector_search_is_tenant_scoped(cfg: EngramConfig):
     the ambient tenant."""
     global _cfg_stub
     _cfg_stub = cfg
-    sqlite = SqliteStore(cfg.event_ledger.path)
+    store = PostgresTestStore()
     fs = FilesystemStore(cfg.filesystem.data_dir)
     neo = InMemoryKnowledgeGraph()
 
-    _ingest_for_tenant("acme", sqlite=sqlite, fs=fs, neo=neo, n=2)
-    _ingest_for_tenant("globex", sqlite=sqlite, fs=fs, neo=neo, n=2)
+    _ingest_for_tenant("acme", store=store, fs=fs, neo=neo, n=2)
+    _ingest_for_tenant("globex", store=store, fs=fs, neo=neo, n=2)
 
     # Patch InMemoryKnowledgeGraph.vector_search to honour tenant_id (it already does
     # via the WHERE in the real store; the fake doesn't know about tenants).
-    def tenant_aware_search(query_embedding, k=10, uri_prefix=None,
-                             dormant_floor=0.05, tenant_id=None):
+    def tenant_aware_search(
+        query_embedding, k=10, uri_prefix=None, dormant_floor=0.05, tenant_id=None
+    ):
         from engram.tenancy import current_tenant_id
+
         tid = tenant_id or current_tenant_id()
         results = []
         for uri, node in neo.nodes.items():
@@ -144,20 +166,25 @@ def test_vector_search_is_tenant_scoped(cfg: EngramConfig):
                 continue
             if uri_prefix and not uri.startswith(uri_prefix):
                 continue
-            results.append({
-                "source_uri": uri,
-                "l0_abstract": node.get("l0_abstract"),
-                "score": 0.5,
-                "id": node.get("id"),
-                "node_type": node.get("node_type"),
-            })
+            results.append(
+                {
+                    "source_uri": uri,
+                    "l0_abstract": node.get("l0_abstract"),
+                    "score": 0.5,
+                    "id": node.get("id"),
+                    "node_type": node.get("node_type"),
+                }
+            )
         return results[:k]
 
     neo.vector_search = tenant_aware_search  # type: ignore[assignment]
 
     orch = OrchestratorContext(
-        cfg=cfg, fs=fs, neo4j=neo,  # type: ignore[arg-type]
-        core=DeterministicCoreProvider(), frontier=DeterministicFrontierProvider(),  # type: ignore[arg-type]
+        cfg=cfg,
+        fs=fs,
+        neo4j=neo,  # type: ignore[arg-type]
+        core=DeterministicCoreProvider(),
+        frontier=DeterministicFrontierProvider(),  # type: ignore[arg-type]
         embed=DeterministicEmbeddingService(),  # type: ignore[arg-type]
     )
 

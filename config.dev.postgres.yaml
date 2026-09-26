@@ -1,0 +1,30 @@
+# Local Postgres development profile. Copy deploy/env.dev.example to .env.dev
+# and keep this database isolated from staging and production.
+api:
+  api_key: ${ENGRAM_API_KEY}
+  admin_key: ${ENGRAM_ADMIN_KEY}
+
+filesystem:
+  data_dir: "./data/dev-postgres/mem"
+
+knowledge_graph:
+  backend: "neo4j"
+  uri: "bolt://localhost:7687"
+  writer_username: "neo4j"
+  writer_password: ${NEO4J_ADMIN_PASSWORD}
+  reader_username: "neo4j"
+  reader_password: ${NEO4J_ADMIN_PASSWORD}
+
+event_ledger:
+  backend: "postgres"
+  dsn: ${ENGRAM_DEV_DATABASE_URL}
+  reconciliation_interval_seconds: 60
+
+# Keep this false for a lightweight workstation loop. Use staging for the
+# production-equivalent Postgres + Temporal execution path.
+temporal:
+  enabled: false
+
+session_cache:
+  backend: "redis"
+  redis_url: "redis://localhost:6379"

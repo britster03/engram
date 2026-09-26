@@ -1,0 +1,52 @@
+<div x-show="mainTab === 'sessions'" x-cloak>
+    <div class="animate-fade-in-up">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Sessions</h2>
+                <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Active Sessions</h3>
+            </div>
+        </div>
+        <div class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-neutral-50 border-b border-neutral-200">
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Session ID</th>
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Turns</th>
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Last Active</th>
+                            <th class="text-left px-6 py-3 font-semibold text-neutral-600">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-neutral-100">
+                        <template x-for="s in sessions" :key="s.id">
+                            <tr class="hover:bg-neutral-50 transition-colors">
+                                <td class="px-6 py-3 font-mono text-neutral-700"><button type="button" @click="openSessionHistory(s.id)" class="text-left text-blue-700 hover:underline" :data-testid="'session-history-' + s.id" x-text="s.id"></button></td>
+                                <td class="px-6 py-3 text-neutral-700" x-text="s.turns"></td>
+                                <td class="px-6 py-3 text-neutral-500" x-text="s.last_active"></td>
+                                <td class="px-6 py-3">
+                                    <span :class="s.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-neutral-100 text-neutral-600 border border-neutral-200'" class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium" x-text="s.status"></span>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <div x-show="sessions.length === 0" class="px-6 py-8 text-center text-neutral-500">No sessions found.</div>
+        </div>
+        <section x-show="selectedSessionHistory || loadingSessionHistory || sessionHistoryError" x-cloak class="mt-5 bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+            <div class="flex items-center justify-between gap-4 px-6 py-4 border-b border-neutral-100">
+                <div><p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Session history</p><p class="mt-1 font-mono text-sm text-neutral-800" x-text="selectedSessionHistory?.session_id || 'Loading session…'"></p></div>
+                <button type="button" @click="closeSessionHistory()" class="px-3 py-1.5 rounded-lg border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50">Close</button>
+            </div>
+            <div x-show="loadingSessionHistory" class="px-6 py-8 text-sm text-neutral-500">Loading complete history…</div>
+            <p x-show="sessionHistoryError" x-text="sessionHistoryError" class="px-6 py-4 text-sm text-red-600"></p>
+            <div x-show="selectedSessionHistory && !loadingSessionHistory" class="p-6 space-y-3">
+                <p class="text-xs text-neutral-500" x-text="(selectedSessionHistory?.turn_count || 0) + ' messages · ' + (selectedSessionHistory?.status || 'ARCHIVED')"></p>
+                <template x-for="turn in (selectedSessionHistory?.turns || [])" :key="turn.turn_idx + '-' + turn.role + '-' + turn.timestamp">
+                    <article class="max-w-3xl rounded-xl border px-4 py-3" :class="turn.role === 'user' ? 'ml-auto border-blue-200 bg-blue-50' : 'mr-auto border-neutral-200 bg-neutral-50'"><p class="text-xs font-bold uppercase tracking-wider" :class="turn.role === 'user' ? 'text-blue-700' : 'text-neutral-600'" x-text="turn.role"></p><p class="mt-1 whitespace-pre-wrap text-sm text-neutral-800" x-text="turn.content"></p><p x-show="turn.timestamp" class="mt-2 text-[11px] text-neutral-500" x-text="turn.timestamp"></p></article>
+                </template>
+                <p x-show="!(selectedSessionHistory?.turns || []).length" class="text-sm text-neutral-500">This session has no recorded conversation turns yet.</p>
+            </div>
+        </section>
+    </div>
+</div>

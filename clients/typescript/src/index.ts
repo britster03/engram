@@ -180,6 +180,93 @@ export class EngramClient {
     }
   }
 
+  // ---- Chat completions ---------------------------------------------
+
+  async chatCompletions(params: {
+    messages: Array<{ role: string; content: string }>;
+    sessionId?: string | null;
+    sessionContext?: string | null;
+    maxDepth?: string;
+    maxReentries?: number;
+  }): Promise<{
+    answer: string;
+    session_id: string;
+    retrieval_metadata: RetrievalMetadata;
+    finish_reason: string;
+  }> {
+    const body = {
+      session_id: params.sessionId ?? null,
+      messages: params.messages,
+      session_context: params.sessionContext ?? null,
+      max_depth: params.maxDepth ?? null,
+      max_reentries: params.maxReentries ?? null,
+    };
+    return this.post<{
+      answer: string;
+      session_id: string;
+      retrieval_metadata: RetrievalMetadata;
+      finish_reason: string;
+    }>('/api/v1/chat/completions', body);
+  }
+
+  /**
+   * Stream a chat completions response via Server-Sent Events.
+   * Consume with `for await (const chunk of client.chatCompletionsStream({messages})) { ... }`.
+   */
+  async *chatCompletionsStream(params: {
+    messages: Array<{ role: string; content: string }>;
+    sessionId?: string | null;
+    sessionContext?: string | null;
+    maxDepth?: string;
+    maxReentries?: number;
+  }): AsyncIterable<string> {
+    const body = {
+      session_id: params.sessionId ?? null,
+      messages: params.messages,
+      session_context: params.sessionContext ?? null,
+      max_depth: params.maxDepth ?? null,
+      max_reentries: params.maxReentries ?? null,
+      stream: true,
+    };
+    const r = await this.fetchImpl(this.url('/api/v1/chat/completions'), {
+      method: 'POST',
+      headers: this.authHeaders('application/json'),
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw await this.errFromResponse(r);
+    if (!r.body) return;
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let currentEvent = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) currentEvent = line.slice(6).trim();
+          else if (line.startsWith('data:')) {
+            const data = line.slice(5).trim();
+            if (currentEvent === 'delta') {
+              try {
+                const payload = JSON.parse(data) as { text?: string };
+                if (payload.text) yield payload.text;
+              } catch { /* ignore */ }
+            } else if (currentEvent === 'error') {
+              throw new EngramError(500, data);
+            } else if (currentEvent === 'done') {
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ---- Session ------------------------------------------------------
 
   async createSession(): Promise<string> {

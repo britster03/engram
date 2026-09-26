@@ -2,7 +2,7 @@
 
 A provider exposes one method: `complete(system_prompt, user_prompt, output_schema)`
 returning structured JSON matching the schema. Concrete providers wrap local
-inference (Qwen) or remote APIs (Anthropic, OpenAI).
+inference or remote model APIs.
 """
 
 from __future__ import annotations

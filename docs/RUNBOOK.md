@@ -3,26 +3,30 @@
 Operational procedures for deploying, backing up, restoring, migrating,
 and monitoring Engram.
 
-## Deploy (single node)
+Production operators must use [PRODUCTION.md](PRODUCTION.md) and
+[TEMPORAL_PRODUCTION.md](TEMPORAL_PRODUCTION.md). PostgreSQL is required in
+every environment.
+
+## Local development
 
 ```bash
 # 1. Environment
 cp .env.example .env
-vim .env   # fill ENGRAM_API_KEY, CORE_MODEL_API_KEY, FRONTIER_LLM_API_KEY,
-           # NEO4J_ADMIN_PASSWORD
+vim .env   # fill API/model/database/Neo4j secrets
 
-# 2. Backing services
+# 2. Lightweight backing services. Start PostgreSQL 16 separately and set
+# ENGRAM_DATABASE_URL to its DSN.
 docker compose up -d
-docker compose ps           # wait for both services healthy
+docker compose ps
 
 # 3. Python env
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-# 4. Create indexes + migrate schema
-python -m engram.cli migrate          # applies any pending migrations
-python -m engram.cli init             # creates Neo4j indexes + SQLite schemas
+# 4. Migrate PostgreSQL and create Neo4j indexes
+python -m engram.cli migrate
+python -m engram.cli init
 
 # 5. Run the API
 uvicorn engram.api.app:app --port 8000
@@ -33,10 +37,9 @@ python -m engram.cli smoke
 
 ## Backup
 
-The **filesystem is authoritative**. A consistent snapshot of `./data/mem`
-is the primary backup. Neo4j is derivable via `rebuild-kg`. SQLite can be
-backed up with a simple file copy while WAL is enabled (use `.backup`
-command or online backup tools for high-traffic deployments).
+The **filesystem is authoritative for memory bodies**, while PostgreSQL is
+authoritative for control-plane state. Back up both consistently. Neo4j is a
+rebuildable projection.
 
 Daily snapshot recommendation:
 
@@ -44,16 +47,16 @@ Daily snapshot recommendation:
 # Filesystem
 tar czf backups/mem-$(date +%F).tgz ./data/mem
 
-# SQLite (WAL-aware copy)
-sqlite3 ./data/event_ledger.db ".backup ./backups/event_ledger-$(date +%F).db"
+# PostgreSQL custom-format backup
+pg_dump "$ENGRAM_DATABASE_URL" --format=custom \
+  --file="backups/engram-$(date +%F).dump"
 
 # Neo4j — optional; can always be rebuilt from the filesystem
 docker compose exec neo4j neo4j-admin database dump --to-path=/backups neo4j
 ```
 
-Recovery Point Objective: up to your snapshot interval. Committed memories
-are durable on disk; pending work (in-flight SQLite events, Redis session
-cache) is the only loss window.
+Recovery Point Objective is the snapshot interval unless PostgreSQL continuous
+archiving is configured. Redis session data is ephemeral.
 
 ## Restore
 
@@ -63,20 +66,21 @@ cache) is the only loss window.
 # 1. Restore the filesystem
 tar xzf mem-2026-04-21.tgz -C ./data/mem
 
-# 2. Start backing services fresh
-docker compose up -d
+# 2. Restore the PostgreSQL control plane
+pg_restore --clean --if-exists --no-owner \
+  --dbname="$ENGRAM_DATABASE_URL" backups/engram-2026-09-09.dump
 
-# 3. Init + rebuild Neo4j from the filesystem
-python -m engram.cli init
+# 3. Apply forward migrations and rebuild Neo4j from the filesystem
+python -m engram.cli migrate
 python -m engram.cli rebuild-kg
 ```
 
 `rebuild-kg` walks every `.md` in `./data/mem`, re-inserts the node with
 its embedding, re-establishes CONTAINS edges, and (pass 2) replays
-RELATES_TO edges from the `extractions` + `linked_entities` tables in
-SQLite.
+RELATES_TO edges from the PostgreSQL `extractions` and `linked_entities`
+tables.
 
-### Partial — Neo4j is corrupted, SQLite + filesystem healthy
+### Partial — Neo4j is corrupted, PostgreSQL + filesystem healthy
 
 ```bash
 python -m engram.cli rebuild-kg
@@ -87,24 +91,15 @@ python -m engram.cli rebuild-kg
 No action needed. Sessions evaporate (TTL-based); new sessions are created
 on demand.
 
-## Schema migrations (§13.5)
+## PostgreSQL schema migrations
 
 ```bash
 python -m engram.cli migrate
 ```
 
-Migration scripts live under `engram/migrations/scripts/`. Each module
-exposes `SCHEMA_VERSION: int` and `def upgrade(ctx: MigrationContext) -> None`.
-The runner:
-
-1. Sets `meta.maintenance_mode = 1` so clients see 503 from `/ingest`.
-2. Runs each pending migration in version order.
-3. Updates `meta.schema_version` after each.
-4. Clears `maintenance_mode`.
-
-Rollback strategy: restore the pre-migration filesystem + SQLite snapshot.
-The SDD is explicit that this is the recovery model — we do not support
-schema downgrades.
+Alembic migrations live under `engram/migrations/alembic/versions/`. They are
+forward-only. Take a verified PostgreSQL backup before upgrading; rollback is
+performed by restoring that backup, not by running a destructive downgrade.
 
 ## Soft memory decay
 
@@ -162,7 +157,7 @@ Rough sizing for the single-node deployment (§13.1):
 | Dimension | Rule of thumb |
 |---|---|
 | Memory nodes per GB of Neo4j page cache | ~250k with 384-dim vectors and ~200-byte abstracts |
-| SQLite events per ingest/s | 1:1; WAL mode comfortably handles 5k writes/s |
+| PostgreSQL rows per ingest | At least one event plus outbox/dispatch and extracted-state rows |
 | Redis keys per concurrent session | 1; value size ~1kB/turn |
 | Filesystem bytes per memory | ~1–4 kB for ENTITY/FACT; overview.md up to 8 kB |
 

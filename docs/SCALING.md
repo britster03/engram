@@ -14,11 +14,11 @@ instance — this document picks up where that leaves off.
 | Neo4j | Community single-node | Neo4j AuraDB or self-managed Enterprise | Causal Cluster / Aura Enterprise |
 | Redis | Single-node | Single-node with AOF | Redis Sentinel or ElastiCache |
 | Storage | Local volume | Shared RWX (EFS / Filestore / NFS) | Same + tiered cold backup |
-| Workers | In-API-process threads | Same with Redis lease | Dedicated worker pool |
+| Workers | Local legacy pollers | Temporal worker replicas | Autoscaled/versioned Temporal workers |
 
 ## Multi-tenancy
 
-Every row in SQLite, every node in Neo4j, and every directory in the
+Every production row in PostgreSQL, every node in Neo4j, and every directory in the
 filesystem carries a `tenant_id`. The `_default` tenant is created on
 boot for backward-compat with single-tenant deployments.
 
@@ -78,13 +78,11 @@ Each layer enforces its own boundary:
   ours and ones you add) filters by `$tenant_id` in the WHERE clause.
   The per-tenant uniqueness constraint `(tenant_id, source_uri)` keeps
   URIs independent across tenants.
-* **SQLite / Postgres**: every table has `tenant_id`; every query
+* **PostgreSQL**: every table has `tenant_id`; every query
   filters by it. The consolidation queue dedup index is keyed on
   `(tenant_id, node_id, task_type)`.
-* **Session cache**: keys are `session:{session_id}`; session IDs are
-  chosen by tenants so collisions are their concern. An operator can
-  move to per-tenant key namespacing with one constant change if
-  required.
+* **Session cache**: keys are `session:{tenant_id}:{session_id}` so two
+  tenants can reuse the same session ID without sharing state.
 * **Audit log**: every row tagged with `tenant_id` and indexed on it.
   Admin tailing is scoped by default.
 
@@ -104,17 +102,10 @@ noisy tenant hitting their backlog cannot starve others.
 
 Three properties make this safe:
 
-1. **Durable ingest worker**: the API endpoint does exactly one write
-   (SQLite INSERT) before returning 202. A SQLite-polling thread in each
-   replica drains events; each claim is isolated via the per-process
-   `_in_flight` set plus `pair_id UNIQUE`. Multiple replicas processing
-   the same event produce the same terminal state (every step is
-   idempotent).
-2. **Leader-elected singletons**: the **consolidation** and
-   **reconciliation** workers run under a Redis lease
-   (`engram/coordination.py`). Only the lease-holder executes the
-   singleton work; the other replicas stand by. When the holder dies
-   the lease expires and another replica picks up in ~30 s.
+1. **Transactional dispatch**: the API creates the PostgreSQL aggregate and
+   Temporal dispatch row in one transaction before returning 202.
+2. **Temporal workers**: ingest, consolidation, reconciliation, and decay are
+   executed outside API pods with durable retries and idempotent identifiers.
 3. **Redis-backed rate limiter**: token buckets are atomic across
    replicas (Lua script, compare-and-set on the Redis key). Fleet
    limits hold even when multiple workers serve the same tenant.
@@ -127,14 +118,18 @@ Three properties make this safe:
           ▼              ▼              ▼
   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
   │  api pod 1  │ │  api pod 2  │ │  api pod 3  │
-  │  (no lease) │ │ CONSOL      │ │ RECON       │   ◀── lease holders
-  │             │ │ leader      │ │ leader      │
+  │             │ │             │ │             │
   └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
          │               │               │
          └───────────────┴───────────────┘
                          │
-             Neo4j · Redis · Postgres or SQLite-on-RWX
+               Neo4j · Redis · PostgreSQL
+                         │
+                  Temporal workers
 ```
+
+SQLite-on-RWX is explicitly unsupported. A network filesystem does not turn
+SQLite into a safe distributed control plane.
 
 ### Shared filesystem
 
@@ -178,23 +173,14 @@ above.
 
 ## Kubernetes deployment
 
-Two ready-to-use paths:
+The repository contains two Kubernetes representations, but only the Helm
+chart supplies production rollout ordering:
 
 ### Path A — raw manifests (`deploy/k8s/`)
 
-```bash
-kubectl apply -k deploy/k8s/
-```
-
-Includes: Namespace, ConfigMap, Secret template, PVCs, Deployment (3
-replicas), Service, Ingress (TLS via cert-manager), HPA (3–20
-replicas), PodDisruptionBudget (`minAvailable: 2`), NetworkPolicy,
-ServiceMonitor + PrometheusRule, Neo4j + Redis StatefulSets, CronJob
-for decay.
-
-Replace `REPLACE_WITH_REAL_VALUE` in `secret.yaml` with a managed
-secrets pipeline: External Secrets Operator + AWS Secrets Manager /
-GCP Secret Manager / Vault.
+The raw `deploy/k8s` bundle is a staging/reference configuration. It has no
+ordered migration hook and is not the production release mechanism. Use it
+only to inspect resources or bootstrap a non-production environment.
 
 ### Path B — Helm chart (`deploy/helm/engram/`)
 
@@ -202,16 +188,19 @@ GCP Secret Manager / Vault.
 helm install engram deploy/helm/engram \
   --namespace engram --create-namespace \
   --set image.repository=ghcr.io/your-org/engram \
-  --set secrets.apiKey=${ENGRAM_API_KEY} \
-  --set secrets.coreModelApiKey=${CORE_MODEL_API_KEY} \
-  --set secrets.frontierLlmApiKey=${FRONTIER_LLM_API_KEY} \
-  --set secrets.neo4jAdminPassword=${NEO4J_ADMIN_PASSWORD} \
+  --set image.tag=${ENGRAM_RELEASE_TAG} \
+  --set secrets.existingSecret=engram-secrets \
+  --set temporal.address=temporal-frontend.temporal.svc.cluster.local:7233 \
+  --set neo4j.uri=bolt://neo4j.engram.svc.cluster.local:7687 \
+  --set redis.url=redis://redis.engram.svc.cluster.local:6379 \
   --set ingress.host=engram.example.com
 ```
 
-All tunables live in `values.yaml`. Secrets in the chart values are
-only for templating convenience — in production, inject secrets via
-`externalsecrets.io` and set `secrets.create=false`.
+Create `engram-secrets` beforehand through External Secrets, Sealed Secrets,
+or Vault. It must contain `ENGRAM_API_KEY`, `ENGRAM_ADMIN_KEY`,
+`ENGRAM_SECRET_KEY`, `OPENCODE_GO_API_KEY`, `NEO4J_ADMIN_PASSWORD`, and
+`ENGRAM_DATABASE_URL`. The pre-install/pre-upgrade migration hook intentionally
+requires an external secret so credentials exist before Helm starts migrations.
 
 ### HPA inputs
 
@@ -238,7 +227,7 @@ in-flight requests complete before the container exits.
 ### Tracing
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` and the app auto-instruments FastAPI,
-HTTPX (outbound to Anthropic), and Redis. Custom spans wrap every
+HTTPX outbound model calls, and Redis. Custom spans wrap every
 pipeline stage via `engram.tracing.span(...)`. Traces carry
 `tenant_id` as a span attribute so Tempo / Honeycomb / Jaeger views
 slice cleanly per tenant.
@@ -301,10 +290,10 @@ Engram replica and co-located Neo4j + Redis.
 | Resource | Ceiling |
 |---|---|
 | Query QPS | 20 (bottleneck: LLM latency) |
-| Ingest QPS | 200 (bottleneck: SQLite writer) |
+| Ingest QPS | Environment-specific; PostgreSQL and model-provider bound |
 | KG nodes @ 512 MB page cache | ~1M |
 | Filesystem: 10k memories | ~40 MB |
-| WAL steady-state | ~200 MB |
+| PostgreSQL WAL | Size from measured ingest rate and PITR retention |
 | Memory / pod | 1–4 GB depending on local embedding use |
 
 Triple the query QPS by:
@@ -315,9 +304,9 @@ Triple the query QPS by:
 
 Triple the ingest QPS by:
 
-1. Moving to Postgres for the control plane (SQLite has one writer).
-2. Increasing `consolidation.max_concurrent_tasks`.
-3. Splitting the durable ingest worker onto a dedicated pod pool.
+1. Increasing Temporal worker replicas and activity concurrency.
+2. Scaling PostgreSQL IOPS/connections and the model-provider quota.
+3. Separating worker task queues into independently scaled deployments.
 
 ## What's explicitly out of scope
 

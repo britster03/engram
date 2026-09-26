@@ -6,16 +6,25 @@ session state to the SessionCache (Redis in prod, memory in dev).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
-from engram import prompts
+from engram import frontmatter, prompts
+from engram import uri as uri_mod
 from engram.models.core import CoreModelProvider
+from engram.models.embeddings import EmbeddingService
+from engram.models.request_context import model_request_session
+from engram.storage.filesystem import FilesystemStore
+from engram.storage.memory_kg import InMemoryKnowledgeGraph
+from engram.storage.memory_repository import MemoryRepository, _BoundTransactionStore
+from engram.storage.neo4j_store import Neo4jStore
+from engram.storage.postgres import PostgresStore
 from engram.storage.redis_cache import SessionCache
-from engram.storage.sqlite import SqliteStore
+from engram.tenancy import DEFAULT_TENANT_ID, current_tenant_id
 from engram.uri import pair_id as pair_id_fn
 
 log = logging.getLogger(__name__)
@@ -23,19 +32,20 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Turn:
-    role: str            # "user" | "assistant"
+    role: str  # "user" | "assistant"
     content: str
-    timestamp: str       # ISO 8601
+    timestamp: str  # ISO 8601
     turn_idx: int
+    ingestible: bool = True
 
 
 @dataclass
 class SessionState:
     session_id: str
-    status: str = "ACTIVE"                      # ACTIVE | WINDOWED | COMMITTING | COMMITTED
+    status: str = "ACTIVE"  # ACTIVE | WINDOWED | COMMITTING | COMMITTED
     turns: list[Turn] = field(default_factory=list)
-    compacted_turns_idx_upper_bound: int = 0    # turns[:N] have been compacted
-    compacted: str | None = None                # compacted block from §8.3
+    compacted_turns_idx_upper_bound: int = 0  # turns[:N] have been compacted
+    compacted: str | None = None  # compacted block from §8.3
     key_facts: list[str] = field(default_factory=list)
     key_entities: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -45,7 +55,7 @@ class SessionState:
         return d
 
     @classmethod
-    def from_payload(cls, data: dict[str, Any]) -> "SessionState":
+    def from_payload(cls, data: dict[str, Any]) -> SessionState:
         turns = [Turn(**t) for t in data.get("turns", [])]
         s = cls(
             session_id=data["session_id"],
@@ -103,15 +113,34 @@ class SessionManager:
         self.cache.delete(session_id)
 
     def append_turn_pair(
-        self, session_id: str, user: str, assistant: str
+        self,
+        session_id: str,
+        user: str,
+        assistant: str,
+        *,
+        ingestible: bool = True,
     ) -> tuple[SessionState, bool]:
         """Append a (user, assistant) pair. Returns (state, needs_compaction)."""
         state = self.get(session_id) or SessionState(session_id=session_id)
         now = datetime.now(timezone.utc).isoformat()
         next_idx = state.turns[-1].turn_idx + 1 if state.turns else 0
-        state.turns.append(Turn(role="user", content=user, timestamp=now, turn_idx=next_idx))
         state.turns.append(
-            Turn(role="assistant", content=assistant, timestamp=now, turn_idx=next_idx + 1)
+            Turn(
+                role="user",
+                content=user,
+                timestamp=now,
+                turn_idx=next_idx,
+                ingestible=ingestible,
+            )
+        )
+        state.turns.append(
+            Turn(
+                role="assistant",
+                content=assistant,
+                timestamp=now,
+                turn_idx=next_idx + 1,
+                ingestible=ingestible,
+            )
         )
         needs_compact = self._needs_compaction(state)
         if needs_compact and state.status == "ACTIVE":
@@ -133,20 +162,21 @@ class SessionManager:
         return total_chars > 12000  # ~3k tokens
 
     def _persist(self, state: SessionState) -> None:
-        self.cache.set(
-            state.session_id, state.to_payload(), ttl_seconds=self.session_ttl_seconds
-        )
+        self.cache.set(state.session_id, state.to_payload(), ttl_seconds=self.session_ttl_seconds)
 
 
 # ----------------------------------------------------------------------
 # Compaction (§8.3)
 # ----------------------------------------------------------------------
 
+
 def compact_session(
     manager: SessionManager,
     state: SessionState,
     core: CoreModelProvider,
-    sqlite: SqliteStore | None = None,
+    control_plane: PostgresStore | None = None,
+    *,
+    tenant_id: str | None = None,
 ) -> SessionState:
     """Compact the oldest uncompacted turns via the Core Model.
 
@@ -154,7 +184,7 @@ def compact_session(
     oldest turns in the session cache with a compacted summary. The original
     turn pairs are then re-enqueued into the ingest pipeline (with
     source='session_compact') so long-term memory is extracted from the raw
-    turns, not the lossy compaction. Caller passes `sqlite` to enable that
+    turns, not the lossy compaction. Caller passes `control_plane` to enable that
     re-ingest; omitting it keeps the in-cache compaction only (useful for
     unit tests).
     """
@@ -173,17 +203,16 @@ def compact_session(
         turn_history=turn_history,
         compaction_budget=2000,
     )
-    result = core.complete(
-        system_prompt=prompt,
-        user_prompt="Return the compaction JSON.",
-    )
+    with model_request_session(state.session_id):
+        result = core.complete(
+            system_prompt=prompt,
+            user_prompt="Return the compaction JSON.",
+        )
     out = result.output if isinstance(result.output, dict) else {}
     compact_block = out.get("compacted") or ""
     key_facts = out.get("key_facts") or []
     key_entities = out.get("key_entities") or []
-    state.compacted = (
-        (state.compacted + "\n" + compact_block) if state.compacted else compact_block
-    )
+    state.compacted = (state.compacted + "\n" + compact_block) if state.compacted else compact_block
     state.key_facts = list(dict.fromkeys([*state.key_facts, *key_facts]))
     state.key_entities = list(dict.fromkeys([*state.key_entities, *key_entities]))
     state.compacted_turns_idx_upper_bound += len(to_compact)
@@ -192,27 +221,245 @@ def compact_session(
     # §8.3.2 step 21: re-enqueue the uncompacted turn pairs as ingest events
     # so the authoritative ingest pipeline sees the raw turns (not the lossy
     # compaction). Each pair_id is deterministic, so resubmits are idempotent.
-    if sqlite is not None:
-        _reenqueue_for_ingest(sqlite, state.session_id, to_compact)
+    if control_plane is not None:
+        _reenqueue_for_ingest(control_plane, state.session_id, to_compact, tenant_id=tenant_id)
     return state
 
 
+def commit_session(
+    manager: SessionManager,
+    state: SessionState,
+    core: CoreModelProvider,
+    *,
+    control_plane: PostgresStore | None = None,
+    fs: FilesystemStore | None = None,
+    neo4j: Neo4jStore | InMemoryKnowledgeGraph | None = None,
+    embed: EmbeddingService | None = None,
+    memory_repository: MemoryRepository | None = None,
+    tenant_id: str | None = None,
+) -> SessionState:
+    """Commit a session and write its durable SESSION_SUMMARY node.
+
+    The commit path is ledger-only for raw turns: it records deterministic
+    ingest events and lets the durable worker process them. In V2 the summary
+    is committed to PostgreSQL before the cache entry may be removed; Neo4j is
+    updated later by the projection workflow. The filesystem branch exists
+    only for legacy development/test configurations.
+    """
+    tid = tenant_id or current_tenant_id() or DEFAULT_TENANT_ID
+    state.status = "COMMITTING"
+    manager._persist(state)
+
+    ingestible_turns = [turn for turn in state.turns if turn.ingestible]
+    if control_plane is not None:
+        _reenqueue_for_ingest(control_plane, state.session_id, state.turns, tenant_id=tid)
+
+    if ingestible_turns:
+        summary, key_facts, key_entities = _summarize_for_commit(
+            core,
+            state,
+            turns=ingestible_turns,
+        )
+        if summary:
+            state.compacted = (state.compacted + "\n" + summary) if state.compacted else summary
+        state.key_facts = list(dict.fromkeys([*state.key_facts, *key_facts]))
+        state.key_entities = list(dict.fromkeys([*state.key_entities, *key_entities]))
+
+        # Only explicitly ingestible turns may create canonical long-term
+        # memory. Retrieval-generated answers stay available as session
+        # history, but cannot reinforce themselves as new evidence.
+        canonical_state = replace(
+            state,
+            turns=ingestible_turns,
+            compacted=None,
+            key_facts=key_facts,
+            key_entities=key_entities,
+        )
+        durable_summary = summary or canonical_state.render(max_turns=50)
+        if memory_repository is not None:
+            _commit_canonical_session_summary(
+                repository=memory_repository,
+                state=canonical_state,
+                summary=durable_summary,
+                tenant_id=tid,
+            )
+        elif fs is not None and neo4j is not None and embed is not None:
+            _write_session_summary_node(
+                state=canonical_state,
+                fs=fs,
+                neo4j=neo4j,
+                embed=embed,
+                summary=durable_summary,
+                tenant_id=tid,
+            )
+
+    state.status = "COMMITTED"
+    manager._persist(state)
+    return state
+
+
+def _commit_canonical_session_summary(
+    *,
+    repository: MemoryRepository,
+    state: SessionState,
+    summary: str,
+    tenant_id: str,
+) -> str:
+    """Commit one idempotent SESSION_SUMMARY and its projection outbox rows."""
+
+    mutation_key = f"session:{state.session_id}:summary"
+    body = summary.strip()
+    if state.key_facts:
+        body += "\n\nKey facts:\n" + "\n".join(f"- {fact}" for fact in state.key_facts)
+    with repository.transaction(tenant_id=tenant_id) as conn:
+        canonical = MemoryRepository(
+            _BoundTransactionStore(conn, projection_task_queue=repository.projection_task_queue),
+            default_tenant_id=tenant_id,
+        )
+        node = canonical.create_memory(
+            memory_type="SESSION_SUMMARY",
+            canonical_name=f"Session {state.session_id}",
+            metadata={
+                "source_session_id": state.session_id,
+                "key_entities": list(state.key_entities),
+            },
+            tenant_id=tenant_id,
+            mutation_key=mutation_key,
+            mutation_operation="COMMIT_SESSION_SUMMARY",
+        )
+        version = canonical.append_version(
+            node.id,
+            body=body,
+            abstract=summary.strip()[:500],
+            provenance={"extractor": "session_commit", "extractor_version": "v2"},
+            metadata={"source_session_id": state.session_id},
+            tenant_id=tenant_id,
+            mutation_key=f"{mutation_key}:version",
+        )
+        canonical.record_evidence(
+            memory_id=node.id,
+            source_session_id=state.session_id,
+            extractor="session_commit",
+            extractor_version="v2",
+            confidence=0.9,
+            source_text_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            metadata={"version_id": str(version.id)},
+            idempotency_key=f"{mutation_key}:evidence",
+            tenant_id=tenant_id,
+        )
+    return node.canonical_uri
+
+
+def _summarize_for_commit(
+    core: CoreModelProvider,
+    state: SessionState,
+    *,
+    turns: list[Turn] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    selected_turns = state.turns if turns is None else turns
+    turn_history = [
+        {"role": t.role, "content": t.content, "turn_idx": t.turn_idx}
+        for t in selected_turns
+    ]
+    if not turn_history:
+        return "", [], []
+    prompt = prompts.render(
+        "session_compact",
+        turn_history=turn_history,
+        compaction_budget=3000,
+    )
+    try:
+        with model_request_session(state.session_id):
+            result = core.complete(
+                system_prompt=prompt,
+                user_prompt="Return the final session summary JSON.",
+            )
+        out = result.output if isinstance(result.output, dict) else {}
+        return (
+            str(out.get("compacted") or ""),
+            list(out.get("key_facts") or []),
+            list(out.get("key_entities") or []),
+        )
+    except Exception:
+        log.exception("session commit summary failed; falling back to raw render")
+        return state.render(max_turns=50), list(state.key_facts), list(state.key_entities)
+
+
+def _write_session_summary_node(
+    *,
+    state: SessionState,
+    fs: FilesystemStore,
+    neo4j: Neo4jStore | InMemoryKnowledgeGraph,
+    embed: EmbeddingService,
+    summary: str,
+    tenant_id: str,
+) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    uri = f"mem://user/session_summaries/{state.session_id}.md"
+    fm = {
+        "id": str(uuid.uuid4()),
+        "node_type": "SESSION_SUMMARY",
+        "status": "ACTIVE",
+        "created_at": now,
+        "source_session_id": state.session_id,
+        "schema_version": 1,
+        "provenance": {
+            "extractor": "session_commit",
+            "confidence": 0.9,
+        },
+    }
+    body = summary.strip() + "\n"
+    if state.key_facts:
+        body += "\nKey facts:\n" + "\n".join(f"- {fact}" for fact in state.key_facts) + "\n"
+    mf = frontmatter.MemoryFile(frontmatter=fm, body=body)
+    fs.write_atomic(uri, mf.serialize())
+    neo4j.merge_node(
+        source_uri=uri,
+        parent_uri=uri_mod.parent_uri(uri),
+        tenant_id=tenant_id,
+        properties={
+            "id": fm["id"],
+            "node_type": "SESSION_SUMMARY",
+            "status": "ACTIVE",
+            "l0_abstract": summary[:500],
+            "l0_embedding": embed.embed(summary[:2000] or state.session_id),
+            "retrieval_weight": 1.0,
+            "created_at": now,
+            "last_accessed_at": now,
+            "access_count": 0,
+            "schema_version": 1,
+            "source_session_id": state.session_id,
+        },
+    )
+    return uri
+
+
 def _reenqueue_for_ingest(
-    sqlite: SqliteStore, session_id: str, turns: list[Turn]
+    control_plane: PostgresStore,
+    session_id: str,
+    turns: list[Turn],
+    *,
+    tenant_id: str | None = None,
 ) -> None:
+    tid = tenant_id or current_tenant_id() or DEFAULT_TENANT_ID
     # Group consecutive user→assistant pairs. Users/assistants always alternate
     # in an ACTIVE session so pairing by index is safe.
     pairs: list[tuple[Turn, Turn]] = []
     i = 0
     while i < len(turns) - 1:
-        if turns[i].role == "user" and turns[i + 1].role == "assistant":
+        if (
+            turns[i].role == "user"
+            and turns[i + 1].role == "assistant"
+            and turns[i].ingestible
+            and turns[i + 1].ingestible
+        ):
             pairs.append((turns[i], turns[i + 1]))
             i += 2
         else:
             i += 1  # skip unpaired turn
     for user, assistant in pairs:
         pid = pair_id_fn(session_id, user.turn_idx, assistant.turn_idx)
-        sqlite.record_event(
+        control_plane.record_event(
             pair_id=pid,
             session_id=session_id,
             source="session_compact",
@@ -224,4 +471,5 @@ def _reenqueue_for_ingest(
                     "assistant": {"content": assistant.content, "turn_idx": assistant.turn_idx},
                 },
             },
+            tenant_id=tid,
         )

@@ -1,0 +1,144 @@
+{{- $root := . -}}
+{{- range $index, $worker := .Values.worker.queues }}
+{{- if $index }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "engram.fullname" $root }}-worker-{{ $worker.name }}
+  labels:
+    {{- include "engram.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: temporal-worker
+    engram.ai/task-queue: {{ $worker.name | quote }}
+spec:
+  replicas: {{ $worker.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 1 }
+  selector:
+    matchLabels:
+      {{- include "engram.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: temporal-worker
+      engram.ai/task-queue: {{ $worker.name | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "engram.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: temporal-worker
+        engram.ai/task-queue: {{ $worker.name | quote }}
+      annotations:
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "engram.fullname" $root }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext: {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      {{- with $root.Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal-worker
+          image: {{ include "engram.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: ["python", "-m", "engram.temporal.worker", "--queue", {{ $worker.queue | quote }}]
+          env:
+            - { name: ENGRAM_CONFIG_PATH, value: /etc/engram/config.yaml }
+            - { name: ENGRAM_LOG_FORMAT, value: json }
+            - { name: ENGRAM_LOG_LEVEL, value: INFO }
+            - name: ENGRAM_NODE_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: ENGRAM_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" $root }}, key: ENGRAM_API_KEY } }
+            - name: ENGRAM_ADMIN_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" $root }}, key: ENGRAM_ADMIN_KEY } }
+            - name: OPENCODE_GO_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" $root }}, key: OPENCODE_GO_API_KEY } }
+            - name: NEO4J_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" $root }}, key: NEO4J_ADMIN_PASSWORD } }
+            - name: ENGRAM_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" $root }}, key: ENGRAM_DATABASE_URL } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/engram, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          resources: {{- toYaml $root.Values.worker.resources | nindent 12 }}
+          securityContext: {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: config
+          configMap: { name: {{ include "engram.fullname" $root }}-config }
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "engram.fullname" . }}-dispatcher
+  labels:
+    {{- include "engram.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-dispatcher
+spec:
+  replicas: {{ .Values.dispatcher.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 1 }
+  selector:
+    matchLabels:
+      {{- include "engram.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: temporal-dispatcher
+  template:
+    metadata:
+      labels:
+        {{- include "engram.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal-dispatcher
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "engram.fullname" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal-dispatcher
+          image: {{ include "engram.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "engram.temporal.dispatcher"]
+          env:
+            - { name: ENGRAM_CONFIG_PATH, value: /etc/engram/config.yaml }
+            - { name: ENGRAM_LOG_FORMAT, value: json }
+            - { name: ENGRAM_LOG_LEVEL, value: INFO }
+            - name: ENGRAM_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_API_KEY } }
+            - name: ENGRAM_ADMIN_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_ADMIN_KEY } }
+            - name: OPENCODE_GO_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: OPENCODE_GO_API_KEY } }
+            - name: NEO4J_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: NEO4J_ADMIN_PASSWORD } }
+            - name: ENGRAM_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "engram.secretName" . }}, key: ENGRAM_DATABASE_URL } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/engram, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          resources: {{- toYaml .Values.dispatcher.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: config
+          configMap: { name: {{ include "engram.fullname" . }}-config }
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "engram.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: temporal-dispatcher

@@ -15,14 +15,17 @@ def _write_config(tmp_path: Path, api_key_value: str) -> Path:
     cfg_path.write_text(
         yaml.safe_dump(
             {
-                "api": {"api_key": api_key_value, "host": "127.0.0.1", "port": 8000,
-                        "rate_limit_query_per_minute": 60,
-                        "rate_limit_ingest_per_minute": 600},
-                "core_model": {"provider": "anthropic", "api_key": "real-key"},
-                "frontier_llm": {"provider": "anthropic", "api_key": "real-key"},
+                "api": {
+                    "api_key": api_key_value,
+                    "host": "127.0.0.1",
+                    "port": 8000,
+                    "rate_limit_query_per_minute": 60,
+                    "rate_limit_ingest_per_minute": 600,
+                },
+                "core_model": {"provider": "openai_responses", "api_key": "real-key"},
+                "frontier_llm": {"provider": "openai_responses", "api_key": "real-key"},
                 "filesystem": {"data_dir": str(tmp_path / "mem")},
-                "event_ledger": {"path": str(tmp_path / "ev.db")},
-                "consolidation": {"db_path": str(tmp_path / "cons.db")},
+                "event_ledger": {"dsn": "postgresql://test:test/test"},
                 "knowledge_graph": {"writer_password": "ok", "reader_password": "ok"},
             }
         )

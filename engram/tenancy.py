@@ -3,7 +3,7 @@
 Each tenant is a logical slice of the system:
   - its own sub-directory under the filesystem root
   - `tenant_id` property on every KG node + filter in every Cypher template
-  - `tenant_id` column on every SQLite/Postgres table + filter in every query
+  - `tenant_id` column on every PostgreSQL table + filter in every query
   - its own rate-limit bucket + token / memory quotas
   - its own API keys (rotatable; stored as SHA-256 hashes)
 
@@ -23,18 +23,15 @@ import hashlib
 import json
 import re
 import secrets
-import sqlite3
-import threading
 import time
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
-
 
 DEFAULT_TENANT_ID = "_default"
 _TENANT_ID_RE = re.compile(r"^[a-z0-9_][a-z0-9\-_]{0,62}$")
 
-_current_tenant: contextvars.ContextVar["Tenant | None"] = contextvars.ContextVar(
+_current_tenant: contextvars.ContextVar[Tenant | None] = contextvars.ContextVar(
     "engram_current_tenant", default=None
 )
 
@@ -42,10 +39,11 @@ _current_tenant: contextvars.ContextVar["Tenant | None"] = contextvars.ContextVa
 @dataclass
 class TenantQuotas:
     """Per-tenant resource caps. Use -1 for unlimited."""
+
     requests_per_minute: int = 120
     ingest_per_minute: int = 600
-    max_memories: int = -1                   # hard cap on KG node count
-    max_monthly_tokens: int = -1             # frontier token ceiling
+    max_memories: int = -1  # hard cap on KG node count
+    max_monthly_tokens: int = -1  # frontier token ceiling
     max_consolidation_backlog: int = 10_000
 
 
@@ -56,7 +54,7 @@ class Tenant:
     api_key_hashes: list[str] = field(default_factory=list)
     quotas: TenantQuotas = field(default_factory=TenantQuotas)
     created_at: str = ""
-    status: str = "ACTIVE"                   # ACTIVE | SUSPENDED | DELETED
+    status: str = "ACTIVE"  # ACTIVE | SUSPENDED | DELETED
 
     def matches_key(self, api_key: str) -> bool:
         digest = hash_key(api_key)
@@ -73,7 +71,7 @@ class Tenant:
         }
 
     @classmethod
-    def from_payload(cls, data: dict[str, Any]) -> "Tenant":
+    def from_payload(cls, data: dict[str, Any]) -> Tenant:
         quotas = TenantQuotas(**data.get("quotas", {}))
         return cls(
             tenant_id=data["tenant_id"],
@@ -88,6 +86,7 @@ class Tenant:
 # ----------------------------------------------------------------------
 # API key helpers
 # ----------------------------------------------------------------------
+
 
 def hash_key(api_key: str) -> str:
     """Return a SHA-256 hex digest of an API key.
@@ -109,62 +108,29 @@ def generate_api_key(*, prefix: str = "engram") -> str:
 
 def validate_tenant_id(tenant_id: str) -> None:
     if not _TENANT_ID_RE.match(tenant_id):
-        raise ValueError(
-            f"invalid tenant_id {tenant_id!r}: must match {_TENANT_ID_RE.pattern}"
-        )
+        raise ValueError(f"invalid tenant_id {tenant_id!r}: must match {_TENANT_ID_RE.pattern}")
 
 
 # ----------------------------------------------------------------------
-# Registry (persisted in SQLite under the main control-plane DB)
+# Registry (persisted in the PostgreSQL control plane)
 # ----------------------------------------------------------------------
-
-_REGISTRY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS tenants (
-    tenant_id      TEXT PRIMARY KEY,
-    payload        TEXT NOT NULL,
-    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS api_keys (
-    key_hash       TEXT PRIMARY KEY,
-    tenant_id      TEXT NOT NULL REFERENCES tenants(tenant_id),
-    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-    last_used_at   TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id);
-"""
 
 
 class TenantRegistry:
-    """Persistent tenant store keyed by tenant_id.
+    """Persistent PostgreSQL tenant store keyed by tenant ID."""
 
-    Stored in the control-plane SQLite (so tests and single-node deploys
-    don't need an extra dependency). The Postgres backend uses identical
-    SQL except for `datetime('now')` → `now()`; that swap is handled
-    by the PG store's constructor.
-    """
+    def __init__(self, store: Any) -> None:
+        if not hasattr(store, "get_conn") or not hasattr(store, "transaction"):
+            raise TypeError("TenantRegistry requires a PostgreSQL control-plane store")
+        self._store = store
 
-    def __init__(self, db_path: str | Path) -> None:
-        self._path = Path(db_path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._tls = threading.local()
-        self._init()
+    def _conn(self) -> Any:
+        return self._store.get_conn()
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = getattr(self._tls, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(
-                str(self._path), isolation_level=None, check_same_thread=False,
-                timeout=30.0,
-            )
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            self._tls.conn = conn
-        return conn
-
-    def _init(self) -> None:
-        self._conn().executescript(_REGISTRY_SCHEMA)
+    @contextmanager
+    def _transaction(self):
+        with self._store.transaction() as conn:
+            yield conn
 
     # ------------------------------------------------------------------
     # Tenant CRUD
@@ -196,36 +162,33 @@ class TenantRegistry:
         digest = hash_key(api_key)
         tenant.api_key_hashes.append(digest)
 
-        conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with self._transaction() as conn:
             conn.execute(
                 "INSERT INTO tenants (tenant_id, payload, updated_at) "
-                "VALUES (?, ?, datetime('now'))",
+                "VALUES (?, ?, CURRENT_TIMESTAMP)",
                 (tenant.tenant_id, json.dumps(tenant.to_payload())),
             )
             conn.execute(
                 "INSERT INTO api_keys (key_hash, tenant_id) VALUES (?, ?)",
                 (digest, tenant.tenant_id),
             )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
         return tenant, api_key
 
     def get(self, tenant_id: str) -> Tenant | None:
-        row = self._conn().execute(
-            "SELECT payload FROM tenants WHERE tenant_id = ?", (tenant_id,),
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute(
+                "SELECT payload FROM tenants WHERE tenant_id = ?",
+                (tenant_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         return Tenant.from_payload(json.loads(row["payload"]))
 
     def list(self) -> list[Tenant]:
-        rows = self._conn().execute(
-            "SELECT payload FROM tenants ORDER BY tenant_id"
-        ).fetchall()
+        rows = self._conn().execute("SELECT payload FROM tenants ORDER BY tenant_id").fetchall()
         return [Tenant.from_payload(json.loads(r["payload"])) for r in rows]
 
     def update_status(self, tenant_id: str, status: str) -> None:
@@ -243,18 +206,11 @@ class TenantRegistry:
         self._save(t)
 
     def _save(self, t: Tenant) -> None:
-        conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with self._transaction() as conn:
             conn.execute(
-                "UPDATE tenants SET payload = ?, updated_at = datetime('now') "
-                "WHERE tenant_id = ?",
+                "UPDATE tenants SET payload = ?, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = ?",
                 (json.dumps(t.to_payload()), t.tenant_id),
             )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
 
     # ------------------------------------------------------------------
     # API key CRUD
@@ -267,22 +223,15 @@ class TenantRegistry:
         api_key = generate_api_key()
         digest = hash_key(api_key)
         t.api_key_hashes.append(digest)
-        conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with self._transaction() as conn:
             conn.execute(
-                "UPDATE tenants SET payload = ?, updated_at = datetime('now') "
-                "WHERE tenant_id = ?",
+                "UPDATE tenants SET payload = ?, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = ?",
                 (json.dumps(t.to_payload()), tenant_id),
             )
             conn.execute(
                 "INSERT INTO api_keys (key_hash, tenant_id) VALUES (?, ?)",
                 (digest, tenant_id),
             )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
         return api_key
 
     def revoke_key(self, tenant_id: str, key_hash: str) -> bool:
@@ -292,42 +241,38 @@ class TenantRegistry:
         if key_hash not in t.api_key_hashes:
             return False
         t.api_key_hashes.remove(key_hash)
-        conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with self._transaction() as conn:
             conn.execute(
-                "UPDATE tenants SET payload = ?, updated_at = datetime('now') "
-                "WHERE tenant_id = ?",
+                "UPDATE tenants SET payload = ?, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = ?",
                 (json.dumps(t.to_payload()), tenant_id),
             )
             conn.execute(
                 "DELETE FROM api_keys WHERE key_hash = ? AND tenant_id = ?",
                 (key_hash, tenant_id),
             )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
         return True
 
     def resolve_key(self, api_key: str) -> Tenant | None:
         digest = hash_key(api_key)
-        row = self._conn().execute(
-            "SELECT tenant_id FROM api_keys WHERE key_hash = ?", (digest,),
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute(
+                "SELECT tenant_id FROM api_keys WHERE key_hash = ?",
+                (digest,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         t = self.get(row["tenant_id"])
         if t is None or t.status != "ACTIVE":
             return None
         # best-effort: update last_used_at
-        try:
+        with suppress(Exception):
             self._conn().execute(
-                "UPDATE api_keys SET last_used_at = datetime('now') WHERE key_hash = ?",
+                "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE key_hash = ?",
                 (digest,),
             )
-        except Exception:
-            pass
         return t
 
     # ------------------------------------------------------------------
@@ -349,8 +294,8 @@ class TenantRegistry:
                     self._save(existing)
                     conn = self._conn()
                     conn.execute(
-                        "INSERT OR IGNORE INTO api_keys (key_hash, tenant_id) "
-                        "VALUES (?, ?)",
+                        "INSERT INTO api_keys (key_hash, tenant_id) VALUES (?, ?) "
+                        "ON CONFLICT(key_hash) DO NOTHING",
                         (digest, DEFAULT_TENANT_ID),
                     )
             return existing
@@ -363,12 +308,10 @@ class TenantRegistry:
         )
         if legacy_api_key:
             tenant.api_key_hashes.append(hash_key(legacy_api_key))
-        conn = self._conn()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+        with self._transaction() as conn:
             conn.execute(
                 "INSERT INTO tenants (tenant_id, payload, updated_at) "
-                "VALUES (?, ?, datetime('now'))",
+                "VALUES (?, ?, CURRENT_TIMESTAMP)",
                 (tenant.tenant_id, json.dumps(tenant.to_payload())),
             )
             if legacy_api_key:
@@ -376,16 +319,13 @@ class TenantRegistry:
                     "INSERT INTO api_keys (key_hash, tenant_id) VALUES (?, ?)",
                     (hash_key(legacy_api_key), DEFAULT_TENANT_ID),
                 )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
         return tenant
 
 
 # ----------------------------------------------------------------------
 # Context propagation
 # ----------------------------------------------------------------------
+
 
 def set_current_tenant(tenant: Tenant | None) -> None:
     _current_tenant.set(tenant)
@@ -409,6 +349,7 @@ def require_tenant() -> Tenant:
 
 
 # ----------------------------------------------------------------------
+
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

@@ -24,7 +24,6 @@ from typing import Protocol
 from engram.models.embeddings import EmbeddingService
 from engram.storage.neo4j_store import Neo4jStore
 
-
 # ---- Regex OR-gate (§3.1.1). Deployment-tunable. --------------------------------
 
 _FIRST_SENTENCE = re.compile(r"^[^.!?]*[.!?]?")
@@ -45,7 +44,9 @@ _REGEX_PATTERNS: list[re.Pattern[str]] = [
     # First/second-person pronouns implying prior context
     re.compile(r"^\s*(he|she|they|it|that|this|these|those)\s", re.IGNORECASE),
     # Syntactic incompleteness (ends with coordinator/dangling prep)
-    re.compile(r"\b(and|or|but|because|since|if|when|while|about|for|with)\s*\.?\s*$", re.IGNORECASE),
+    re.compile(
+        r"\b(and|or|but|because|since|if|when|while|about|for|with)\s*\.?\s*$", re.IGNORECASE
+    ),
 ]
 
 

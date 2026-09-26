@@ -1,7 +1,7 @@
 """Engram CLI — init and smoke-test utilities.
 
 Usage:
-  python -m engram.cli init     # create Neo4j indexes + SQLite schemas
+  python -m engram.cli init     # verify PostgreSQL and create Neo4j indexes
   python -m engram.cli smoke    # ingest a small corpus + run a query
   python -m engram.cli health   # print component readiness
 """
@@ -26,19 +26,26 @@ def cmd_init(_args: argparse.Namespace) -> int:
     print(f"Redis ping: {state.session_cache.ping()}")
     print("Ensuring Neo4j indexes…")
     state.neo4j.ensure_indexes()
-    print(f"SQLite: {state.cfg.event_ledger.path}")
-    print(f"Filesystem: {state.fs.data_dir}")
+    print("Control plane: PostgreSQL")
+    if state.cfg.canonical_memory.enabled:
+        print("Canonical memory: PostgreSQL (runtime filesystem disabled)")
+    else:
+        assert state.fs is not None
+        print(f"Filesystem: {state.fs.data_dir}")
     print("init OK")
     return 0
 
 
 def cmd_health(_args: argparse.Namespace) -> int:
     state = get_state()
-    print(json.dumps({
-        "neo4j": state.neo4j.ping(),
-        "redis": state.session_cache.ping(),
-        "filesystem": state.fs.data_dir.exists(),
-    }, indent=2))
+    health = {
+        "postgres": state.control_plane.get_conn().execute("SELECT 1").fetchone() is not None,
+        "neo4j_projection": state.neo4j.ping(),
+        "redis_cache": state.session_cache.ping(),
+    }
+    if not state.cfg.canonical_memory.enabled:
+        health["filesystem"] = bool(state.fs and state.fs.data_dir.exists())
+    print(json.dumps(health, indent=2))
     return 0
 
 
@@ -69,6 +76,7 @@ _SMOKE_CORPUS = [
 def cmd_rebuild_kg(_args: argparse.Namespace) -> int:
     from engram.config import get_config
     from engram.rebuild_kg import rebuild
+
     stats = rebuild(get_config())
     print(json.dumps(stats, indent=2))
     return 0
@@ -76,6 +84,7 @@ def cmd_rebuild_kg(_args: argparse.Namespace) -> int:
 
 def cmd_decay(_args: argparse.Namespace) -> int:
     from engram.decay import run_daily
+
     state = build_state()
     updated = run_daily(state.neo4j, state.cfg.decay)
     print(json.dumps({"updated_nodes": updated}, indent=2))
@@ -83,10 +92,19 @@ def cmd_decay(_args: argparse.Namespace) -> int:
 
 
 def cmd_migrate(_args: argparse.Namespace) -> int:
-    from engram.config import get_config
-    from engram.migrations.runner import run_pending
-    summary = run_pending(get_config())
-    print(json.dumps(summary, indent=2))
+    """Apply forward-only Alembic migrations to the Postgres control plane."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    # Resolve from the installed package so this command works in the slim
+    # runtime image as well as from a source checkout.
+    alembic_config = Config()
+    alembic_config.set_main_option(
+        "script_location", str(Path(__file__).resolve().parent / "migrations" / "alembic")
+    )
+    command.upgrade(alembic_config, "head")
     return 0
 
 
@@ -95,25 +113,41 @@ def cmd_train(args: argparse.Namespace) -> int:
     gate | sft | dpo | synth (generate synthetic data).
     """
     from pathlib import Path
+
     if args.phase == "synth":
         from engram.training.synthetic_data import generate_all
+
         out = Path(args.out)
         summary = generate_all(out, seed=args.seed)
         print(json.dumps({"out": str(out), "generated": summary}, indent=2))
         return 0
     if args.phase == "gate":
         from engram.training.gate_classifier import train as train_gate
+
         train_gate(Path(args.data), Path(args.out), epochs=args.epochs, lr=args.lr)
         return 0
     if args.phase == "sft":
         from engram.training.core_sft import train as train_sft
-        train_sft(Path(args.traces), args.base or "Qwen/Qwen3.5-0.8B",
-                  Path(args.out), epochs=args.epochs, lr=args.lr)
+
+        train_sft(
+            Path(args.traces),
+            args.base or "Qwen/Qwen3.5-0.8B",
+            Path(args.out),
+            epochs=args.epochs,
+            lr=args.lr,
+        )
         return 0
     if args.phase == "dpo":
         from engram.training.core_dpo import train as train_dpo
-        train_dpo(Path(args.sft_model), Path(args.held_out), Path(args.out),
-                  beta=args.beta, lr=args.lr, epochs=args.epochs)
+
+        train_dpo(
+            Path(args.sft_model),
+            Path(args.held_out),
+            Path(args.out),
+            beta=args.beta,
+            lr=args.lr,
+            epochs=args.epochs,
+        )
         return 0
     raise SystemExit(f"unknown phase: {args.phase}")
 
@@ -121,10 +155,11 @@ def cmd_train(args: argparse.Namespace) -> int:
 def cmd_admin(args: argparse.Namespace) -> int:
     """Admin helpers for tenant management (CLI-local; doesn't need the API)."""
     from engram.config import get_config
+    from engram.storage import build_control_plane_store
     from engram.tenancy import TenantQuotas, TenantRegistry
 
     cfg = get_config()
-    reg = TenantRegistry(cfg.event_ledger.path)
+    reg = TenantRegistry(build_control_plane_store(cfg))
 
     if args.action == "create-tenant":
         quotas = TenantQuotas(
@@ -132,26 +167,36 @@ def cmd_admin(args: argparse.Namespace) -> int:
             ingest_per_minute=args.ipm,
         )
         tenant, api_key = reg.create(
-            args.tenant_id, display_name=args.display_name, quotas=quotas,
+            args.tenant_id,
+            display_name=args.display_name,
+            quotas=quotas,
         )
-        print(json.dumps({
-            "tenant_id": tenant.tenant_id,
-            "display_name": tenant.display_name,
-            "api_key": api_key,          # shown exactly once
-            "note": "Store the api_key now; future lookups match by hash only.",
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "tenant_id": tenant.tenant_id,
+                    "display_name": tenant.display_name,
+                    "api_key": api_key,  # shown exactly once
+                    "note": "Store the api_key now; future lookups match by hash only.",
+                },
+                indent=2,
+            )
+        )
         return 0
     if args.action == "list-tenants":
-        rows = [{
-            "tenant_id": t.tenant_id,
-            "display_name": t.display_name,
-            "status": t.status,
-            "api_key_count": len(t.api_key_hashes),
-            "quotas": {
-                "requests_per_minute": t.quotas.requests_per_minute,
-                "ingest_per_minute": t.quotas.ingest_per_minute,
-            },
-        } for t in reg.list()]
+        rows = [
+            {
+                "tenant_id": t.tenant_id,
+                "display_name": t.display_name,
+                "status": t.status,
+                "api_key_count": len(t.api_key_hashes),
+                "quotas": {
+                    "requests_per_minute": t.quotas.requests_per_minute,
+                    "ingest_per_minute": t.quotas.ingest_per_minute,
+                },
+            }
+            for t in reg.list()
+        ]
         print(json.dumps(rows, indent=2))
         return 0
     if args.action == "mint-key":
@@ -178,7 +223,7 @@ def cmd_smoke(_args: argparse.Namespace) -> int:
         user_idx = idx * 2
         asst_idx = user_idx + 1
         pid = pair_id_fn(session_id, user_idx, asst_idx)
-        event_id, is_new = state.sqlite.record_event(
+        event_id, is_new = state.control_plane.record_event(
             pair_id=pid,
             session_id=session_id,
             source="smoke",
@@ -210,15 +255,18 @@ def cmd_smoke(_args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     parser = argparse.ArgumentParser(prog="engram")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init", help="Create Neo4j indexes and SQLite schemas")
+    sub.add_parser("init", help="Verify PostgreSQL and create Neo4j indexes")
     sub.add_parser("health", help="Print component readiness")
     sub.add_parser("smoke", help="Run an end-to-end ingest + query test")
-    sub.add_parser("rebuild-kg", help="Rebuild Neo4j from the filesystem (§2.3)")
+    sub.add_parser("rebuild-kg", help="Rebuild Neo4j from canonical PostgreSQL")
     sub.add_parser("decay", help="Run the daily decay pass (§10.3)")
-    sub.add_parser("migrate", help="Run pending schema migrations (§13.5)")
+    sub.add_parser("migrate", help="Apply PostgreSQL control-plane Alembic migrations")
+    sub.add_parser("postgres-migrate", help="Alias for the PostgreSQL migration command")
 
     # engram train <phase>
     train_p = sub.add_parser("train", help="Training pipeline (§14)")
@@ -269,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         "rebuild-kg": cmd_rebuild_kg,
         "decay": cmd_decay,
         "migrate": cmd_migrate,
+        "postgres-migrate": cmd_migrate,
         "train": cmd_train,
         "admin": cmd_admin,
     }[args.cmd](args)

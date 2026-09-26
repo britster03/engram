@@ -63,18 +63,20 @@ spec:
               valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_API_KEY } }
             - name: ENGRAM_ADMIN_KEY
               valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_ADMIN_KEY } }
-            - name: CORE_MODEL_API_KEY
-              valueFrom: { secretKeyRef: { name: engram-secrets, key: CORE_MODEL_API_KEY } }
-            - name: FRONTIER_LLM_API_KEY
-              valueFrom: { secretKeyRef: { name: engram-secrets, key: FRONTIER_LLM_API_KEY } }
+            - name: ENGRAM_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_SECRET_KEY } }
+            - name: OPENCODE_GO_API_KEY
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: OPENCODE_GO_API_KEY } }
             - name: NEO4J_ADMIN_PASSWORD
               valueFrom: { secretKeyRef: { name: engram-secrets, key: NEO4J_ADMIN_PASSWORD } }
+            - name: ENGRAM_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: engram-secrets, key: ENGRAM_DATABASE_URL } }
           volumeMounts:
             - name: config
               mountPath: /etc/engram
               readOnly: true
-            - name: data
-              mountPath: /var/lib/engram
+            - name: tmp
+              mountPath: /tmp
           startupProbe:
             httpGet: { path: /livez, port: http }
             initialDelaySeconds: 10
@@ -110,9 +112,10 @@ spec:
         - name: config
           configMap:
             name: engram-config
-        - name: data
-          persistentVolumeClaim:
-            claimName: engram-data
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone

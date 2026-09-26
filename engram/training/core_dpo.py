@@ -23,12 +23,19 @@ import json
 from pathlib import Path
 
 
-def train(sft_model: Path, held_out: Path, out_dir: Path, *,
-          beta: float = 0.1, lr: float = 5e-6, epochs: int = 1) -> None:
+def train(
+    sft_model: Path,
+    held_out: Path,
+    out_dir: Path,
+    *,
+    beta: float = 0.1,
+    lr: float = 5e-6,
+    epochs: int = 1,
+) -> None:
     # Deferred imports — ML deps are optional.
     from datasets import Dataset  # type: ignore
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-    from trl import DPOTrainer, DPOConfig  # type: ignore
+    from trl import DPOConfig, DPOTrainer  # type: ignore
 
     rows = [json.loads(line) for line in held_out.read_text().splitlines() if line]
     # Each row is expected to carry (prompt, chosen, rejected) after the
@@ -39,10 +46,20 @@ def train(sft_model: Path, held_out: Path, out_dir: Path, *,
     model = AutoModelForCausalLM.from_pretrained(sft_model)
 
     cfg = DPOConfig(
-        output_dir=str(out_dir), beta=beta, learning_rate=lr, num_train_epochs=epochs,
-        per_device_train_batch_size=2, gradient_accumulation_steps=16,
-        warmup_ratio=0.1, lr_scheduler_type="cosine", logging_steps=10, save_steps=500,
-        bf16=True, report_to="none", max_prompt_length=1024, max_length=2048,
+        output_dir=str(out_dir),
+        beta=beta,
+        learning_rate=lr,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=16,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+        logging_steps=10,
+        save_steps=500,
+        bf16=True,
+        report_to="none",
+        max_prompt_length=1024,
+        max_length=2048,
     )
     trainer = DPOTrainer(model=model, args=cfg, train_dataset=ds, tokenizer=tokenizer)
     trainer.train()
@@ -59,8 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lr", type=float, default=5e-6)
     parser.add_argument("--epochs", type=int, default=1)
     args = parser.parse_args(argv)
-    train(args.sft_model, args.held_out, args.out, beta=args.beta, lr=args.lr,
-          epochs=args.epochs)
+    train(args.sft_model, args.held_out, args.out, beta=args.beta, lr=args.lr, epochs=args.epochs)
     return 0
 
 

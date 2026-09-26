@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+
+{% block title %}KG - Engram Admin{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ static('css/dashboard.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-white flex flex-col" x-data="kgGraph()" data-theme="light">
+  <nav class="w-full py-5 px-6 md:px-12 border-b border-neutral-100 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto flex items-center gap-4">
+      <a href="/admin/dashboard" class="flex items-center gap-2">
+        <img src="/admin/static/engram_logo.svg" alt="Engram" class="w-9 h-9">
+        <span class="font-bold tracking-tight text-xl leading-none">Engram</span>
+      </a>
+      <div class="flex items-center gap-3 ml-auto">
+        <a href="/admin/dashboard" class="flex items-center gap-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">
+          <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+          Dashboard
+        </a>
+        <a href="/admin/chat" class="flex items-center gap-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-900 transition-all">
+          <i data-lucide="message-circle" class="w-4 h-4"></i>
+          Chat
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-grow relative overflow-hidden">
+    <div class="absolute inset-0 bg-grain pointer-events-none z-0"></div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10 relative z-10">
+      <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 mb-6">
+        <div class="max-w-xl">
+          <h2 class="text-xs font-bold uppercase tracking-widest text-blue-600 mb-2">Knowledge Graph</h2>
+          <h3 class="text-3xl font-bold tracking-tight text-neutral-900" x-text="view === 'code' ? 'Understand your codebase' : 'Explore what your files know'"></h3>
+          <p class="mt-2 text-sm leading-relaxed text-neutral-500" x-text="view === 'code' ? 'Follow the project structure first, then inspect the imports, calls, and evidence behind each stage.' : 'Start with a document or conversation, then follow the people, concepts, and relationships connected to it.'"></p>
+        </div>
+        <button x-show="view === 'semantic'" @click="resetView()" class="px-4 py-2.5 bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-800 text-sm font-semibold rounded-xl transition-all flex items-center justify-center gap-2">
+          <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+          Reset view
+        </button>
+      </div>
+
+      <div class="inline-flex mb-5 p-1 rounded-xl bg-neutral-100 border border-neutral-200">
+        <button @click="setView('semantic')" :class="view === 'semantic' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500'" class="px-4 py-2 text-sm font-semibold rounded-lg transition-all">Semantic graph</button>
+        <button @click="setView('code')" :class="view === 'code' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500'" class="px-4 py-2 text-sm font-semibold rounded-lg transition-all">Code map</button>
+      </div>
+
+      <section x-show="view === 'semantic'" class="kg-toolbar bg-white rounded-2xl border border-neutral-200 p-3 sm:p-4 mb-5">
+        <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_180px_auto] gap-2">
+          <label class="relative block">
+            <span class="sr-only">Filter graph</span>
+            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400"></i>
+            <input x-model="search" @input.debounce.250ms="draw()" type="search" class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm" placeholder="Filter this view by file, function, or concept">
+          </label>
+          <select x-model="nodeType" @change="load()" class="px-3 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm">
+            <option value="">All memory types</option>
+            <option value="DOCUMENT">Documents</option>
+            <option value="EPISODE">Conversations</option>
+            <option value="ENTITY">Entities</option>
+            <option value="FACT">Facts</option>
+            <option value="SESSION_SUMMARY">Sessions</option>
+            <option value="COLLECTION">Collections</option>
+            <option value="PROFILE">Profiles</option>
+            <option value="PREFERENCE">Preferences</option>
+          </select>
+          <select x-model="statusFilter" @change="draw()" class="px-3 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm">
+            <option value="">All confidence levels</option>
+            <option value="ACTIVE">Active</option>
+            <option value="LOW_CONFIDENCE">Needs review</option>
+            <option value="HISTORICAL">Historical</option>
+          </select>
+          <button @click="load()" :disabled="loading" class="px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all flex items-center justify-center gap-2">
+            <i data-lucide="refresh-cw" class="w-4 h-4" :class="loading ? 'animate-spin' : ''"></i>
+            Refresh
+          </button>
+        </div>
+        <details class="mt-3 text-xs text-neutral-500">
+          <summary class="cursor-pointer select-none font-medium text-neutral-600">Advanced graph controls</summary>
+          <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_100px_100px] gap-2 mt-3">
+            <input x-model="rootUri" @change="load()" type="text" class="px-3 py-2 rounded-lg border border-neutral-200 bg-white" placeholder="Optional memory URI to explore">
+            <label class="flex items-center gap-2 px-3 py-2 border border-neutral-200 rounded-lg"><span>Depth</span><input x-model.number="depth" @change="load()" type="number" min="0" max="4" class="w-10 bg-transparent text-right"></label>
+            <label class="flex items-center gap-2 px-3 py-2 border border-neutral-200 rounded-lg"><span>Limit</span><input x-model.number="limit" @change="load()" type="number" min="1" max="500" class="w-12 bg-transparent text-right"></label>
+          </div>
+        </details>
+      </section>
+
+      <div x-show="view === 'semantic'" class="grid grid-cols-1 kg-layout gap-5">
+        <section class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-b border-neutral-100">
+            <div>
+              <p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Current view</p>
+              <p class="mt-0.5 text-sm font-semibold text-neutral-800" x-text="summary"></p>
+            </div>
+            <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500">
+              <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full bg-blue-600"></i> Document</span>
+              <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full bg-teal-700"></i> Conversation</span>
+              <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full bg-violet-600"></i> Entity</span>
+              <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full bg-cyan-600"></i> Fact</span>
+              <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full bg-amber-700"></i> Needs review</span>
+            </div>
+          </div>
+          <div class="relative">
+            <canvas id="kg-canvas" class="block w-full h-[560px]"></canvas>
+            <div x-show="loading" class="absolute inset-0 bg-white/70 flex items-center justify-center text-sm text-neutral-600"><i data-lucide="loader-circle" class="w-4 h-4 animate-spin mr-2"></i> Loading memories…</div>
+          </div>
+          <div class="px-4 py-3 border-t border-neutral-100 text-xs text-neutral-500">Tip: click a document or conversation to see its connections; relationship names appear for the selected memory.</div>
+        </section>
+
+        <aside class="kg-inspector bg-white rounded-2xl border border-neutral-200 min-w-0 overflow-hidden">
+          <template x-if="selected">
+            <div class="kg-detail-scroll p-5 space-y-5">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-xs font-bold uppercase tracking-wider text-blue-600" x-text="'Selected ' + typeLabel(selected)"></p>
+                  <h4 class="mt-1 text-lg font-bold leading-snug text-neutral-900 break-words" x-text="sourceTitle(selected)"></h4>
+                  <p class="mt-1 text-[11px] text-neutral-400 break-all" x-text="shortReference(selected)"></p>
+                </div>
+                <button @click="resetView()" type="button" class="shrink-0 rounded-lg border border-neutral-200 px-2.5 py-1.5 text-xs font-semibold text-neutral-600 hover:bg-neutral-50" aria-label="Back to all sources">All sources</button>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="px-2 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700" x-text="typeLabel(selected)"></span>
+                <span class="px-2 py-1 rounded-full text-xs bg-emerald-50 text-emerald-700" x-text="selected.status || 'Unknown status'"></span>
+                <span class="px-2 py-1 rounded-full text-xs bg-neutral-100 text-neutral-700" x-text="connectionCount(selected) + (connectionCount(selected) === 1 ? ' connection' : ' connections')"></span>
+              </div>
+
+              <div x-show="selectedLoading" class="rounded-xl border border-blue-100 bg-blue-50 px-3 py-3 text-xs text-blue-700 flex items-center gap-2">
+                <i data-lucide="loader-circle" class="w-4 h-4 animate-spin"></i>
+                Loading canonical details from PostgreSQL…
+              </div>
+
+              <section x-show="selectedDetails?.source_event?.turn_pair" class="space-y-2">
+                <p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Original conversation</p>
+                <div class="rounded-xl border border-blue-100 bg-blue-50 p-3"><p class="text-[10px] font-bold uppercase tracking-wider text-blue-600">User</p><p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-neutral-800" x-text="selectedDetails?.source_event?.turn_pair?.user?.content"></p></div>
+                <div class="rounded-xl border border-emerald-100 bg-emerald-50 p-3"><p class="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Assistant</p><p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-neutral-800" x-text="selectedDetails?.source_event?.turn_pair?.assistant?.content"></p></div>
+              </section>
+
+              <section x-show="selectedBody()" class="rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+                <p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Canonical memory</p>
+                <p class="mt-2 whitespace-pre-wrap text-sm leading-6 text-neutral-800" x-text="selectedBody()"></p>
+              </section>
+
+              <dl x-show="selectedDetails" class="grid grid-cols-2 gap-2 text-xs">
+                <div class="rounded-lg border border-neutral-100 p-2.5"><dt class="text-neutral-400">Revision</dt><dd class="mt-1 font-semibold text-neutral-800" x-text="selectedDetails?.revision || '—'"></dd></div>
+                <div class="rounded-lg border border-neutral-100 p-2.5"><dt class="text-neutral-400">Version</dt><dd class="mt-1 font-semibold text-neutral-800" x-text="selectedDetails?.current_version?.version_number || '—'"></dd></div>
+                <div class="col-span-2 rounded-lg border border-neutral-100 p-2.5"><dt class="text-neutral-400">Captured</dt><dd class="mt-1 font-semibold text-neutral-800" x-text="formatDate(selectedDetails?.current_version?.asserted_at) || '—'"></dd></div>
+              </dl>
+
+              <section x-show="selectedClaims().length" class="pt-4 border-t border-neutral-100">
+                <div class="flex items-center justify-between gap-2 mb-2"><p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Canonical facts</p><span class="text-xs text-neutral-400" x-text="selectedClaims().length"></span></div>
+                <div class="space-y-2">
+                  <template x-for="claim in selectedClaims().slice(0, 20)" :key="claim.id">
+                    <div class="rounded-xl border border-neutral-200 p-3">
+                      <p class="text-[11px] font-bold uppercase tracking-wide text-blue-700" x-text="humanize(claim.predicate)"></p>
+                      <p class="mt-1 text-sm font-semibold text-neutral-800 break-words" x-text="claimObject(claim)"></p>
+                      <p class="mt-1 text-[11px] text-neutral-400" x-text="claim.object_type + ' · ' + claim.status + (claim.confidence !== null && claim.confidence !== undefined ? ' · confidence ' + Math.round(claim.confidence * 100) + '%' : '')"></p>
+                    </div>
+                  </template>
+                </div>
+              </section>
+
+              <div class="flex flex-wrap gap-2">
+                <button @click="focusNode(selected)" class="px-3 py-2 text-xs font-semibold bg-neutral-900 text-white rounded-lg hover:bg-neutral-800">Explore connections</button>
+                <button @click="openMemory()" class="px-3 py-2 text-xs font-semibold border border-neutral-200 rounded-lg hover:bg-neutral-50">Open memory</button>
+              </div>
+              <div x-show="selectedConnections().length" class="pt-4 border-t border-neutral-100">
+                <div class="flex items-center justify-between gap-2 mb-2"><p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Readable connections</p><span class="text-xs text-neutral-400" x-text="selectedConnections().length"></span></div>
+                <ul class="space-y-2">
+                  <template x-for="connection in selectedConnections()" :key="connection.label + (connection.node && connection.node.id)">
+                    <li><button @click="focusNode(connection.node)" class="w-full rounded-xl border border-neutral-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50 transition-all"><span class="block text-[11px] font-bold uppercase tracking-wide text-neutral-500" x-text="(connection.direction === 'outgoing' ? 'This memory → ' : 'Connected memory → ') + connection.label"></span><span class="block mt-1 text-sm font-semibold text-blue-800 break-words" x-text="connection.node ? sourceTitle(connection.node) : 'Unknown memory'"></span><span x-show="connection.node" class="block mt-1 text-[11px] text-neutral-400" x-text="connection.node ? typeLabel(connection.node) : ''"></span></button></li>
+                  </template>
+                </ul>
+              </div>
+
+              <section x-show="selectedEvidence().length" class="pt-4 border-t border-neutral-100">
+                <div class="flex items-center justify-between gap-2 mb-2"><p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Provenance</p><span class="text-xs text-neutral-400" x-text="selectedEvidence().length + ' evidence record(s)'"></span></div>
+                <template x-for="evidence in selectedEvidence().slice(0, 6)" :key="evidence.id">
+                  <div class="mb-2 rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-600"><p class="font-semibold text-neutral-800" x-text="evidence.extractor || 'Recorded source'"></p><p class="mt-0.5 break-all" x-text="[evidence.source_session_id, evidence.source_event_id].filter(Boolean).join(' · ') || 'Canonical evidence'"></p></div>
+                </template>
+              </section>
+
+              <details class="rounded-xl border border-neutral-200 p-3 text-xs text-neutral-500">
+                <summary class="cursor-pointer font-semibold text-neutral-700">Technical identity</summary>
+                <dl class="mt-3 space-y-2"><div><dt class="text-neutral-400">Memory ID</dt><dd class="mt-0.5 font-mono break-all" x-text="selectedDetails?.memory_id || selected.id"></dd></div><div><dt class="text-neutral-400">Canonical URI</dt><dd class="mt-0.5 font-mono break-all" x-text="selected.source_uri"></dd></div></dl>
+              </details>
+            </div>
+          </template>
+          <div x-show="!selected" class="p-5 space-y-4">
+            <div>
+              <p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Start here</p>
+              <h4 class="mt-1 text-lg font-bold text-neutral-900">Choose a source to inspect</h4>
+              <p class="mt-1 text-sm leading-relaxed text-neutral-500">Select a conversation or document to read its complete canonical content, facts, evidence, and connections.</p>
+            </div>
+            <label class="relative block">
+              <span class="sr-only">Search sources</span>
+              <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400"></i>
+              <input x-model="sourceSearch" type="search" class="w-full rounded-xl border border-neutral-200 py-2.5 pl-9 pr-3 text-sm" placeholder="Search conversations">
+            </label>
+            <div class="flex items-center justify-between text-xs text-neutral-400"><span>Available in this graph</span><span x-text="documentNodes().length + ' sources'"></span></div>
+            <div class="kg-source-list space-y-2 pr-1">
+              <template x-for="node in documentNodes()" :key="node.id">
+                <button @click="focusNode(node)" class="w-full text-left px-3.5 py-3 rounded-xl border border-neutral-200 hover:border-blue-300 hover:bg-blue-50 hover:shadow-sm transition-all">
+                  <span class="flex items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-wide"><span class="text-blue-700" x-text="typeLabel(node)"></span><span class="text-neutral-400" x-text="connectionCount(node) + (connectionCount(node) === 1 ? ' connection' : ' connections')"></span></span>
+                  <span class="kg-clamp-3 block mt-1.5 text-sm font-semibold leading-5 text-neutral-800" x-text="sourceTitle(node)"></span>
+                  <span class="block mt-1.5 text-[11px] text-neutral-400 truncate" x-text="shortReference(node)"></span>
+                </button>
+              </template>
+              <p x-show="!documentNodes().length && !loading" class="text-sm text-neutral-500">No documents or conversations match this view yet.</p>
+            </div>
+          </div>
+          <p x-show="error" x-text="error" class="mt-4 text-sm text-red-600"></p>
+        </aside>
+      </div>
+
+      <section x-show="view === 'code'" x-cloak class="space-y-5">
+        <div class="bg-white rounded-2xl border border-neutral-200 p-3 sm:p-4">
+          <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px_120px_auto] gap-2">
+            <select x-model="codeProjectUri" @change="loadCodeMap()" class="px-3 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm">
+              <option value="">Choose a code project</option>
+              <template x-for="project in codeProjects" :key="project.source_uri"><option :value="project.source_uri" x-text="project.name"></option></template>
+            </select>
+            <input x-model="codeSearch" type="search" class="px-3 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm" placeholder="Find a file or symbol">
+            <select x-model.number="codeDepth" @change="loadCodeMap()" class="px-3 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm"><option value="1">1 level</option><option value="2">2 levels</option><option value="3">3 levels</option><option value="4">4 levels</option></select>
+            <button @click="loadCodeMap()" :disabled="codeLoading || !codeProjectUri" class="px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 text-white text-sm font-semibold rounded-xl">Refresh map</button>
+          </div>
+          <p class="mt-3 text-xs text-neutral-500">Start focused. Click a stage to understand it; use the small +/- control to collapse or expand its children.</p>
+        </div>
+
+        <div x-show="!codeProjects.length && !codeLoading" class="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-sm text-blue-900">
+          No code project is indexed yet. Upload a ZIP with a project name from the Ingest tab to create a Code map.
+        </div>
+
+        <div x-show="codeProjectUri" class="grid grid-cols-1 kg-layout gap-5">
+          <section class="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-b border-neutral-100">
+              <div><p class="text-xs font-bold uppercase tracking-wider text-blue-700">Code structure</p><p class="mt-0.5 text-sm font-semibold text-neutral-800" x-text="(codeMap.nodes || []).length + ' stages shown · ' + (codeMap.edges || []).length + ' hierarchy links'"></p></div>
+              <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500"><span>Blue: project/files</span><span>Violet: classes</span><span>Emerald: functions</span><span>Amber: methods</span></div>
+            </div>
+            <div class="relative overflow-auto bg-slate-50 p-4">
+              <div class="min-w-[680px] space-y-2" role="tree" aria-label="Expandable code project map">
+                <template x-for="node in codeTreeLayout()" :key="node.id">
+                  <div class="flex items-center gap-2" :style="'margin-left:' + (node.level * 42) + 'px'" role="treeitem" :aria-level="node.level + 1">
+                    <span class="w-5 text-center text-slate-400" x-text="node.level ? '↳' : '•'"></span>
+                    <button type="button" @click="selectCodeNode(node)" class="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left shadow-sm hover:border-slate-400" :style="'background:' + codeNodeColor(node) + ';border-color:' + (codeSelected && codeSelected.id === node.id ? '#172554' : '#cbd5e1')">
+                      <span class="min-w-0"><span class="block truncate text-sm font-bold text-slate-900" x-text="displayName(node)"></span><span class="block truncate text-[11px] text-slate-600" x-text="node.node_type + (node.relative_path ? ' · ' + node.relative_path : '') + (node.line_start ? ' · line ' + node.line_start : '')"></span></span>
+                      <span class="shrink-0 rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-slate-600" x-text="node.node_type"></span>
+                    </button>
+                    <button x-show="node.hasChildren" type="button" @click="toggleCodeNode(node)" class="h-8 w-8 shrink-0 rounded-full border border-slate-300 bg-white text-lg leading-none text-slate-700 hover:bg-slate-100" :aria-label="(collapsedCodeNodes.includes(node.id) ? 'Expand ' : 'Collapse ') + displayName(node)" x-text="collapsedCodeNodes.includes(node.id) ? '+' : '−'"></button>
+                  </div>
+                </template>
+                <p x-show="!(codeTreeLayout().length) && !codeLoading" class="p-4 text-sm text-slate-500">No stages were returned for this project and depth.</p>
+              </div>
+              <div x-show="codeLoading" class="absolute inset-0 bg-white/70 flex items-center justify-center text-sm text-neutral-600">Loading code map…</div>
+            </div>
+          </section>
+
+          <aside class="bg-white rounded-2xl border border-neutral-200 p-5 min-w-0">
+            <template x-if="codeSelected"><div class="space-y-4">
+              <div><p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Selected stage</p><h4 class="mt-1 text-lg font-bold text-neutral-900 break-words" x-text="displayName(codeSelected)"></h4></div>
+              <div class="flex flex-wrap gap-2"><span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700" x-text="codeSelected.node_type"></span><span x-show="codeSelected.language" class="px-2 py-0.5 rounded-full text-xs bg-neutral-100 text-neutral-700" x-text="codeSelected.language"></span></div>
+              <p class="text-sm leading-relaxed text-neutral-700" x-text="(codeDetails && codeDetails.node.l0_abstract) || codeSelected.l0_abstract || 'Loading stage details…'"></p>
+              <dl class="space-y-2 text-xs text-neutral-600"><div x-show="codeDetails?.node.relative_path"><dt class="font-semibold text-neutral-800">Location</dt><dd class="font-mono break-all" x-text="codeDetails?.node.relative_path + (codeDetails?.node.line_start ? ':' + codeDetails.node.line_start + '–' + codeDetails.node.line_end : '')"></dd></div><div x-show="codeDetails?.node.signature"><dt class="font-semibold text-neutral-800">Signature</dt><dd class="font-mono break-all" x-text="codeDetails?.node.signature"></dd></div></dl>
+              <div x-show="codeRelations('outgoing').length" class="pt-3 border-t border-neutral-100"><p class="text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">Dependencies and calls</p><template x-for="item in codeRelations('outgoing').slice(0, 8)" :key="item.relation + item.source_uri"><button @click="selectCodeNode(codeNode(item.source_uri))" class="block w-full text-left mb-2 text-xs text-blue-700 hover:underline"><span class="font-semibold" x-text="item.relation"></span> → <span x-text="item.display_name"></span><span x-show="item.source_path" class="text-neutral-400" x-text="' · ' + item.source_path + ':' + item.line_start"></span></button></template></div>
+              <div x-show="codeRelations('incoming').length" class="pt-3 border-t border-neutral-100"><p class="text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">Used by</p><template x-for="item in codeRelations('incoming').slice(0, 8)" :key="item.relation + item.source_uri"><button @click="selectCodeNode(codeNode(item.source_uri))" class="block w-full text-left mb-2 text-xs text-blue-700 hover:underline"><span x-text="item.display_name"></span> <span class="text-neutral-400" x-text="'· ' + item.relation"></span></button></template></div>
+              <p x-show="codeDetails?.node.analysis_source" class="text-xs text-neutral-400" x-text="'Structure: ' + codeDetails.node.analysis_source"></p>
+            </div></template>
+            <div x-show="!codeSelected" class="space-y-3"><p class="text-xs font-bold uppercase tracking-wider text-neutral-500">Start here</p><h4 class="text-lg font-bold text-neutral-900">Select a stage</h4><p class="text-sm text-neutral-500">The detail panel explains what it is, where it lives, and which code it uses or is used by.</p></div>
+            <p x-show="error" x-text="error" class="mt-4 text-sm text-red-600"></p>
+          </aside>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="{{ static('js/graph-lite.js') }}"></script>
+<script src="{{ static('js/kg.js') }}"></script>
+{% endblock %}

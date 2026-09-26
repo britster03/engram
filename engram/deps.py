@@ -8,6 +8,7 @@ status without failing startup).
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from engram.audit import AuditLog
@@ -19,19 +20,21 @@ from engram.models.embeddings import EmbeddingService
 from engram.models.frontier import FrontierLLMProvider
 from engram.models.providers import build_providers
 from engram.retrieval.orchestrator import OrchestratorContext
+from engram.storage import build_control_plane_store
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
+from engram.storage.memory_repository import MemoryRepository
 from engram.storage.neo4j_store import Neo4jStore
+from engram.storage.postgres import PostgresStore
 from engram.storage.redis_cache import SessionCache
-from engram.storage.sqlite import SqliteStore
 from engram.tenancy import TenantRegistry
 
 
 @dataclass
 class AppState:
     cfg: EngramConfig
-    sqlite: SqliteStore
-    fs: FilesystemStore
+    control_plane: PostgresStore
+    fs: FilesystemStore | None
     neo4j: Neo4jStore | InMemoryKnowledgeGraph
     session_cache: SessionCache
     core: CoreModelProvider
@@ -41,6 +44,8 @@ class AppState:
     audit: AuditLog
     embedding_cache: EmbeddingCache
     overview_cache: OverviewCache
+    memory_repository: MemoryRepository | None = None
+    code_ingest_handler: Callable[[str], str] | None = None
 
 
 _lock = threading.Lock()
@@ -49,8 +54,13 @@ _state: AppState | None = None
 
 def build_state(cfg: EngramConfig | None = None) -> AppState:
     cfg = cfg or get_config()
-    sqlite = SqliteStore(cfg.event_ledger.path)
-    fs = FilesystemStore(cfg.filesystem.data_dir, create_dirs=cfg.filesystem.create_dirs)
+    control_plane = build_control_plane_store(cfg)
+    fs = (
+        None
+        if cfg.canonical_memory.enabled
+        else FilesystemStore(cfg.filesystem.data_dir, create_dirs=cfg.filesystem.create_dirs)
+    )
+    memory_repository = MemoryRepository(control_plane)
     if cfg.knowledge_graph.backend == "memory":
         neo4j: Neo4jStore | InMemoryKnowledgeGraph = InMemoryKnowledgeGraph()
     else:
@@ -66,12 +76,13 @@ def build_state(cfg: EngramConfig | None = None) -> AppState:
     overview_cache = OverviewCache(build_cache(redis_url, namespace="overviews"))
     embed = EmbeddingService.get(cfg.gating, cache=embed_cache)
 
-    tenant_registry = TenantRegistry(cfg.event_ledger.path)
+    tenant_registry = TenantRegistry(control_plane)
     tenant_registry.ensure_default(legacy_api_key=cfg.api.api_key)
-    audit = AuditLog(cfg.event_ledger.path)
-    return AppState(
+    audit = AuditLog(control_plane)
+    state = AppState(
         cfg=cfg,
-        sqlite=sqlite,
+        control_plane=control_plane,
+        memory_repository=memory_repository,
         fs=fs,
         neo4j=neo4j,
         session_cache=session_cache,
@@ -83,6 +94,11 @@ def build_state(cfg: EngramConfig | None = None) -> AppState:
         embedding_cache=embed_cache,
         overview_cache=overview_cache,
     )
+    if cfg.canonical_memory.enabled:
+        from engram.ingest.code_ingest import process_code_ingest_job
+
+        state.code_ingest_handler = lambda job_id: process_code_ingest_job(state, job_id)
+    return state
 
 
 def get_state() -> AppState:
@@ -98,13 +114,19 @@ def reset_state() -> None:
     with _lock:
         if _state is not None:
             _state.neo4j.close()
+            if isinstance(_state.control_plane, PostgresStore):
+                _state.control_plane.close()
         _state = None
 
 
 def make_ingest_context(state: AppState) -> IngestContext:
+    if state.fs is None:
+        raise RuntimeError(
+            "legacy filesystem ingestion is disabled; use the canonical Temporal activities"
+        )
     return IngestContext(
         cfg=state.cfg,
-        sqlite=state.sqlite,
+        control_plane=state.control_plane,
         fs=state.fs,
         neo4j=state.neo4j,
         core=state.core,
@@ -120,4 +142,5 @@ def make_orchestrator_context(state: AppState) -> OrchestratorContext:
         core=state.core,
         frontier=state.frontier,
         embed=state.embed,
+        memory_repository=state.memory_repository,
     )

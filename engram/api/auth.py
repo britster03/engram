@@ -31,6 +31,7 @@ def _lookup_tenant(api_key: str):
     legacy single-key path so existing deployments keep working until they
     cut over to tenants."""
     from engram.deps import get_state
+
     try:
         state = get_state()
     except Exception:
@@ -47,6 +48,7 @@ def _lookup_tenant(api_key: str):
     cfg = get_config()
     if cfg.api.api_key and api_key == cfg.api.api_key:
         from engram.tenancy import Tenant, TenantQuotas
+
         return Tenant(
             tenant_id=DEFAULT_TENANT_ID,
             display_name="Default tenant (legacy key)",
@@ -70,8 +72,15 @@ def _extract_bearer(authorization: str | None) -> str:
     return authorization.split(" ", 1)[1].strip()
 
 
-def require_tenant_auth(authorization: str | None = Header(default=None)) -> None:
-    """Dependency: resolve tenant or 401."""
+async def require_tenant_auth(authorization: str | None = Header(default=None)) -> None:
+    """Dependency: resolve tenant or 401.
+
+    Async on purpose: a sync dependency runs in a threadpool worker, and the
+    tenant ContextVar it sets there does NOT propagate to the (also
+    threadpooled) sync endpoint — so every request fell back to `_default`.
+    An async dependency runs in the request's main context, which the endpoint
+    inherits, so `current_tenant_id()` sees the resolved tenant.
+    """
     token = _extract_bearer(authorization)
     tenant = _lookup_tenant(token)
     if tenant is None:

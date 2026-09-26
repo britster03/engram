@@ -18,9 +18,10 @@ from slugify import slugify
 from engram import frontmatter, prompts
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.request_context import model_request_session
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.neo4j_store import Neo4jStore
-from engram.storage.sqlite import SqliteStore
+from engram.storage.postgres import PostgresStore
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def unmerge(
     *,
     fs: FilesystemStore,
     neo4j: Neo4jStore,
-    sqlite: SqliteStore,
+    control_plane: PostgresStore,
     core: CoreModelProvider,
     embed: EmbeddingService,
     merged_uri: str,
@@ -46,7 +47,7 @@ def unmerge(
     raw = fs.read(merged_uri)
     mf = frontmatter.parse(raw)
     merged_abstract = mf.body.strip().splitlines()[0] if mf.body.strip() else ""
-    extractions = _contributing_extractions(sqlite, merged_uri)
+    extractions = _contributing_extractions(control_plane, merged_uri)
     if not extractions:
         # Nothing to split from — degenerate to retire.
         _retire_node(fs, neo4j, merged_uri)
@@ -57,10 +58,11 @@ def unmerge(
         merged_node={"source_uri": merged_uri, "l0_abstract": merged_abstract},
         source_extractions=extractions,
     )
-    result = core.complete(
-        system_prompt=prompt,
-        user_prompt="Return the split JSON.",
-    )
+    with model_request_session(merged_uri):
+        result = core.complete(
+            system_prompt=prompt,
+            user_prompt="Return the split JSON.",
+        )
     out = result.output if isinstance(result.output, dict) else {}
     splits = out.get("splits") or []
     if not splits:
@@ -139,8 +141,7 @@ def unmerge(
     fs.write_atomic(merged_uri, mf.serialize())
     try:
         neo4j.run_template(
-            "MATCH (n:Node {source_uri: $uri}) SET n.status = 'HISTORICAL', "
-            "n.superseded_at = $now",
+            "MATCH (n:Node {source_uri: $uri}) SET n.status = 'HISTORICAL', n.superseded_at = $now",
             {"uri": merged_uri, "now": now},
         )
         for new_uri in new_uris:
@@ -157,9 +158,11 @@ def unmerge(
     return UnmergeResult(merged_uri=merged_uri, split_uris=new_uris)
 
 
-def _contributing_extractions(sqlite: SqliteStore, merged_uri: str) -> list[dict[str, Any]]:
+def _contributing_extractions(
+    control_plane: PostgresStore, merged_uri: str
+) -> list[dict[str, Any]]:
     """Fetch every extraction triplet that linked to `merged_uri` on either side."""
-    conn = sqlite.get_conn()
+    conn = control_plane.get_conn()
     rows = conn.execute(
         "SELECT le.event_id, le.triplet_idx FROM linked_entities le "
         "WHERE le.subject_node_id = ? OR le.object_node_id = ?",
@@ -167,25 +170,27 @@ def _contributing_extractions(sqlite: SqliteStore, merged_uri: str) -> list[dict
     ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
-        extraction = None
         ext_row = conn.execute(
             "SELECT * FROM extractions WHERE event_id = ?", (r["event_id"],)
         ).fetchone()
         if ext_row is None:
             continue
         import json
+
         triplets = json.loads(ext_row["triplets"])
         idx = int(r["triplet_idx"])
         if 0 <= idx < len(triplets):
             trip = triplets[idx]
-            out.append({
-                "event_id": r["event_id"],
-                "subject": trip.get("subject"),
-                "relation": trip.get("relation"),
-                "object": trip.get("object"),
-                "confidence": trip.get("confidence"),
-                "l0_abstract": ext_row["l0_abstract"],
-            })
+            out.append(
+                {
+                    "event_id": r["event_id"],
+                    "subject": trip.get("subject"),
+                    "relation": trip.get("relation"),
+                    "object": trip.get("object"),
+                    "confidence": trip.get("confidence"),
+                    "l0_abstract": ext_row["l0_abstract"],
+                }
+            )
     return out
 
 

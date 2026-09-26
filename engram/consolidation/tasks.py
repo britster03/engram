@@ -15,17 +15,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from engram import frontmatter, prompts, uri as uri_mod
+from engram import frontmatter, prompts
+from engram import uri as uri_mod
 from engram.config import ConsolidationConfig
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
+from engram.models.request_context import model_request_session
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.neo4j_store import Neo4jStore
-from engram.storage.sqlite import SqliteStore
+from engram.storage.postgres import PostgresStore
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +39,7 @@ def handle_regenerate_manifest(
     *,
     node_id: str,
     fs: FilesystemStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Rebuild .manifest for a directory URI."""
     dir_uri = node_id
@@ -86,7 +89,7 @@ def handle_consolidate_overview(
         path = fs.path_for(curi)
         abs_ = _file_abstract(path) if path.is_file() else _directory_summary(fs, curi)
         children_abstracts.append({"source_uri": curi, "abstract": abs_})
-    children_relations = _collect_relations(neo4j, children_uris)
+    children_relations = _collect_relations(neo4j, children_uris, tenant_id=current_tenant_id())
 
     prompt = prompts.render(
         "overview",
@@ -95,10 +98,11 @@ def handle_consolidate_overview(
         children_relations=children_relations,
         overview_max_tokens=cfg.overview_max_tokens,
     )
-    result = core.complete(
-        system_prompt=prompt,
-        user_prompt="Return the overview as Markdown.",
-    )
+    with model_request_session(dir_uri):
+        result = core.complete(
+            system_prompt=prompt,
+            user_prompt="Return the overview as Markdown.",
+        )
     text: str
     if isinstance(result.output, dict) and "overview" in result.output:
         text = str(result.output["overview"])
@@ -127,13 +131,21 @@ def handle_consolidate_overview(
 def handle_propagate_overview(
     *,
     node_id: str,
-    sqlite: SqliteStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    control_plane: PostgresStore,
+    cfg: ConsolidationConfig,
 ) -> None:
     """Enqueue CONSOLIDATE_OVERVIEW for each ancestor up to the root, deduped."""
+    from engram.tenancy import current_tenant_id
+
+    tenant_id = current_tenant_id()
     ancestor = uri_mod.parent_uri(node_id)
     while ancestor is not None:
-        sqlite.enqueue_task(node_id=ancestor, task_type="CONSOLIDATE_OVERVIEW", priority=5)
+        control_plane.enqueue_task(
+            node_id=ancestor,
+            task_type="CONSOLIDATE_OVERVIEW",
+            priority=5,
+            tenant_id=tenant_id,
+        )
         ancestor = uri_mod.parent_uri(ancestor)
 
 
@@ -147,8 +159,8 @@ _COMPOUND_TOKEN = re.compile(r"\s+and\s+|\s+&\s+", re.IGNORECASE)
 def handle_atomize(
     *,
     node_id: str,
-    sqlite: SqliteStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    control_plane: PostgresStore,
+    cfg: ConsolidationConfig,
 ) -> None:
     """Split compound objects/subjects in an extraction into independent triplets.
 
@@ -156,13 +168,15 @@ def handle_atomize(
     rewrite `extractions.triplets`; for URI form we walk `linked_entities` back
     to events and atomize each.
     """
-    event_ids = _event_ids_for(sqlite, node_id)
+    event_ids = _event_ids_for(control_plane, node_id)
     if not event_ids:
         return
     for event_id in event_ids:
-        row = sqlite.get_conn().execute(
-            "SELECT triplets FROM extractions WHERE event_id = ?", (event_id,)
-        ).fetchone()
+        row = (
+            control_plane.get_conn()
+            .execute("SELECT triplets FROM extractions WHERE event_id = ?", (event_id,))
+            .fetchone()
+        )
         if row is None:
             continue
         triplets: list[dict[str, Any]] = json.loads(row["triplets"])
@@ -177,7 +191,7 @@ def handle_atomize(
                 if piece:
                     atomic.append({**trip, "object": piece})
         if len(atomic) != len(triplets):
-            with sqlite.transaction() as conn:
+            with control_plane.transaction() as conn:
                 conn.execute(
                     "UPDATE extractions SET triplets = ? WHERE event_id = ?",
                     (json.dumps(atomic), event_id),
@@ -187,10 +201,10 @@ def handle_atomize(
 def handle_normalize(
     *,
     node_id: str,
-    sqlite: SqliteStore,
+    control_plane: PostgresStore,
     neo4j: Neo4jStore,
     embed: EmbeddingService,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Canonicalise entity names AND relation labels (§6.4.2).
 
@@ -204,11 +218,13 @@ def handle_normalize(
     from engram.relations import vocabulary
 
     vocab = vocabulary()
-    event_ids = _event_ids_for(sqlite, node_id)
+    event_ids = _event_ids_for(control_plane, node_id)
     for event_id in event_ids:
-        row = sqlite.get_conn().execute(
-            "SELECT triplets FROM extractions WHERE event_id = ?", (event_id,)
-        ).fetchone()
+        row = (
+            control_plane.get_conn()
+            .execute("SELECT triplets FROM extractions WHERE event_id = ?", (event_id,))
+            .fetchone()
+        )
         if row is None:
             continue
         triplets: list[dict[str, Any]] = json.loads(row["triplets"])
@@ -225,7 +241,7 @@ def handle_normalize(
                 canon_rel = vocab.canonicalise(rel, embed)
                 if canon_rel and canon_rel != rel:
                     trip["relation_canonical"] = canon_rel
-        with sqlite.transaction() as conn:
+        with control_plane.transaction() as conn:
             conn.execute(
                 "UPDATE extractions SET triplets = ? WHERE event_id = ?",
                 (json.dumps(triplets), event_id),
@@ -236,7 +252,7 @@ def handle_temporalize(
     *,
     node_id: str,
     fs: FilesystemStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Attach temporal metadata to a memory file when a date is parseable from
     the body. Very conservative — only writes when a single unambiguous date
@@ -267,22 +283,22 @@ def handle_temporalize(
 def handle_integrate(
     *,
     node_id: str,
-    sqlite: SqliteStore,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    control_plane: PostgresStore,
+    cfg: ConsolidationConfig,
 ) -> None:
-    """Mark an event as re-runnable so the next reconciliation pass re-indexes.
+    """Requeue affected events so indexing replays with revised extraction data.
 
-    ATOMIZE/NORMALIZE/TEMPORALIZE mutate SQLite-side data; INTEGRATE reruns
-    step 6 (KG index update) for each affected event.
+    ATOMIZE/NORMALIZE/TEMPORALIZE mutate control-plane data; INTEGRATE reruns
+    step 6 (KG index update) for each affected event. The store operation also
+    creates a new Temporal workflow generation when PostgreSQL is active.
     """
-    event_ids = _event_ids_for(sqlite, node_id)
+    event_ids = _event_ids_for(control_plane, node_id)
     for event_id in event_ids:
-        with sqlite.transaction() as conn:
-            conn.execute(
-                "UPDATE events SET status = 'GATED_STORE', processed_at = NULL "
-                "WHERE event_id = ?",
-                (event_id,),
-            )
+        # Prevent the ingest recovery fast-path from treating this as a
+        # step-7-only replay; normalized triplets must be indexed again.
+        if control_plane.get_fs_outbox(event_id) is not None:
+            control_plane.fs_outbox_mark(event_id, "WRITTEN")
+        control_plane.requeue_event(event_id, increment_retry=False)
 
 
 def handle_unmerge(
@@ -290,10 +306,10 @@ def handle_unmerge(
     node_id: str,
     fs: FilesystemStore,
     neo4j: Neo4jStore,
-    sqlite: SqliteStore,
+    control_plane: PostgresStore,
     core: CoreModelProvider,
     embed: EmbeddingService,
-    cfg: ConsolidationConfig,  # noqa: ARG001
+    cfg: ConsolidationConfig,
 ) -> None:
     """Split a merged ENTITY back into its contributing sources (§8.6).
 
@@ -301,27 +317,44 @@ def handle_unmerge(
     request. Also enqueues overview + manifest regen for touched ancestors.
     """
     from engram.ingest.unmerge import unmerge as do_unmerge
+    from engram.tenancy import current_tenant_id
 
+    tenant_id = current_tenant_id()
     result = do_unmerge(
-        fs=fs, neo4j=neo4j, sqlite=sqlite, core=core, embed=embed,
+        fs=fs,
+        neo4j=neo4j,
+        control_plane=control_plane,
+        core=core,
+        embed=embed,
         merged_uri=node_id,
     )
     for uri in [result.merged_uri, *result.split_uris]:
         parent = uri_mod.parent_uri(uri)
         if parent:
-            sqlite.enqueue_task(node_id=parent, task_type="CONSOLIDATE_OVERVIEW", priority=5)
-            sqlite.enqueue_task(node_id=parent, task_type="REGENERATE_MANIFEST", priority=5)
+            control_plane.enqueue_task(
+                node_id=parent,
+                task_type="CONSOLIDATE_OVERVIEW",
+                priority=5,
+                tenant_id=tenant_id,
+            )
+            control_plane.enqueue_task(
+                node_id=parent,
+                task_type="REGENERATE_MANIFEST",
+                priority=5,
+                tenant_id=tenant_id,
+            )
 
 
 # ----------------------------------------------------------------------
 # Helpers for atomize / normalize / integrate
 # ----------------------------------------------------------------------
 
-def _event_ids_for(sqlite: SqliteStore, node_id: str) -> list[str]:
+
+def _event_ids_for(control_plane: PostgresStore, node_id: str) -> list[str]:
     """Resolve `node_id` to the list of contributing event_ids."""
     if node_id.startswith("evt-"):
         return [node_id]
-    conn = sqlite.get_conn()
+    conn = control_plane.get_conn()
     rows = conn.execute(
         "SELECT DISTINCT event_id FROM linked_entities "
         "WHERE subject_node_id = ? OR object_node_id = ?",
@@ -334,7 +367,10 @@ def _canonicalise(neo4j: Neo4jStore, embed: EmbeddingService, name: str) -> str 
     vec = embed.embed(name)
     try:
         hits = neo4j.vector_search(
-            vec, k=3, uri_prefix="mem://user/entities/", dormant_floor=0.0,
+            vec,
+            k=3,
+            uri_prefix="mem://user/entities/",
+            dormant_floor=0.0,
         )
     except Exception:
         return None
@@ -346,9 +382,7 @@ def _canonicalise(neo4j: Neo4jStore, embed: EmbeddingService, name: str) -> str 
     return None
 
 
-_DATE_RE = re.compile(
-    r"\b(?P<year>20\d{2})-(?P<month>\d{2})-(?P<day>\d{2})\b"
-)
+_DATE_RE = re.compile(r"\b(?P<year>20\d{2})-(?P<month>\d{2})-(?P<day>\d{2})\b")
 
 
 def _extract_iso_date(text: str) -> str | None:
@@ -369,7 +403,7 @@ def _file_abstract(path: Path) -> str:
     try:
         text = path.read_text(encoding="utf-8")
         mf = frontmatter.parse(text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return path.name
     body = mf.body.strip()
     if not body:
@@ -384,21 +418,28 @@ def _directory_summary(fs: FilesystemStore, dir_uri: str) -> str:
     return "(directory)"
 
 
-def _collect_relations(neo4j: Neo4jStore, uris: list[str]) -> list[dict]:
+def _collect_relations(
+    neo4j: Neo4jStore,
+    uris: list[str],
+    *,
+    tenant_id: str,
+) -> list[dict]:
     if not uris:
         return []
     relations: list[dict] = []
     for uri in uris:
         try:
             rows = neo4j.run_template(
-                "MATCH (n:Node {source_uri: $uri})-[r:RELATES_TO]->(m:Node) "
-                "WHERE r.status = 'ACTIVE' AND m.status = 'ACTIVE' "
+                "MATCH (n:Node {tenant_id: $tenant_id, source_uri: $uri})"
+                "-[r:RELATES_TO]->(m:Node {tenant_id: $tenant_id}) "
+                "WHERE r.tenant_id = $tenant_id AND r.status = 'ACTIVE' "
+                "AND m.status = 'ACTIVE' "
                 "RETURN n.source_uri AS subject_uri, r.relation_label AS relation, "
                 "m.source_uri AS object_uri LIMIT 25",
-                {"uri": uri},
+                {"tenant_id": tenant_id, "uri": uri},
                 timeout_s=5,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             rows = []
         relations.extend(rows)
     return relations

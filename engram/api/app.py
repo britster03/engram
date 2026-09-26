@@ -19,17 +19,17 @@ Boot order:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from engram import metrics as metrics_mod
+from engram.admin import routes as admin_ui_routes
 from engram.api import schemas
 from engram.api.auth import AuthDep
 from engram.api.body_limit import BodySizeLimitMiddleware
@@ -37,9 +37,26 @@ from engram.api.rate_limit import RateLimitMiddleware
 from engram.api.request_id import RequestIdMiddleware
 from engram.api.routes import (
     admin as admin_route,
+)
+from engram.api.routes import (
+    bulk_ingest as bulk_ingest_route,
+)
+from engram.api.routes import (
+    chat as chat_route,
+)
+from engram.api.routes import (
     consolidation as consolidation_route,
+)
+from engram.api.routes import (
     events as events_route,
+)
+from engram.api.routes import (
+    kg as kg_route,
+)
+from engram.api.routes import (
     memories as memories_route,
+)
+from engram.api.routes import (
     sessions as sessions_route,
 )
 from engram.config import get_config
@@ -50,7 +67,6 @@ from engram.consolidation.worker import start_background as start_consolidation
 from engram.deps import (
     AppState,
     get_state,
-    make_ingest_context,
     make_orchestrator_context,
     reset_state,
 )
@@ -58,8 +74,8 @@ from engram.ingest.durable_worker import DurableIngestWorker
 from engram.ingest.durable_worker import start_background as start_durable_ingest
 from engram.logging_setup import configure_logging
 from engram.resilience import breaker_snapshot
+from engram.retrieval.orchestrator import run_query
 from engram.tracing import configure_tracing
-from engram.retrieval.orchestrator import _assemble_msc, run_query
 from engram.uri import pair_id as pair_id_fn
 
 log = logging.getLogger(__name__)
@@ -84,43 +100,55 @@ async def _lifespan(app: FastAPI):
         return
 
     redis_url = (
-        state.cfg.session_cache.redis_url
-        if state.cfg.session_cache.backend == "redis"
-        else None
+        state.cfg.session_cache.redis_url if state.cfg.session_cache.backend == "redis" else None
     )
 
-    if state.cfg.consolidation.poll_interval_seconds > 0:
+    # Production Temporal deployments keep all durable work out of API
+    # processes. The PostgreSQL polling workers remain available when Temporal
+    # is intentionally disabled.
+    legacy_workers = not state.cfg.temporal.enabled
+    legacy_fs = state.fs
+    if legacy_workers and legacy_fs is None:
+        raise RuntimeError("legacy background workers require the filesystem store")
+
+    if legacy_workers and state.cfg.consolidation.poll_interval_seconds > 0:
         cons_ctx = ConsolidationContext(
-            cfg=state.cfg, sqlite=state.sqlite, fs=state.fs, neo4j=state.neo4j,
-            core=state.core, embed=state.embed,
+            cfg=state.cfg,
+            control_plane=state.control_plane,
+            fs=legacy_fs,
+            neo4j=state.neo4j,
+            core=state.core,
+            embed=state.embed,
             overview_cache=state.overview_cache,
+            memory_repository=state.memory_repository,
         )
         _cons_handle = start_consolidation(cons_ctx, redis_url=redis_url)
         log.info("consolidation worker started (leased=%s)", bool(redis_url))
 
-    if state.cfg.event_ledger.reconciliation_interval_seconds > 0:
-        def _drive_event_in_worker(event_id: str) -> None:
-            try:
-                ctx = make_ingest_context(state)
-                from engram.ingest.worker import process_event
-                process_event(ctx, event_id)
-            except Exception:
-                log.exception("reconciliation-driven ingest failed for %s", event_id)
-
+    if legacy_workers and state.cfg.event_ledger.reconciliation_interval_seconds > 0:
         rec_ctx = ReconciliationContext(
-            cfg=state.cfg, sqlite=state.sqlite,
-            drive_event=_drive_event_in_worker, neo4j=state.neo4j,
+            cfg=state.cfg,
+            control_plane=state.control_plane,
+            neo4j=state.neo4j,
         )
         _recon_handle = start_reconciliation(rec_ctx, redis_url=redis_url)
         log.info("reconciliation worker started (leased=%s)", bool(redis_url))
 
-    _ingest_worker = start_durable_ingest(
-        cfg=state.cfg, sqlite=state.sqlite, fs=state.fs, neo4j=state.neo4j,
-        core=state.core, embed=state.embed,
-        max_concurrent=state.cfg.consolidation.max_concurrent_tasks,
-        poll_interval_seconds=1.0,
-    )
-    log.info("durable ingest worker started")
+    if legacy_workers:
+        assert legacy_fs is not None
+        _ingest_worker = start_durable_ingest(
+            cfg=state.cfg,
+            control_plane=state.control_plane,
+            fs=legacy_fs,
+            neo4j=state.neo4j,
+            core=state.core,
+            embed=state.embed,
+            max_concurrent=state.cfg.consolidation.max_concurrent_tasks,
+            poll_interval_seconds=1.0,
+        )
+        log.info("legacy durable ingest worker started")
+    else:
+        log.info("Temporal orchestration enabled; API background workers disabled")
 
     try:
         yield
@@ -154,11 +182,7 @@ def _install_middleware() -> None:
         RateLimitMiddleware,
         query_per_min=cfg.api.rate_limit_query_per_minute,
         ingest_per_min=cfg.api.rate_limit_ingest_per_minute,
-        redis_url=(
-            cfg.session_cache.redis_url
-            if cfg.session_cache.backend == "redis"
-            else None
-        ),
+        redis_url=(cfg.session_cache.redis_url if cfg.session_cache.backend == "redis" else None),
     )
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RequestIdMiddleware)
@@ -169,19 +193,24 @@ _install_middleware()
 app.include_router(sessions_route.router)
 app.include_router(memories_route.router)
 app.include_router(events_route.router)
+app.include_router(bulk_ingest_route.router)
+app.include_router(kg_route.router)
 app.include_router(consolidation_route.router)
 app.include_router(admin_route.router)
+app.include_router(chat_route.router)
+app.include_router(admin_ui_routes.admin_router)
 
 
 # ----------------------------------------------------------------------
 # Observability
 # ----------------------------------------------------------------------
 
+
 @app.get("/metrics", include_in_schema=False)
 def metrics_endpoint() -> PlainTextResponse:
     try:
         state = get_state()
-        metrics_mod.consolidation_queue_depth.set(state.sqlite.queue_depth())
+        metrics_mod.consolidation_queue_depth.set(state.control_plane.queue_depth())
         kg_counts = _kg_counts_safe(state)
         if kg_counts:
             metrics_mod.kg_node_count.set(kg_counts["nodes"])
@@ -205,13 +234,13 @@ def _kg_counts_safe(state: AppState) -> dict[str, int] | None:
         return None
     if not rows:
         return None
-    return {"nodes": int(rows[0].get("nodes", 0)),
-            "edges": int(rows[0].get("edges", 0))}
+    return {"nodes": int(rows[0].get("nodes", 0)), "edges": int(rows[0].get("edges", 0))}
 
 
 # ----------------------------------------------------------------------
 # Health — liveness vs readiness split
 # ----------------------------------------------------------------------
+
 
 @app.get("/livez", include_in_schema=False)
 def livez() -> PlainTextResponse:
@@ -225,28 +254,31 @@ def livez() -> PlainTextResponse:
 
 @app.get("/readyz", include_in_schema=False)
 def readyz() -> JSONResponse:
-    """Readiness probe — 200 only when every external dependency is reachable.
+    """Readiness probe for dependencies required to serve canonical memory.
 
-    Orchestrators should gate traffic on this. Failures here should
-    remove the pod from the service load balancer but NOT restart it.
+    PostgreSQL is authoritative in V2. Neo4j and Redis are reported as
+    capabilities, but their failure must not make exact canonical reads
+    unavailable or prevent durable ingestion from being accepted.
     """
     try:
         state = get_state()
     except Exception as err:
-        return JSONResponse(
-            {"status": "not_ready", "reason": str(err)[:500]}, status_code=503
-        )
-    components = {
-        "sqlite": True,  # get_state() succeeded → SQLite is writable
-        "neo4j": state.neo4j.ping(),
-        "redis": state.session_cache.ping(),
-        "filesystem": state.fs.data_dir.exists(),
-    }
-    ready = all(components.values())
+        return JSONResponse({"status": "not_ready", "reason": str(err)[:500]}, status_code=503)
+    components = _component_health(state)
+    required = (
+        ("postgres", "configuration") if state.cfg.canonical_memory.enabled else tuple(components)
+    )
+    ready = all(components.get(name, False) for name in required)
     return JSONResponse(
         {
             "status": "ready" if ready else "not_ready",
             "components": components,
+            "required_components": list(required),
+            "degraded_capabilities": [
+                name
+                for name, available in components.items()
+                if not available and name not in required
+            ],
             "breakers": breaker_snapshot(),
         },
         status_code=200 if ready else 503,
@@ -261,15 +293,37 @@ def health() -> schemas.HealthResponse:
         state = get_state()
     except Exception:
         log.exception("failed to build app state")
-        return schemas.HealthResponse(
-            status="unavailable", components={"startup": False}
-        )
-    components["sqlite"] = True
-    components["neo4j"] = state.neo4j.ping()
-    components["redis"] = state.session_cache.ping()
-    components["filesystem"] = state.fs.data_dir.exists()
+        return schemas.HealthResponse(status="unavailable", components={"startup": False})
+    components.update(_component_health(state))
     overall = "healthy" if all(components.values()) else "degraded"
     return schemas.HealthResponse(status=overall, components=components)
+
+
+def _component_health(state: AppState) -> dict[str, bool]:
+    components = {
+        "postgres": _control_plane_ready(state),
+        "configuration": True,
+        "neo4j_projection": _safe_ping(state.neo4j),
+        "redis_cache": _safe_ping(state.session_cache),
+    }
+    if not state.cfg.canonical_memory.enabled:
+        components["filesystem"] = bool(state.fs and state.fs.data_dir.exists())
+    return components
+
+
+def _safe_ping(component: object) -> bool:
+    try:
+        return bool(component.ping())  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+
+def _control_plane_ready(state: AppState) -> bool:
+    """Check the PostgreSQL control plane with a cheap query."""
+    try:
+        return state.control_plane.get_conn().execute("SELECT 1").fetchone() is not None
+    except Exception:
+        return False
 
 
 @app.get("/api/v1/config", response_model=schemas.ConfigResponse, dependencies=[AuthDep])
@@ -293,17 +347,16 @@ def get_config_endpoint() -> schemas.ConfigResponse:
 # Ingest (§11.3)
 # ----------------------------------------------------------------------
 
-@app.post(
-    "/api/v1/ingest", response_model=schemas.IngestResponse, dependencies=[AuthDep]
-)
-def ingest(req: schemas.IngestRequest) -> JSONResponse:
-    """Durable ingest: the only synchronous work is the SQLite INSERT.
 
-    Downstream processing runs on the durable ingest worker which polls
-    the event ledger. If this process crashes after the INSERT, the worker
-    (this or a replacement) picks the event up on its next poll.
+@app.post("/api/v1/ingest", response_model=schemas.IngestResponse, dependencies=[AuthDep])
+def ingest(req: schemas.IngestRequest) -> JSONResponse:
+    """Durable ingest: synchronously commit to the configured control plane.
+
+    Production creates the PostgreSQL event and Temporal dispatch outbox in
+    one transaction. Non-Temporal deployments use the PostgreSQL durable poller.
     """
     from engram.tenancy import current_tenant_id
+
     state = get_state()
     tid = current_tenant_id()
     _check_backpressure(state, tenant_id=tid)
@@ -311,11 +364,20 @@ def ingest(req: schemas.IngestRequest) -> JSONResponse:
     user_idx = pair.user.turn_idx or 0
     asst_idx = pair.assistant.turn_idx or (user_idx + 1)
     pid = pair_id_fn(req.session_id or "stateless", user_idx, asst_idx)
-    event_id, _ = state.sqlite.record_event(
-        pair_id=pid, session_id=req.session_id, source=req.source,
-        event_type="INGEST", payload=req.model_dump(), tenant_id=tid,
+    event_id, _ = state.control_plane.record_event(
+        pair_id=pid,
+        session_id=req.session_id,
+        source=req.source,
+        event_type="INGEST",
+        payload=req.model_dump(),
+        tenant_id=tid,
     )
-    response = schemas.IngestResponse(event_id=event_id, pair_id=pid, status="RECEIVED")
+    response = schemas.IngestResponse(
+        event_id=event_id,
+        pair_id=pid,
+        status="RECEIVED",
+        projection_status="PENDING",
+    )
     return JSONResponse(content=response.model_dump(), status_code=status.HTTP_202_ACCEPTED)
 
 
@@ -326,6 +388,7 @@ def ingest(req: schemas.IngestRequest) -> JSONResponse:
 )
 def ingest_batch(batch: list[schemas.IngestRequest]) -> JSONResponse:
     from engram.tenancy import current_tenant_id
+
     if len(batch) > 100:
         raise HTTPException(status_code=400, detail="max batch size is 100")
     state = get_state()
@@ -337,17 +400,28 @@ def ingest_batch(batch: list[schemas.IngestRequest]) -> JSONResponse:
         user_idx = pair.user.turn_idx or 0
         asst_idx = pair.assistant.turn_idx or (user_idx + 1)
         pid = pair_id_fn(req.session_id or "stateless", user_idx, asst_idx)
-        event_id, _ = state.sqlite.record_event(
-            pair_id=pid, session_id=req.session_id, source=req.source,
-            event_type="INGEST", payload=req.model_dump(), tenant_id=tid,
+        event_id, _ = state.control_plane.record_event(
+            pair_id=pid,
+            session_id=req.session_id,
+            source=req.source,
+            event_type="INGEST",
+            payload=req.model_dump(),
+            tenant_id=tid,
         )
-        results.append({"event_id": event_id, "pair_id": pid, "status": "RECEIVED"})
+        results.append(
+            {
+                "event_id": event_id,
+                "pair_id": pid,
+                "status": "RECEIVED",
+                "projection_status": "PENDING",
+            }
+        )
     return JSONResponse(content=results, status_code=status.HTTP_202_ACCEPTED)
 
 
 def _check_backpressure(state: AppState, *, tenant_id: str | None = None) -> None:
     max_backlog = state.cfg.consolidation.max_backlog
-    depth = state.sqlite.queue_depth(tenant_id=tenant_id)
+    depth = state.control_plane.queue_depth(tenant_id=tenant_id)
     if depth > max_backlog:
         raise HTTPException(
             status_code=503,
@@ -359,6 +433,7 @@ def _check_backpressure(state: AppState, *, tenant_id: str | None = None) -> Non
 # ----------------------------------------------------------------------
 # Query (§11.2) — supports streaming via SSE when stream=true
 # ----------------------------------------------------------------------
+
 
 @app.post("/api/v1/query", dependencies=[AuthDep])
 def query(req: schemas.QueryRequest):
@@ -392,12 +467,25 @@ def query(req: schemas.QueryRequest):
             decision=md.l0_decision,
             reason=(md.l0_reason or "").split(":", 1)[0],
         ).inc()
+    metrics_mod.answerability.labels(state=result.answerability).inc()
+    for rejection in md.missing_evidence:
+        reason = rejection.split(":", 1)[0][:80] or "unknown"
+        metrics_mod.canonical_verification_rejections.labels(reason=reason).inc()
 
     if not req.stream:
         return schemas.QueryResponse(
             answer=result.answer,
             session_id=req.session_id,
             retrieval_metadata=md.to_dict(),
+            answerability=result.answerability,
+            sources=[item.model_dump(mode="json") for item in result.verified_evidence],
+            conflicts=list(md.conflicts),
+            verification_rejections=list(md.missing_evidence),
+            route_metadata={
+                "selected": md.retrieval_route,
+                "attempted": list(md.routes_attempted),
+            },
+            projection_metadata={"canonical_revision": md.canonical_revision},
         )
 
     # Streaming: emit the buffered answer as a single SSE event and close.
@@ -419,23 +507,16 @@ def _sse_query_stream(ctx, result, req):
       event: done               — final marker
     """
     import json as _json
+
     md = result.retrieval_metadata.to_dict()
     yield f"event: metadata\ndata: {_json.dumps(md)}\n\n"
 
-    # Re-run frontier as a streaming call so the client sees incremental tokens.
-    # If the provider's stream fails, fall back to sending the buffered answer.
+    # Stream the buffered answer so the response matches the verdict already produced.
     try:
-        msc = _assemble_msc(
-            session_context=req.session_context,
-            ltm_blocks=[],  # MSC already informed the buffered answer; use it as-is
-            user_query=req.query,
-        )
-        # Prefer streaming the buffered answer verbatim for correctness — the
-        # buffered call already committed to a specific verdict/answer.
         answer = result.answer or ""
         chunk = 200
         for i in range(0, len(answer), chunk):
-            yield f"event: delta\ndata: {_json.dumps({'text': answer[i:i+chunk]})}\n\n"
+            yield f"event: delta\ndata: {_json.dumps({'text': answer[i : i + chunk]})}\n\n"
     except Exception as err:
         log.exception("streaming failed")
         yield f"event: error\ndata: {_json.dumps({'error': str(err)})}\n\n"

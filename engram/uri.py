@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from uuid import UUID
 
 from slugify import slugify
 
 MEM_SCHEME = "mem://"
+CANONICAL_MEMORY_PREFIX = "mem://memory/"
 _URI_RE = re.compile(r"^mem://([a-zA-Z0-9][a-zA-Z0-9_\-./]*)/?$")
 
 
@@ -24,7 +26,7 @@ def normalize_uri(uri: str) -> str:
     """Ensure a mem:// URI is well-formed and ends with '/' for directories."""
     if not uri.startswith(MEM_SCHEME):
         raise UriError(f"not a mem:// URI: {uri!r}")
-    body = uri[len(MEM_SCHEME):]
+    body = uri[len(MEM_SCHEME) :]
     body = body.strip("/")
     if not body:
         raise UriError("empty mem:// URI")
@@ -33,10 +35,44 @@ def normalize_uri(uri: str) -> str:
     return f"{MEM_SCHEME}{body}"
 
 
+def canonical_memory_uri(memory_id: str | UUID) -> str:
+    """Return the storage-independent V2 URI for a canonical memory UUID."""
+
+    try:
+        canonical_id = UUID(str(memory_id))
+    except (TypeError, ValueError, AttributeError) as err:
+        raise UriError(f"invalid canonical memory UUID: {memory_id!r}") from err
+    return f"{CANONICAL_MEMORY_PREFIX}{canonical_id}"
+
+
+def canonical_memory_id(uri: str) -> UUID:
+    """Parse a V2 canonical URI without interpreting it as a file path."""
+
+    normalized = normalize_uri(uri)
+    if not normalized.startswith(CANONICAL_MEMORY_PREFIX):
+        raise UriError(f"not a canonical memory URI: {uri!r}")
+    return UUID(normalized.removeprefix(CANONICAL_MEMORY_PREFIX))
+
+
+def is_legacy_file_uri(uri: str) -> bool:
+    """Identify retired filesystem-shaped references used by V1."""
+
+    try:
+        normalized = normalize_uri(uri)
+    except UriError:
+        return False
+    return normalized.casefold().endswith(".md")
+
+
 def uri_to_path(uri: str, data_dir: str | Path) -> Path:
     """Translate mem://user/entities/alice/overview.md → data_dir/user/entities/alice/overview.md."""
-    uri = normalize_uri(uri) if is_mem_uri(uri) else f"{MEM_SCHEME}{uri.lstrip('/')}"
-    body = uri[len(MEM_SCHEME):]
+    cleaned = uri.replace("mem:\\\\", "mem://").replace("mem:\\", "mem://")
+    while cleaned.startswith("mem://mem://"):
+        cleaned = cleaned[6:]
+    cleaned = (
+        normalize_uri(cleaned) if is_mem_uri(cleaned) else f"{MEM_SCHEME}{cleaned.lstrip('/')}"
+    )
+    body = cleaned[len(MEM_SCHEME) :]
     return Path(data_dir) / body
 
 
@@ -54,7 +90,7 @@ def path_to_uri(path: str | Path, data_dir: str | Path) -> str:
 def parent_uri(uri: str) -> str | None:
     """Return the parent directory URI, or None if already at root."""
     uri = normalize_uri(uri)
-    body = uri[len(MEM_SCHEME):]
+    body = uri[len(MEM_SCHEME) :]
     if "/" not in body:
         return None
     parent = body.rsplit("/", 1)[0]
@@ -64,10 +100,12 @@ def parent_uri(uri: str) -> str | None:
 def uri_depth(uri: str) -> int:
     """Number of path segments below the root (mem://user → 1, mem://user/x → 2)."""
     uri = normalize_uri(uri)
-    return len(uri[len(MEM_SCHEME):].split("/"))
+    return len(uri[len(MEM_SCHEME) :].split("/"))
 
 
-def semantic_filename(entity_or_episode_slug: str, one_line_summary: str, max_len: int = 120) -> str:
+def semantic_filename(
+    entity_or_episode_slug: str, one_line_summary: str, max_len: int = 120
+) -> str:
     """Build the per-file semantic filename used by §6.1.2:
     {entity_slug}_{summary_slug}.md or {YYYY-MM-DD}_{summary_slug}.md.
 
