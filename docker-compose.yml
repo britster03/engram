@@ -1,7 +1,91 @@
 services:
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${ENGRAM_DB_PASSWORD:?Set ENGRAM_DB_PASSWORD}}
+      ENGRAM_DB_PASSWORD: ${ENGRAM_DB_PASSWORD:?Set ENGRAM_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:${ENGRAM_DEV_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  temporal-schema:
+    image: temporalio/admin-tools:${TEMPORAL_ADMIN_VERSION:-1.30.6}
+    environment:
+      ENGRAM_DB_PASSWORD: ${ENGRAM_DB_PASSWORD:?Set ENGRAM_DB_PASSWORD}
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        (temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal setup-schema --version 0.0 ||
+         temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned) &&
+        temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned &&
+        (temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal_visibility setup-schema --version 0.0 ||
+         temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned) &&
+        temporal-sql-tool --plugin postgres12 --endpoint postgres --port 5432 --user temporal_app --password "$${ENGRAM_DB_PASSWORD}" --database temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+
+  temporal:
+    image: temporalio/server:${TEMPORAL_SERVER_VERSION:-1.30.4.1}
+    environment:
+      DB: postgres12
+      DBNAME: temporal
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: temporal_app
+      POSTGRES_PWD: ${ENGRAM_DB_PASSWORD:?Set ENGRAM_DB_PASSWORD}
+      VISIBILITY_DBNAME: temporal_visibility
+      VISIBILITY_POSTGRES_SEEDS: postgres
+      VISIBILITY_POSTGRES_USER: temporal_app
+      VISIBILITY_POSTGRES_PWD: ${ENGRAM_DB_PASSWORD:?Set ENGRAM_DB_PASSWORD}
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
+    volumes:
+      - ./deploy/temporal/dynamicconfig/docker.yaml:/etc/temporal/config/dynamicconfig/docker.yaml:ro
+    ports:
+      - "127.0.0.1:7233:7233"
+    depends_on:
+      temporal-schema: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+
+  temporal-namespace:
+    image: temporalio/admin-tools:${TEMPORAL_ADMIN_VERSION:-1.30.6}
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        temporal operator namespace describe --namespace engram-dev ||
+        temporal operator namespace create --namespace engram-dev --retention 14d
+    restart: on-failure:5
+
+  temporal-ui:
+    image: temporalio/ui:2.36.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: engram-dev
+      TEMPORAL_DEFAULT_NAMESPACE: engram-dev
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      temporal: { condition: service_healthy }
+
   neo4j:
     image: neo4j:5.24-community
-    container_name: engram-neo4j
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -25,7 +109,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: engram-redis
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
@@ -38,6 +121,7 @@ services:
       retries: 5
 
 volumes:
+  postgres_data:
   neo4j_data:
   neo4j_logs:
   redis_data:

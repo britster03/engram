@@ -1,0 +1,1 @@
+{"seed":42,"pilot":{"conversations":["conv-26"],"questions":25,"questions_per_category":5},"validation":{"conversations":["conv-26","conv-30"],"questions":50,"questions_per_category":10,"selection":"pooled stratified sample"},"full":{"questions":1986,"canonical_evaluations":1986,"routing_evaluations":3471,"retrieval_comparison_evaluations":9930}}

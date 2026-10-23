@@ -198,20 +198,27 @@ POST /api/v1/query
 ### Session lifecycle (§9.1)
 
 ```
-  ACTIVE  ─── window_threshold_ratio breached? ───▶  WINDOWED
+  ACTIVE  ─── context tokens >= configured trigger? ───▶ WINDOWED
     │                                                    │
     │  close or timeout                                   │  close or timeout
     ▼                                                    ▼
   COMMITTING ─────────── (drain + SESSION_SUMMARY) ────▶ COMMITTED
 ```
 
-* WINDOWED triggers an **auto-compaction** via the Core Model
-  (`prompts/session_compact.j2`). The oldest half of the uncompacted turns
-  gets summarised; the original turns are **re-enqueued** as INGEST events
-  (source=`session_compact`) so the authoritative ingest pipeline still
-  sees the raw turns (§8.3.2).
-* COMMITTING writes a SESSION_SUMMARY node to the KG, drains the ingest
-  pipeline, then deletes the Redis key.
+* Accepted turns reaching the token threshold (default **64,000**) enqueue a
+  tenant-scoped `SESSION_COMPACT` task in the same PostgreSQL transaction.
+  Consolidation workers use the durable snapshot and Temporal retries.
+* Compaction selects the oldest complete exchanges until the remaining active
+  context plus reserved summary space fits the configured target (default
+  **32,000 tokens**). It replaces the previous summary with a bounded rolling
+  summary. Original turns and ingestion eligibility remain unchanged.
+* Publication checks the source hash, previous summary, boundary, and session
+  status under the session lock. It preserves concurrently appended turns and
+  commits the summary, boundary, and idempotent raw-turn handoff atomically.
+* COMMITTING uses the same bounded batching for its durable SESSION_SUMMARY.
+  Original records remain the authoritative evidence for retrieval.
+  See [TOKEN_COMPACTION.md](TOKEN_COMPACTION.md) for environment configuration,
+  tokenizer readiness, validation, and the worker-first rollout.
 
 ### Conflict resolution flow (§6.5)
 

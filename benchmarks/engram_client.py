@@ -42,7 +42,7 @@ class EngramError(RuntimeError):
     """Raised when Engram returns an unexpected HTTP status."""
 
 
-class DrainTimeout(RuntimeError):
+class DrainTimeoutError(RuntimeError):
     """Raised when ingest does not finish within the allotted time."""
 
 
@@ -50,9 +50,9 @@ class DrainTimeout(RuntimeError):
 class DrainConfig:
     """Tunables for the rise-then-settle drain wait."""
 
-    max_wait_s: float = 600.0      # hard ceiling for one conversation's ingest
-    poll_interval_s: float = 2.0   # how often to poll the status endpoint
-    settle_s: float = 8.0          # queue must stay empty this long after activity
+    max_wait_s: float = 600.0  # hard ceiling for one conversation's ingest
+    poll_interval_s: float = 2.0  # how often to poll the status endpoint
+    settle_s: float = 8.0  # queue must stay empty this long after activity
     activity_grace_s: float = 45.0  # if no activity is ever seen, give up waiting
     #                                 for a rise after this long and treat as drained
 
@@ -68,8 +68,8 @@ class EngramClient:
     base_url: str
     api_key: str
     tenant_id: str = "_default"
-    timeout_s: float = 60.0          # ingest / status / health (fast)
-    query_timeout_s: float = 300.0   # /query fires several LLM calls; needs headroom
+    timeout_s: float = 60.0  # ingest / status / health (fast)
+    query_timeout_s: float = 300.0  # /query fires several LLM calls; needs headroom
     _http: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -134,8 +134,7 @@ class EngramClient:
                 api_key = resp.json()["api_key"]
             else:
                 raise EngramError(
-                    f"create-tenant {tenant_id} failed: "
-                    f"{resp.status_code} {resp.text}"
+                    f"create-tenant {tenant_id} failed: {resp.status_code} {resp.text}"
                 )
         finally:
             admin_http.close()
@@ -169,9 +168,7 @@ class EngramClient:
         """
         turn_pair: dict[str, Any] = {
             "user": _turn(user_content, user_timestamp, user_turn_idx),
-            "assistant": _turn(
-                assistant_content, assistant_timestamp, assistant_turn_idx
-            ),
+            "assistant": _turn(assistant_content, assistant_timestamp, assistant_turn_idx),
         }
         body = {"session_id": session_id, "turn_pair": turn_pair, "source": source}
         resp = self._http.post("/api/v1/ingest", json=body)
@@ -192,9 +189,7 @@ class EngramClient:
         if int(status.get("queue_depth", 0)) > 0:
             return True
         by_status = status.get("by_status") or {}
-        return any(
-            int(by_status.get(s, 0)) > 0 for s in ("PENDING", "PROCESSING")
-        )
+        return any(int(by_status.get(s, 0)) > 0 for s in ("PENDING", "PROCESSING"))
 
     def wait_for_drain(self, cfg: DrainConfig | None = None) -> dict[str, float]:
         """Block until background ingest/consolidation for this tenant is done.
@@ -221,7 +216,7 @@ class EngramClient:
             now = time.monotonic()
             elapsed = now - start
             if elapsed > cfg.max_wait_s:
-                raise DrainTimeout(
+                raise DrainTimeoutError(
                     f"tenant {self.tenant_id}: ingest did not drain within "
                     f"{cfg.max_wait_s:.0f}s (seen_activity={seen_activity})"
                 )
@@ -280,9 +275,7 @@ class EngramClient:
         # wrapped as EngramError so callers catch it uniformly and one slow query
         # cannot abort a whole benchmark run.
         try:
-            resp = self._http.post(
-                "/api/v1/query", json=body, timeout=self.query_timeout_s
-            )
+            resp = self._http.post("/api/v1/query", json=body, timeout=self.query_timeout_s)
         except httpx.HTTPError as err:
             raise EngramError(f"query request failed: {err}") from err
         if resp.status_code != 200:
@@ -298,9 +291,7 @@ class EngramClient:
         return resp.json()
 
 
-def _turn(
-    content: str, timestamp: str | None, turn_idx: int | None
-) -> dict[str, Any]:
+def _turn(content: str, timestamp: str | None, turn_idx: int | None) -> dict[str, Any]:
     turn: dict[str, Any] = {"content": content}
     if timestamp is not None:
         turn["timestamp"] = timestamp

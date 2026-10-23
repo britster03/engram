@@ -4,6 +4,12 @@
 
 {% block head %}
 <link rel="stylesheet" href="{{ static('css/dashboard.css') }}">
+<style>
+  /* Keep this action compact even if the checked-in Tailwind build is stale. */
+  @media (min-width: 640px) {
+    .chat-new-session { width: auto; }
+  }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -12,44 +18,76 @@
 
   <main class="flex-grow relative overflow-hidden">
     <div class="absolute inset-0 bg-grain pointer-events-none z-0"></div>
-    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-10 relative z-10 h-full flex flex-col">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10 relative z-10 h-full flex flex-col">
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <div class="min-w-0">
-          <h2 class="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-1">Session</h2>
+          <h2 class="text-xs font-bold uppercase tracking-widest text-blue-600 mb-1">Codebase memory</h2>
           <div class="flex flex-wrap items-center gap-2 sm:gap-3">
-            <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Memory Query</h3>
-            <span x-show="sessionId" class="text-xs font-mono text-neutral-400" x-text="sessionId ? sessionId.slice(0,8)+'...' : ''"></span>
+            <h3 class="text-2xl font-bold tracking-tight text-neutral-900">Ask your uploaded knowledge</h3>
+            <span x-show="sessionId" class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-50 text-xs font-medium text-emerald-700">
+              <i class="w-1.5 h-1.5 rounded-full bg-emerald-500"></i>
+              <span>Session active</span>
+              <span class="font-mono" x-text="sessionId ? '· ' + sessionId : ''"></span>
+            </span>
           </div>
+          <p class="mt-1.5 text-sm text-neutral-500">Ask about files, functions, dependencies, or the architecture behind your project.</p>
         </div>
-        <button @click="newSession()" type="button" class="w-full sm:w-auto px-4 py-2 bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-900 text-sm font-semibold rounded-xl transition-all">
-          New Session
-        </button>
+        <div class="w-full sm:w-auto text-left sm:text-right">
+          <button x-show="loading && activeRunId" @click="stopResponse()" type="button" class="px-4 py-2 text-sm text-red-700">Stop response</button>
+          <button @click="newSession()" :disabled="creatingSession || loading" type="button" class="chat-new-session w-full sm:w-auto px-4 py-2 bg-white border border-neutral-200 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-900 text-sm font-semibold rounded-xl transition-all">
+            <span x-text="creatingSession ? 'Creating session…' : 'New Session'"></span>
+          </button>
+          <p x-show="sessionNotice" x-text="sessionNotice" role="status" class="mt-1 text-xs text-emerald-700"></p>
+          <p x-show="sessionError" x-text="sessionError" role="alert" class="mt-1 text-xs text-red-600"></p>
+          <button x-show="recovering && sessionError" @click="retryRecovery()" type="button" class="mt-1 text-xs text-blue-700">Check response again</button>
+        </div>
       </div>
 
       <div class="flex-1 bg-white rounded-2xl border border-neutral-200 shadow-sm flex flex-col overflow-hidden" style="min-height: 400px;">
         <div class="flex-1 overflow-y-auto p-4 space-y-4" id="chat-history" x-ref="history">
+          <div x-show="messages.length <= 1 && !loading" class="chat-welcome rounded-2xl border border-blue-100 bg-blue-50/60 p-5 sm:p-6">
+            <p class="text-sm font-semibold text-blue-950">Try a useful codebase question</p>
+            <p class="mt-1 text-sm text-blue-800/80">Engram searches the memories and relationships created from your uploaded files.</p>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <template x-for="prompt in suggestions" :key="prompt">
+                <button @click="useSuggestion(prompt)" type="button" class="chat-suggestion" x-text="prompt"></button>
+              </template>
+            </div>
+          </div>
           <template x-for="msg in messages" :key="msg.id">
             <div :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
-              <div :class="msg.role === 'user' ? 'bg-neutral-900 text-white rounded-2xl rounded-tr-sm' : 'bg-neutral-100 text-neutral-900 rounded-2xl rounded-tl-sm'" class="max-w-[88%] sm:max-w-[80%] px-4 py-3 text-sm leading-relaxed">
+              <div :class="msg.role === 'user' ? 'bg-neutral-900 text-white rounded-2xl rounded-tr-sm' : 'chat-answer rounded-2xl rounded-tl-sm'" class="max-w-[92%] sm:max-w-[82%] px-4 py-3 text-sm leading-relaxed">
+                <template x-if="msg.role === 'assistant'">
+                  <div class="flex items-center justify-between gap-3 mb-2">
+                    <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-700"><i class="w-1.5 h-1.5 rounded-full bg-blue-600"></i> Engram answer</span>
+                    <span x-show="msg.loading" class="inline-flex items-center gap-1.5 text-xs text-blue-700"><i class="w-3 h-3 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin"></i> Searching memories</span>
+                  </div>
+                </template>
                 <template x-if="msg.role === 'assistant' && (msg.retrievalSteps.length > 0 || msg.loading)">
-                  <details class="mb-2 group" open>
-                    <summary class="flex items-center gap-1.5 cursor-pointer text-xs font-medium text-neutral-500 hover:text-neutral-700 select-none">
+                  <details class="retrieval-card mb-3 group" :open="msg.loading">
+                    <summary class="flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-neutral-600 hover:text-neutral-900 select-none">
                       <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
-                      <span x-text="msg.loading ? 'Retrieving...' : 'Retrieval trace'"></span>
-                      <span x-show="!msg.loading && msg.retrievalSteps.length > 0" class="text-neutral-400" x-text="'(' + msg.retrievalSteps.length + ' step' + (msg.retrievalSteps.length > 1 ? 's' : '') + ')'"></span>
+                      <span x-text="msg.loading ? 'Searching uploaded knowledge…' : retrievalSummary(msg)"></span>
                     </summary>
-                    <div class="mt-1.5 space-y-1 text-xs font-mono text-neutral-500">
-                      <template x-for="(step, si) in msg.retrievalSteps" :key="si">
-                        <div class="flex items-center gap-2 py-0.5">
-                          <span class="inline-block w-1.5 h-1.5 rounded-full" :class="stepColor(step.step)"></span>
-                          <span class="font-semibold text-neutral-700" x-text="stepLabel(step.step)"></span>
-                          <span x-show="step.cascade_depth_reached" class="text-neutral-400" x-text="'depth=' + step.cascade_depth_reached"></span>
-                          <span x-show="step.nodes_retrieved !== undefined" class="text-neutral-400" x-text="step.nodes_retrieved + ' nodes'"></span>
-                          <span x-show="step.latency_ms" class="text-neutral-400" x-text="formatStepLatency(step)"></span>
-                          <span x-show="step.l0_decision" class="text-neutral-400" x-text="'L0=' + step.l0_decision"></span>
-                          <span x-show="step.reentries > 0" class="text-amber-500" x-text="'re-entry #' + step.reentries"></span>
+                    <div x-show="!msg.loading && msg.retrievalSteps.length" class="mt-3">
+                      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div class="retrieval-stat"><span>Knowledge reviewed</span><strong x-text="retrievalNodes(msg)"></strong></div>
+                        <div class="retrieval-stat"><span>Search scope</span><strong x-text="retrievalScope(msg)"></strong></div>
+                        <div class="retrieval-stat"><span>Answer time</span><strong x-text="retrievalTime(msg)"></strong></div>
+                        <div class="retrieval-stat"><span>Model tokens</span><strong x-text="retrievalTokens(msg)"></strong></div>
+                      </div>
+                      <details class="technical-trace mt-3">
+                        <summary class="cursor-pointer text-xs text-neutral-500 hover:text-neutral-800">Technical retrieval details</summary>
+                        <div class="mt-2 space-y-1 text-xs text-neutral-500">
+                          <template x-for="(step, si) in msg.retrievalSteps" :key="si">
+                            <div class="flex items-center gap-2 py-0.5">
+                              <span class="inline-block w-1.5 h-1.5 rounded-full" :class="stepColor(step.step)"></span>
+                              <span class="font-medium text-neutral-700" x-text="friendlyStepLabel(step.step)"></span>
+                              <span x-show="formatStepLatency(step)" class="text-neutral-400" x-text="formatStepLatency(step)"></span>
+                            </div>
+                          </template>
                         </div>
-                      </template>
+                      </details>
                     </div>
                   </details>
                 </template>
@@ -66,10 +104,16 @@
         </div>
 
         <div class="border-t border-neutral-200 p-4">
+          <div x-show="unsentDraft" class="mb-3 text-xs text-neutral-600" role="status">
+            <p>This question was not sent:</p>
+            <p x-text="unsentDraft" class="mt-1"></p>
+            <button @click="restoreUnsentDraft()" type="button" class="mt-1 text-blue-700">Edit this question</button>
+          </div>
           <form @submit.prevent="send()" class="flex gap-2">
-            <input x-model="input" type="text" class="chat-input flex-1 px-4 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all" placeholder="Ask Engram about a session or memory..." required>
-            <button type="submit" class="shrink-0 px-3 sm:px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-2">
+            <input x-model="input" type="text" class="chat-input flex-1 px-4 py-2.5 rounded-xl border border-neutral-200 bg-white text-sm placeholder-neutral-400 focus:border-neutral-900 transition-all" placeholder="Ask about a module, function, dependency, or architecture…" required>
+            <button type="submit" :disabled="loading || creatingSession" class="shrink-0 px-3 sm:px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-2">
               <i data-lucide="send" class="w-4 h-4"></i>
+              <span class="hidden sm:inline">Ask</span>
             </button>
           </form>
         </div>
@@ -85,16 +129,55 @@ function purify(raw) {
   return (window.DOMPurify && DOMPurify.sanitize) ? DOMPurify.sanitize(raw, { ALLOWED_TAGS: ['b','i','em','strong','code','pre','a','ul','ol','li','p','br'], ALLOWED_ATTR: ['href'] }) : raw.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+let clientMessageSequence = 0;
+function newClientMessageId() {
+  const cryptoApi = typeof crypto === 'undefined' ? null : crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return cryptoApi.randomUUID();
+  }
+  // getRandomValues is also available on HTTP pages where randomUUID is not.
+  if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    return 'msg-' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  // These opaque IDs deduplicate messages; they are not authentication tokens.
+  return 'msg-' + Date.now().toString(36) + '-' + (++clientMessageSequence).toString(36)
+    + '-' + Math.random().toString(36).slice(2);
+}
+
 function chat() {
   return {
     messages: [],
     input: '',
+    unsentDraft: '',
     loading: false,
+    creatingSession: false,
+    sessionNotice: '',
+    sessionError: '',
     streamAbort: null,
+    activeRunId: null,
+    recovering: false,
+    recoveryTimer: null,
+    recoveryAbort: null,
+    pendingMessage: null,
+    _recoveryToken: 0,
+    _streamToken: 0,
+    _historyRunId: null,
     sessionId: null,
     _msgId: 0,
     _nextId() { return ++this._msgId; },
     mainTab: 'chat',
+    suggestions: [
+      'What does this project do?',
+      'Show the authentication flow.',
+      'What depends on database_models.py?',
+      'Where is create_user used?'
+    ],
+    useSuggestion(prompt) {
+      this.input = prompt;
+      this.$nextTick(() => this.send());
+    },
     _authHeaders() {
       var h = {};
       var t = localStorage.getItem('engram_api_key');
@@ -116,6 +199,23 @@ function chat() {
         .replace(/_/g, ' ')
         .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
     },
+    friendlyStepLabel(step) {
+      var labels = {
+        l1_plan: 'Finding relevant memories',
+        l1_execute: 'Reading relevant memories',
+        l2_plan: 'Broadening the relationship search',
+        l2_execute: 'Reading connected memories',
+        l3_plan: 'Exploring deeper connections',
+        l3_execute: 'Reading deeper connections',
+        l4_plan: 'Exploring full memory history',
+        l4_execute: 'Reading full memory history',
+        msc_assembly: 'Preparing answer context'
+      };
+      var name = String(step || '');
+      if (labels[name]) return labels[name];
+      if (name.indexOf('frontier_answer') === 0) return 'Writing the answer';
+      return this.stepLabel(name);
+    },
     formatStepLatency(step) {
       var latency = (step && step.latency_ms) || {};
       var value = latency[step.step];
@@ -123,162 +223,471 @@ function chat() {
       if (value >= 1000) return (value / 1000).toFixed(1) + 's';
       return Math.round(value) + 'ms';
     },
+    retrievalNodes(msg) {
+      var values = (msg.retrievalSteps || []).map(function (step) { return Number(step.nodes_retrieved) || 0; }).filter(Boolean);
+      return values.length ? Math.max.apply(null, values) + ' memory records' : 'Memory search';
+    },
+    retrievalScope(msg) {
+      var values = (msg.retrievalSteps || []).map(function (step) { return String(step.cascade_depth_reached || ''); }).filter(Boolean);
+      var depth = values.length ? values[values.length - 1].toUpperCase() : '';
+      if (depth === 'L1') return 'Focused';
+      if (depth === 'L2') return 'Connected';
+      if (depth === 'L3') return 'Broad';
+      if (depth === 'L4') return 'Deep';
+      return 'Focused';
+    },
+    retrievalTime(msg) {
+      var max = 0;
+      (msg.retrievalSteps || []).forEach(function (step) {
+        var latency = step.latency_ms || {};
+        Object.keys(latency).forEach(function (key) { max = Math.max(max, Number(latency[key]) || 0); });
+      });
+      if (!max) return '—';
+      return max >= 1000 ? (max / 1000).toFixed(1) + 's' : Math.round(max) + 'ms';
+    },
+    retrievalSummary(msg) {
+      return 'How this answer was found · ' + this.retrievalNodes(msg) + ' · ' + this.retrievalScope(msg) + ' search · ' + this.retrievalTokens(msg);
+    },
+    retrievalTokens(msg) {
+      var usage = null;
+      (msg.retrievalSteps || []).forEach(function (step) {
+        if (step.token_usage) usage = step.token_usage;
+      });
+      if (!usage || usage.total_tokens === undefined) return '—';
+      return Number(usage.total_tokens || 0).toLocaleString() + (usage.estimated ? ' est.' : '');
+    },
     setMainTab(tab) { if (tab !== 'chat') window.location.href = '/admin/dashboard?tab=' + tab; },
     logout() {
       document.cookie = 'engram_session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT;';
       localStorage.removeItem('engram_api_key');
       window.location.href = '/admin/login';
     },
-    async init() {
-      var stored = localStorage.getItem('engram_chat_session_id');
-      if (stored) {
-        this.sessionId = stored;
-      } else {
-        try {
-          const r = await fetch('/admin/api/sessions', { method: 'POST', headers: this._authHeaders() });
-          if (r.ok) {
-            const obj = await r.json();
-            if (obj.session_id) {
-              this.sessionId = obj.session_id;
-              localStorage.setItem('engram_chat_session_id', this.sessionId);
-            }
-          }
-        } catch (_) {}
-      }
-      this.messages.push({id: this._nextId(), role: 'assistant', content: 'Hello. I am the Engram admin assistant. Ask me about sessions, memories, or system status.', retrievalSteps: [], loading: false});
+    _scroll() {
+      this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; });
     },
-    async newSession() {
+    _pendingKey() { return 'engram_chat_pending:' + this.sessionId; },
+    _draftKey() { return 'engram_chat_draft:' + this.sessionId; },
+    _rememberPending(data) {
+      this.pendingMessage = {
+        client_message_id: data.client_message_id || (this.pendingMessage || {}).client_message_id || null,
+        run_id: data.run_id || null,
+        started_at: data.created_at ? Date.parse(data.created_at) : ((this.pendingMessage || {}).started_at || Date.now())
+      };
+      try { localStorage.setItem(this._pendingKey(), JSON.stringify(this.pendingMessage)); } catch (_) {}
+    },
+    _clearPending() {
       try {
-        const r = await fetch('/admin/api/sessions', { method: 'POST', headers: this._authHeaders() });
-        if (r.ok) {
-          const obj = await r.json();
-          if (obj.session_id) {
-            this.sessionId = obj.session_id;
-            localStorage.setItem('engram_chat_session_id', this.sessionId);
-            this.messages = [];
-            this.messages.push({id: this._nextId(), role: 'assistant', content: 'Hello. I am the Engram admin assistant. Ask me about sessions, memories, or system status.', retrievalSteps: [], loading: false});
-          }
+        const stored = JSON.parse(localStorage.getItem(this._pendingKey()) || 'null');
+        if (!stored || !this.pendingMessage || stored.client_message_id === this.pendingMessage.client_message_id) {
+          localStorage.removeItem(this._pendingKey());
         }
+        sessionStorage.removeItem('engram_chat_submitted:' + this.sessionId);
+      } catch (_) {}
+      this.pendingMessage = null;
+    },
+    _saveDraft() {
+      try {
+        sessionStorage.setItem(this._draftKey(), this.input);
+        sessionStorage.setItem('engram_chat_unsent:' + this.sessionId, this.unsentDraft);
       } catch (_) {}
     },
-    async send() {
-      if (!this.input.trim()) return;
-      const userMsg = {id: this._nextId(), role: 'user', content: this.input};
-      this.messages.push(userMsg);
-      this.input = '';
-      this.loading = true;
-      const scroll = () => { this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; }); };
-      scroll();
-
+    _restoreSubmitted(content) {
+      if (!this.input.trim()) this.input = content;
+      else if (content && this.input !== content) this.unsentDraft = content;
+      this._saveDraft();
+    },
+    restoreUnsentDraft() {
+      const current = this.input;
+      this.input = this.unsentDraft;
+      this.unsentDraft = current;
+      this._saveDraft();
+    },
+    async _readError(response) {
+      const text = await response.text();
+      try { return JSON.parse(text); } catch (_) { return { detail: text }; }
+    },
+    _errorText(body) {
+      const detail = body.detail || body.error || 'Request failed';
+      return typeof detail === 'string' ? detail : (detail.error || detail.message || JSON.stringify(detail));
+    },
+    async _fetchJson(url, signal) {
+      const ctrl = new AbortController();
+      const abort = () => ctrl.abort();
+      if (signal) {
+        if (signal.aborted) ctrl.abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }
+      const timeout = setTimeout(abort, 15000);
       try {
-        const ctrl = new AbortController();
-        this.streamAbort = ctrl;
-        const resp = await fetch('/admin/api/chat/completions', {
-          method: 'POST',
-          headers: {
-            ...this._authHeaders(),
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
-          },
-          body: JSON.stringify({messages: this.messages, session_id: this.sessionId, stream: true}),
-          signal: ctrl.signal
-        });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error('HTTP ' + resp.status + ': ' + text);
+        const response = await fetch(url, { headers: this._authHeaders(), signal: ctrl.signal });
+        if (!response.ok) {
+          const error = new Error('HTTP ' + response.status + ': ' + this._errorText(await this._readError(response)));
+          error.status = response.status;
+          throw error;
         }
-
-        this.messages.push({id: this._nextId(), role: 'assistant', content: '', retrievalSteps: [], loading: true});
-        const assistantIdx = this.messages.length - 1;
-
+        return await response.json();
+      } finally {
+        clearTimeout(timeout);
+        if (signal) signal.removeEventListener('abort', abort);
+      }
+    },
+    async _loadHistory(signal) {
+      const sessionId = this.sessionId;
+      const history = await this._fetchJson('/admin/api/sessions/' + encodeURIComponent(sessionId) + '/history', signal);
+      if (this.sessionId !== sessionId || (signal && signal.aborted)) return;
+      const old = this.messages;
+      this.messages = (history.turns || []).filter(turn => turn.content && turn.content.trim()).map(turn => {
+        const prior = old.find(msg => (turn.run_id && msg.runId === turn.run_id)
+          || (turn.client_message_id && msg.clientMessageId === turn.client_message_id)
+          || (turn.id && msg.turnId === turn.id));
+        return {
+          id: prior ? prior.id : this._nextId(), turnId: turn.id, role: turn.role, content: turn.content,
+          runId: turn.run_id || null, clientMessageId: turn.client_message_id || null,
+          saved: true, retrievalSteps: prior ? prior.retrievalSteps || [] : [], loading: false
+        };
+      });
+      this._scroll();
+    },
+    _stopRecovery() {
+      ++this._recoveryToken;
+      if (this.recoveryTimer !== null) clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+      if (this.recoveryAbort) this.recoveryAbort.abort();
+      this.recoveryAbort = null;
+      this.recovering = false;
+    },
+    destroy() {
+      this._stopRecovery();
+      ++this._streamToken;
+      if (this.streamAbort) this.streamAbort.abort();
+    },
+    _finishRun() {
+      this._stopRecovery();
+      this.loading = false;
+      this.activeRunId = null;
+      this.streamAbort = null;
+      this.messages.forEach(msg => { msg.loading = false; });
+      this._clearPending();
+      this._scroll();
+    },
+    _applyRun(run) {
+      this.activeRunId = run.run_id;
+      this._rememberPending(run);
+      if (run.status === 'RUNNING') {
+        this.loading = true;
+        this.sessionNotice = 'Response is still running. You can keep editing your draft or stop the response.';
+        let message = this.messages.find(msg => msg.role === 'assistant' && msg.runId === run.run_id);
+        if (!message) {
+          message = { id: this._nextId(), role: 'assistant', content: '', runId: run.run_id, retrievalSteps: [] };
+          this.messages.push(message);
+        }
+        message.loading = true;
+        return false;
+      }
+      if (run.status === 'COMPLETED') {
+        const response = run.response || {};
+        let message = this.messages.find(msg => msg.role === 'assistant' && msg.runId === run.run_id);
+        if (!message) {
+          message = { id: this._nextId(), role: 'assistant', runId: run.run_id };
+          this.messages.push(message);
+        }
+        message.content = String(response.answer || '');
+        message.retrievalSteps = this._stepsFromMetadata(response.retrieval_metadata || {});
+        message.saved = true;
+        this.sessionNotice = 'Response recovered. Your message is saved.';
+        this.sessionError = '';
+      } else {
+        this.messages = this.messages.filter(msg => !(msg.runId === run.run_id && !msg.content));
+        this.sessionNotice = run.status === 'CANCELLED' ? 'Response stopped. Your message is saved.'
+          : run.error_code === 'deadline_exceeded' ? 'Response timed out. Your message is saved.'
+          : 'Answer generation failed. Your message is saved.';
+        this.sessionError = '';
+      }
+      this._finishRun();
+      return true;
+    },
+    async _pollRun(token) {
+      if (!this.recovering || token !== this._recoveryToken) return;
+      const ctrl = new AbortController();
+      this.recoveryAbort = ctrl;
+      let delay = 2000;
+      try {
+        let run;
+        if (this.activeRunId) {
+          run = await this._fetchJson('/admin/api/chat/runs/' + encodeURIComponent(this.activeRunId), ctrl.signal);
+        } else {
+          const base = '/admin/api/sessions/' + encodeURIComponent(this.sessionId) + '/chat-run';
+          const clientId = (this.pendingMessage || {}).client_message_id;
+          run = (await this._fetchJson(base + (clientId ? '?client_message_id=' + encodeURIComponent(clientId) : ''), ctrl.signal)).run;
+          // An older finished run does not confirm acceptance of this message.
+          // Keep checking this key until its acknowledgement/deadline resolves.
+        }
+        if (token !== this._recoveryToken) return;
+        if (run) {
+          // Remember acceptance before a history request can fail.
+          this.activeRunId = run.run_id;
+          this._rememberPending(run);
+          if (this._historyRunId !== run.run_id || run.status !== 'RUNNING') {
+            await this._loadHistory(ctrl.signal);
+            if (token !== this._recoveryToken) return;
+            this._historyRunId = run.run_id;
+          }
+          this.sessionError = '';
+          if (this._applyRun(run)) return;
+        } else if (!this.pendingMessage) {
+          this._finishRun();
+          return;
+        } else if (Date.now() - this.pendingMessage.started_at >= 300000) {
+          let draft = '';
+          try { draft = sessionStorage.getItem('engram_chat_submitted:' + this.sessionId) || ''; } catch (_) {}
+          this._restoreSubmitted(draft);
+          this.sessionError = 'No accepted reply was found. Your unsent question is ready to send.';
+          this.messages = this.messages.filter(msg => msg.saved || msg.uiOnly);
+          this._finishRun();
+          return;
+        } else {
+          this.sessionError = 'Checking whether your question was saved. It will not be resent automatically.';
+        }
+      } catch (error) {
+        if (token !== this._recoveryToken) return;
+        this.sessionError = 'Could not check the response. Retrying; your draft is preserved. ' + error.message;
+        delay = 10000;
+      } finally {
+        if (token === this._recoveryToken) this.recoveryAbort = null;
+      }
+      if (this.recovering && token === this._recoveryToken) {
+        this.recoveryTimer = setTimeout(() => { this.recoveryTimer = null; return this._pollRun(token); }, delay);
+      }
+    },
+    async _startRecovery(run) {
+      this._stopRecovery();
+      this.recovering = true;
+      this.loading = true;
+      if (run) {
+        this.activeRunId = run.run_id;
+        this._rememberPending(run);
+        if (run.status && run.status !== 'RUNNING' && (run.status !== 'COMPLETED' || run.response)) {
+          const token = this._recoveryToken;
+          const ctrl = new AbortController();
+          this.recoveryAbort = ctrl;
+          try {
+            await this._loadHistory(ctrl.signal);
+            if (token !== this._recoveryToken) return;
+            this._applyRun(run);
+            return;
+          } catch (error) {
+            if (token !== this._recoveryToken) return;
+          }
+        }
+      }
+      return this._pollRun(this._recoveryToken);
+    },
+    async retryRecovery() {
+      return this._startRecovery(this.activeRunId ? { run_id: this.activeRunId } : null);
+    },
+    async createSession(resetMessages) {
+      this.sessionError = '';
+      this.creatingSession = true;
+      try {
+        const r = await fetch('/admin/api/sessions', { method: 'POST', headers: this._authHeaders() });
+        if (!r.ok) throw new Error(this._errorText(await this._readError(r)));
+        const obj = await r.json();
+        this._stopRecovery();
+        this.sessionId = obj.session_id;
+        this.pendingMessage = null;
+        this.activeRunId = null;
+        this._historyRunId = null;
+        localStorage.setItem('engram_chat_session_id', this.sessionId);
+        if (resetMessages) {
+          this.messages = [];
+          this._greet();
+          this.sessionNotice = 'New session started: ' + this.sessionId;
+        }
+        return true;
+      } catch (err) {
+        this.sessionError = 'Unable to create a new session: ' + err.message;
+        return false;
+      } finally {
+        this.creatingSession = false;
+      }
+    },
+    _greet() {
+      if (!this.messages.length) this.messages.push({ id: this._nextId(), role: 'assistant', content: 'Hello. I am the Engram admin assistant. Ask me about sessions, memories, or system status.', retrievalSteps: [], loading: false, uiOnly: true });
+    },
+    async restoreOrCreateSession() {
+      const stored = localStorage.getItem('engram_chat_session_id');
+      if (stored) {
+        this.sessionId = stored;
+        try {
+          await this._loadHistory();
+          return true;
+        } catch (error) {
+          if (error.status !== 404) {
+            this.sessionError = 'Could not restore this session. Retrying; your draft is preserved.';
+            return true;
+          }
+          localStorage.removeItem('engram_chat_session_id');
+        }
+      }
+      return this.createSession(false);
+    },
+    async init() {
+      this.loading = true;
+      if (!await this.restoreOrCreateSession()) { this.loading = false; return; }
+      try {
+        this.pendingMessage = JSON.parse(localStorage.getItem(this._pendingKey()) || 'null');
+        this.activeRunId = (this.pendingMessage || {}).run_id || null;
+        this.input = sessionStorage.getItem(this._draftKey()) || '';
+        this.unsentDraft = sessionStorage.getItem('engram_chat_unsent:' + this.sessionId) || '';
+      } catch (_) {}
+      if (this.$watch) this.$watch('input', () => this._saveDraft());
+      if (typeof window !== 'undefined') window.addEventListener('pagehide', () => this.destroy(), { once: true });
+      this._greet();
+      await this._startRecovery(null);
+    },
+    async newSession() {
+      if (this.creatingSession || this.loading) return;
+      if (await this.createSession(true)) {
+        this.input = '';
+        this.unsentDraft = '';
+        this._saveDraft();
+      }
+    },
+    async stopResponse() {
+      if (!this.activeRunId) return;
+      try {
+        const response = await fetch('/admin/api/chat/runs/' + encodeURIComponent(this.activeRunId) + '/cancel', {
+          method: 'POST', headers: this._authHeaders()
+        });
+        if (!response.ok) throw new Error(this._errorText(await this._readError(response)));
+        const run = await response.json();
+        ++this._streamToken;
+        if (this.streamAbort) this.streamAbort.abort();
+        this.streamAbort = null;
+        await this._startRecovery(run);
+      } catch (error) {
+        this.sessionError = 'Could not confirm that the response stopped. Please retry. ' + error.message;
+      }
+    },
+    async send() {
+      if (this.loading || this.creatingSession || !this.input.trim()) return;
+      this.sessionError = '';
+      const userMsg = { id: this._nextId(), role: 'user', content: this.input, clientMessageId: newClientMessageId(), retrievalSteps: [] };
+      this.messages.push(userMsg);
+      this._rememberPending({ client_message_id: userMsg.clientMessageId });
+      try { sessionStorage.setItem('engram_chat_submitted:' + this.sessionId, userMsg.content); } catch (_) {}
+      this.input = '';
+      this._saveDraft();
+      this.loading = true;
+      this.activeRunId = null;
+      const token = ++this._streamToken;
+      this._scroll();
+      const ctrl = new AbortController();
+      this.streamAbort = ctrl;
+      const messages = this.messages.filter(msg => !msg.uiOnly && msg.content && (msg.saved || msg.id === userMsg.id))
+        .map(msg => ({ role: msg.role, content: msg.content }));
+      const post = () => fetch('/admin/api/chat/completions', {
+        method: 'POST', headers: { ...this._authHeaders(), 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        body: JSON.stringify({ messages: messages, session_id: this.sessionId, client_message_id: userMsg.clientMessageId, stream: true }),
+        signal: ctrl.signal
+      });
+      try {
+        let resp = await post();
+        let errorBody = !resp.ok ? await this._readError(resp) : null;
+        if (!resp.ok && resp.status === 404 && this._errorText(errorBody).includes('session not found') && await this.createSession(false)) {
+          this._rememberPending({ client_message_id: userMsg.clientMessageId });
+          try { sessionStorage.setItem('engram_chat_submitted:' + this.sessionId, userMsg.content); } catch (_) {}
+          resp = await post();
+          errorBody = !resp.ok ? await this._readError(resp) : null;
+        }
+        if (token !== this._streamToken) return;
+        if (!resp.ok) {
+          const run = errorBody.run || (typeof errorBody.detail === 'object' ? errorBody.detail : null);
+          if (resp.status === 409 && run && run.run_id) {
+            if (run.client_message_id === userMsg.clientMessageId) userMsg.saved = true;
+            else {
+              this.messages = this.messages.filter(msg => msg.id !== userMsg.id);
+              this._restoreSubmitted(userMsg.content);
+            }
+            await this._startRecovery(run);
+            return;
+          }
+          if (resp.status >= 500) {
+            const detail = errorBody.detail || {};
+            await this._startRecovery(detail.run_id ? detail : null);
+            return;
+          }
+          this.messages = this.messages.filter(msg => msg.id !== userMsg.id);
+          this._restoreSubmitted(userMsg.content);
+          this.sessionError = 'HTTP ' + resp.status + ': ' + this._errorText(errorBody);
+          this._finishRun();
+          return;
+        }
+        this.messages.push({ id: this._nextId(), role: 'assistant', content: '', retrievalSteps: [], loading: true });
+        const assistant = this.messages[this.messages.length - 1];
         const contentType = resp.headers.get('content-type') || '';
         if (!contentType.includes('text/event-stream')) {
           const obj = await resp.json();
-          this.messages[assistantIdx].content = String(obj.answer || obj.response || JSON.stringify(obj));
-          if (obj.retrieval_metadata) {
-            this.messages[assistantIdx].retrievalSteps = this._stepsFromMetadata(obj.retrieval_metadata);
-          }
-          this.messages[assistantIdx].loading = false;
-          this.messages = [...this.messages];
-          this.loading = false;
-          this.streamAbort = null;
-          scroll();
+          userMsg.saved = true;
+          assistant.saved = true;
+          assistant.runId = obj.run_id;
+          assistant.content = String(obj.answer || obj.response || '');
+          assistant.retrievalSteps = this._stepsFromMetadata(obj.retrieval_metadata || {});
+          this._finishRun();
           return;
         }
-
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
+        let buffer = '', eventName = '', data = '';
         for (;;) {
           const { done, value } = await reader.read();
+          if (token !== this._streamToken) return;
           if (done) break;
-          buffer += decoder.decode(value, {stream: true});
-          let eventName = '';
-          let data = '';
+          buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
           for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventName = line.replace(/^event:\s*/, '');
-            } else if (line.startsWith('data:')) {
-              data = line.replace(/^data:\s*/, '');
-            } else if (line.trim() === '') {
-              if (eventName === 'retrieval_step' && data) {
-                try {
-                  const step = JSON.parse(data);
-                  this.messages[assistantIdx].retrievalSteps = [...this.messages[assistantIdx].retrievalSteps, step];
-                  this.messages = [...this.messages];
-                  scroll();
-                } catch (_) {}
-              }
-              if (eventName === 'metadata' && data) {
-                try {
-                  const md = JSON.parse(data);
-                  this.messages[assistantIdx].retrievalSteps = this._stepsFromMetadata(md);
-                  this.messages = [...this.messages];
-                } catch (_) {}
-              }
-              if (eventName === 'delta' && data) {
-                try {
-                  const obj = JSON.parse(data);
-                  if (typeof obj.text === 'string') this.messages[assistantIdx].content += obj.text;
-                  if (typeof obj.content === 'string') this.messages[assistantIdx].content += obj.content;
-                  this.messages = [...this.messages];
-                  this.$nextTick(() => { this.$refs.history.scrollTop = this.$refs.history.scrollHeight; });
-                } catch (_) {}
-              }
-              if (eventName === 'done') {
-                this.messages[assistantIdx].loading = false;
-                this.messages = [...this.messages];
-                this.loading = false;
-                this.streamAbort = null;
-                scroll();
+            if (line.startsWith('event:')) eventName = line.replace(/^event:\s*/, '').replace(/\r$/, '');
+            else if (line.startsWith('data:')) data += (data ? '\n' : '') + line.replace(/^data:\s*/, '').replace(/\r$/, '');
+            else if (line.trim() === '') {
+              if (eventName === 'accepted' && data) {
+                const accepted = JSON.parse(data);
+                this.sessionNotice = 'Message saved';
+                this.activeRunId = accepted.run_id;
+                assistant.runId = accepted.run_id;
+                this._rememberPending(accepted);
+                userMsg.saved = true;
+              } else if (eventName === 'retrieval_step' && data) {
+                assistant.retrievalSteps = [...assistant.retrievalSteps, JSON.parse(data)];
+              } else if (eventName === 'metadata' && data) {
+                assistant.retrievalSteps = this._stepsFromMetadata(JSON.parse(data));
+              } else if (eventName === 'delta' && data) {
+                const obj = JSON.parse(data);
+                assistant.content += typeof obj.text === 'string' ? obj.text : (obj.content || '');
+              } else if (eventName === 'done') {
+                userMsg.saved = true;
+                assistant.saved = true;
+                this._finishRun();
                 return;
+              } else if (eventName === 'error') {
+                let error;
+                try { error = JSON.parse(data).error; } catch (_) { error = data; }
+                throw new Error(error || 'Stream error');
               }
-              if (eventName === 'error') {
-                throw new Error(data || 'Stream error');
-              }
-              eventName = '';
-              data = '';
+              this.messages = [...this.messages];
+              this._scroll();
+              eventName = ''; data = '';
             }
           }
         }
-
-      } catch (e) {
-        if (e.name !== 'AbortError') {
-          const lastMsg = this.messages[this.messages.length - 1];
-          if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content === '') {
-            this.messages[this.messages.length - 1].content = 'Error: ' + e.message;
-            this.messages[this.messages.length - 1].loading = false;
-          } else {
-            this.messages.push({id: this._nextId(), role: 'assistant', content: 'Error: ' + e.message, retrievalSteps: [], loading: false});
-          }
-          this.messages = [...this.messages];
-        }
+        throw new Error('Connection ended before the reply was received.');
+      } catch (error) {
+        if (token !== this._streamToken) return;
+        this.sessionError = 'Connection interrupted. Checking the saved response. ' + error.message;
+        await this._startRecovery(this.activeRunId ? { run_id: this.activeRunId } : null);
+      } finally {
+        if (token === this._streamToken) this.streamAbort = null;
       }
-      this.loading = false;
-      this.streamAbort = null;
-      scroll();
     },
     _stepsFromMetadata(md) {
       var steps = [];
@@ -331,6 +740,7 @@ function chat() {
           });
         }
       }
+      steps.forEach(function (step) { step.token_usage = md.token_usage || null; });
       return steps;
     }
   }

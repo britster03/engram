@@ -8,7 +8,7 @@ from engram.session.manager import SessionManager, commit_session, compact_sessi
 from engram.storage.filesystem import FilesystemStore
 from engram.storage.memory_kg import InMemoryKnowledgeGraph
 from engram.storage.redis_cache import SessionCache
-from engram.storage.sqlite import SqliteStore
+from tests.postgres_support import PostgresTestStore
 
 
 class _InMemoryCache(SessionCache):
@@ -37,8 +37,9 @@ class _StubEmbed:
 
 def test_create_and_get_roundtrip():
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=50, session_ttl_minutes=30)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=50, session_ttl_minutes=30
+    )
     s = mgr.create()
     assert s.status == "ACTIVE"
     assert len(s.turns) == 0
@@ -49,8 +50,9 @@ def test_create_and_get_roundtrip():
 
 def test_append_turn_pair_tracks_indices():
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=50, session_ttl_minutes=30)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=50, session_ttl_minutes=30
+    )
     s = mgr.create()
     s, needs = mgr.append_turn_pair(s.session_id, "hello", "hi")
     assert len(s.turns) == 2
@@ -64,8 +66,9 @@ def test_append_turn_pair_tracks_indices():
 
 def test_compaction_updates_bound():
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=4, session_ttl_minutes=30)
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=4, session_ttl_minutes=30
+    )
     s = mgr.create()
     for i in range(6):
         mgr.append_turn_pair(s.session_id, f"user msg {i}", f"asst msg {i}")
@@ -80,28 +83,32 @@ def test_compaction_updates_bound():
 
 def test_compaction_reenqueue_preserves_tenant(tmp_path: Path):
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=4, session_ttl_minutes=30)
-    sqlite = SqliteStore(tmp_path / "events.db")
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=4, session_ttl_minutes=30
+    )
+    store = PostgresTestStore()
     s = mgr.create()
     for i in range(6):
         mgr.append_turn_pair(s.session_id, f"user msg {i}", f"asst msg {i}")
     s = mgr.get(s.session_id)
     assert s is not None
 
-    compact_session(mgr, s, _StubCore(), sqlite=sqlite, tenant_id="tenant-a")
+    compact_session(mgr, s, _StubCore(), control_plane=store, tenant_id="tenant-a")
 
-    rows = sqlite.get_conn().execute(
-        "SELECT DISTINCT tenant_id FROM events WHERE source = 'session_compact'"
-    ).fetchall()
+    rows = (
+        store.get_conn()
+        .execute("SELECT DISTINCT tenant_id FROM events WHERE source = 'session_compact'")
+        .fetchall()
+    )
     assert [row["tenant_id"] for row in rows] == ["tenant-a"]
 
 
 def test_commit_session_writes_summary_and_reenqueues_turns(tmp_path: Path):
     cache = _InMemoryCache(ttl=60)
-    mgr = SessionManager(cache, window_threshold_ratio=0.4,
-                         max_turns_before_window=50, session_ttl_minutes=30)
-    sqlite = SqliteStore(tmp_path / "events.db")
+    mgr = SessionManager(
+        cache, window_threshold_ratio=0.4, max_turns_before_window=50, session_ttl_minutes=30
+    )
+    store = PostgresTestStore()
     fs = FilesystemStore(tmp_path / "mem")
     kg = InMemoryKnowledgeGraph()
     s = mgr.create()
@@ -113,7 +120,7 @@ def test_commit_session_writes_summary_and_reenqueues_turns(tmp_path: Path):
         mgr,
         s,
         _StubCore(),
-        sqlite=sqlite,
+        control_plane=store,
         fs=fs,
         neo4j=kg,
         embed=_StubEmbed(),  # type: ignore[arg-type]
@@ -121,15 +128,20 @@ def test_commit_session_writes_summary_and_reenqueues_turns(tmp_path: Path):
     )
 
     assert committed.status == "COMMITTED"
-    rows = sqlite.get_conn().execute(
-        "SELECT tenant_id, status FROM events WHERE session_id = ?",
-        (s.session_id,),
-    ).fetchall()
+    rows = (
+        store.get_conn()
+        .execute(
+            "SELECT tenant_id, status FROM events WHERE session_id = ?",
+            (s.session_id,),
+        )
+        .fetchall()
+    )
     assert [(row["tenant_id"], row["status"]) for row in rows] == [("tenant-a", "RECEIVED")]
     summary_uri = f"mem://user/session_summaries/{s.session_id}.md"
     assert fs.exists(summary_uri)
     node = next(
-        n for n in kg.graph(root_uri=summary_uri, tenant_id="tenant-a")["nodes"]
+        n
+        for n in kg.graph(root_uri=summary_uri, tenant_id="tenant-a")["nodes"]
         if n["source_uri"] == summary_uri
     )
     assert node["node_type"] == "SESSION_SUMMARY"

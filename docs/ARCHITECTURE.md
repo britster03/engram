@@ -14,27 +14,28 @@ for persisted shapes.
 | Layer | Responsibilities | Main code |
 |---|---|---|
 | Interface | REST API, OpenAI-compatible chat endpoint, Admin UI, CLI, clients | `engram/api/`, `engram/admin/`, `engram/cli.py`, `clients/` |
-| Orchestration | Retrieval cascade, ingest worker, sessions, consolidation, reconciliation, decay | `engram/retrieval/`, `engram/ingest/`, `engram/session/`, `engram/consolidation/`, `engram/decay.py` |
+| Orchestration | Retrieval cascade, Temporal workflows/activities, sessions, consolidation, reconciliation, decay | `engram/retrieval/`, `engram/temporal/`, `engram/session/`, `engram/consolidation/`, `engram/decay.py` |
 | Intelligence | Embeddings, Core Model tasks, Frontier LLM answers, provider adapters | `engram/models/`, `engram/prompts/` |
-| Storage | Filesystem, SQLite, Neo4j or in-memory KG, Redis/session state, disposable caches | `engram/storage/`, `engram/cache.py` |
+| Storage | Filesystem, PostgreSQL control plane, Neo4j, Redis/session state | `engram/storage/`, `engram/cache.py` |
 
-The API layer does not process ingest events directly. It records durable rows
-or resets status. The durable ingest worker owns extraction, filesystem writes,
-KG indexing, and consolidation enqueueing.
+The API layer does not process ingest events directly. In production it commits
+the event and Temporal dispatch outbox atomically to PostgreSQL. Dedicated
+Temporal workers own extraction, filesystem writes, KG indexing, consolidation,
+reconciliation, and decay.
 
 ## Storage Boundaries
 
 | Store | Contents | Authority |
 |---|---|---|
 | Filesystem under `data/mem` | Memory Markdown, frontmatter, overviews, manifests | Authoritative memory body and metadata |
-| SQLite event ledger | Events, outboxes, bulk jobs, recovery state, consolidation tasks, tenants, audit rows | Authoritative control plane |
+| PostgreSQL | Events, outboxes, bulk jobs, recovery state, consolidation tasks, tenants, audit rows, workflow dispatches | Authoritative control plane in every environment |
 | Neo4j | Tenant-scoped nodes, edges, vector index, full-text index, traversal graph | Derived index, rebuildable |
 | In-memory KG | Test/dev alternative to Neo4j | Derived index, rebuildable |
 | Redis session cache | Active session state keyed as `session:{tenant_id}:{session_id}` | Ephemeral session state |
 | Redis or memory performance caches | Embedding vectors and rendered overviews | Disposable optimization only |
 
 Boundary rule: natural-language memory content lives on disk, queryable graph
-metadata lives in the KG, process state lives in SQLite, and active session
+metadata lives in the KG, process state lives in PostgreSQL, and active session
 state lives in the session cache. No performance cache is source of truth.
 
 ## Cache Policy
@@ -56,8 +57,8 @@ tenant ownership, or change correctness.
 ```text
 POST /api/v1/ingest, /api/v1/sessions/*/message, /api/v1/chat/completions,
 or /api/v1/ingest/bulk
-  -> record event row in SQLite
-  -> durable ingest worker claims RECEIVED events
+  -> atomically record PostgreSQL event + Temporal dispatch
+  -> dispatcher starts the idempotent Temporal ingest workflow
   -> write-path gate
   -> extraction
   -> entity linking
@@ -67,9 +68,9 @@ or /api/v1/ingest/bulk
   -> consolidation task enqueue
 ```
 
-Session and chat paths may use response callbacks to append completed turns to
-the ledger, but event processing still happens only in the durable worker.
-Retry paths reset failed rows to `RECEIVED`; they do not run extraction inline.
+Session and chat paths commit completed turns to the ledger before their
+non-streaming response, or in the streaming generator's finalization. Retry
+paths create a new workflow generation; they do not run extraction inline.
 
 Low-confidence triplets follow the SDD confidence tiers:
 
@@ -82,19 +83,32 @@ Low-confidence triplets follow the SDD confidence tiers:
 
 ```text
 POST /api/v1/query or /api/v1/chat/completions
-  -> L0 gate
-  -> L1 Core plan and vector search
-  -> L2 bounded graph traversal through templates
-  -> L3 directory overviews
-  -> L4 full documents and multi-hop commands
-  -> Minimal Sufficient Context assembly
-  -> Frontier answer
-  -> optional NEED_MORE re-entry
+  -> L0: Frontier parametric answer for eligible general questions
+  -> L1: current session, cache/context then PostgreSQL
+  -> Frontier ANSWER / NEED_MORE sufficiency decision
+  -> L2: past-session original records, PostgreSQL OR full-text search
+  -> L3_FACTS: canonical PostgreSQL facts or temporal history
+  -> L3_VECTOR: BM25 + vector discovery, PostgreSQL hydration and RRF
+  -> L3_GRAPH: bounded Neo4j paths, PostgreSQL verification of every edge
+  -> supported answer, qualified partial answer or insufficient evidence
 ```
 
-The Core Model never emits raw Cypher. It selects bounded templates from
-`templates/cypher/`, including path, neighborhood, temporal, history, prefix,
-cross-reference, and vector-search templates.
+Each stage can stop when the complete question is supported. After the current
+session gate, the configured Frontier model receives a tool description and
+schema before each deeper search. It returns a structured request for
+`past_session_search`, `facts_search`, `semantic_memory_search` or `graph_search`.
+The server validates and dispatches that request in stage order; it retains the
+original query, explicit entity/predicate requirements, temporal bounds, tenant
+scope and configured limits. Ambiguous semantic queries may receive refined
+intent and search hints. Invalid or unavailable model planning falls back to the
+deterministic plan. Retrieval planning no longer calls the Core model.
+
+SQL and Cypher are implemented by repository methods and parameterized templates
+in `templates/cypher/`. The Frontier model supplies search arguments, not query
+code or schema mutations. Planning status, tool arguments, latency and token
+usage are included in retrieval metadata. Neo4j currently indexes canonical
+memory text; comparing fact embeddings with graph-neighborhood embeddings
+remains an evaluation task, not a measured runtime improvement.
 
 ## Sessions
 
@@ -108,7 +122,7 @@ session cache entry can then be deleted without losing long-term memory.
 Tenant context is resolved from bearer tokens and bound to the request. The
 tenant id scopes:
 
-- SQLite events, outboxes, bulk jobs, tenants, audit rows, and idempotency
+- PostgreSQL events, outboxes, bulk jobs, tenants, audit rows, and idempotency
 - filesystem roots under `data/mem/{tenant_id}`
 - KG node and edge properties plus every query template
 - Redis session keys
@@ -122,14 +136,15 @@ two tenants maps to separate filesystem paths and separate KG records.
 
 | Worker | Trigger | Responsibility |
 |---|---|---|
-| Durable ingest worker | FastAPI lifespan, SQLite poll | Claim and process `RECEIVED` events. |
-| Consolidation worker | FastAPI lifespan, queue poll | Run overview, manifest, propagation, atomization, normalization, temporalization, integration, and unmerge tasks. |
-| Reconciliation worker | FastAPI lifespan, interval poll | Requeue stuck event/outbox states and schedule stale directory work. |
-| Decay job | CLI or external scheduler | Recompute retrieval weights for active memories. |
+| Ingest workflow | PostgreSQL dispatch outbox | Process durable events with bounded Temporal retries. |
+| Consolidation workflow | PostgreSQL task/dispatch transaction | Run overview, manifest, propagation, atomization, normalization, temporalization, integration, and unmerge tasks. |
+| Reconciliation workflow | Temporal interval schedule | Repair missing dispatches without duplicating active workflows. |
+| Stale-overview workflow | Temporal interval schedule | Discover and enqueue stale directory overviews. |
+| Decay workflow | Temporal cron schedule | Recompute tenant-safe retrieval weights. |
 
-Redis leases are available for singleton worker coordination in multi-replica
-deployments. If Redis is unavailable, development mode can fall back to
-in-process behavior.
+When Temporal is disabled, local development uses the legacy in-process pollers
+against the same PostgreSQL control plane. Those pollers are not part of the
+production deployment.
 
 ## Provider Architecture
 
@@ -137,13 +152,13 @@ Core and Frontier providers are selected independently in config:
 
 - `openai`
 - `openai_compat`
+- `openai_responses`
 - `ollama`
-- `ollama_cloud`
 - `local` for Core-only local-provider scaffolding
 
-`api_base` is part of both Core and Frontier config. The default config uses
-`ollama_cloud` at `https://ollama.com/api` and reads `OLLAMA_API_KEY`. Local
-`ollama` defaults to `http://localhost:11434/v1`.
+`api_base` is part of both Core and Frontier config. The default and production
+configs use `openai_responses` with `muse-spark-1.3-contributor` at
+`https://opencode.ai/zen/go/v1` and read `OPENCODE_GO_API_KEY`.
 
 ## Admin And Visualization
 
@@ -164,7 +179,8 @@ The KG visualization uses vendored JavaScript assets under
 
 - Health: `/api/v1/health`, `/livez`, `/readyz`
 - Metrics: `/metrics`
-- Migrations: `python -m engram.cli migrate`
+- PostgreSQL migrations: `python -m engram.cli migrate` (the
+  `postgres-migrate` alias is retained)
 - Schema/index init: `python -m engram.cli init`
 - Smoke test: `python -m engram.cli smoke`
 - KG rebuild: `python -m engram.cli rebuild-kg`

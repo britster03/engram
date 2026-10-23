@@ -30,7 +30,10 @@ class EmbeddingService:
             "get_embedding_dimension",
             self.model.get_sentence_embedding_dimension,
         )
-        self.dim = int(get_dim())
+        dimension = get_dim()
+        if dimension is None:
+            raise RuntimeError("embedding model did not report its output dimension")
+        self.dim = int(dimension)
         if self.dim != 384:
             raise RuntimeError(
                 f"expected 384-dim embeddings, got {self.dim}; update Neo4j vector index"
@@ -90,3 +93,4 @@ class EmbeddingService:
                 results[idx] = vec
                 self._cache.set(t, vec, model_tag=self._model_tag)
         return [r for r in results if r is not None]
+    

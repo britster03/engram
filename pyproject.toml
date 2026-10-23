@@ -10,6 +10,8 @@ dependencies = [
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "pyyaml>=6.0.2",
+    "python-dotenv>=1.0,<2",
+    "tiktoken==0.14.0",
     "openai>=1.40.0",
     "sentence-transformers>=3.3.0",
     "neo4j>=5.25.0",
@@ -24,6 +26,12 @@ dependencies = [
     "tenacity>=9.0.0",
     "prometheus-client>=0.21.0",
     "itsdangerous>=2.2.0",
+    "tree-sitter>=0.24.0",
+    "tree-sitter-javascript>=0.23.1",
+    "tree-sitter-typescript>=0.23.2",
+    "psycopg[binary,pool]>=3.2.0",
+    "temporalio==1.32.0",
+    "alembic>=1.14.0",
 ]
 
 [project.optional-dependencies]

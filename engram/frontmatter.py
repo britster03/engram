@@ -52,7 +52,14 @@ def validate_required_keys(fm: dict[str, Any]) -> None:
     missing = required - fm.keys()
     if missing:
         raise FrontmatterError(f"frontmatter missing required keys: {sorted(missing)}")
-    if fm["node_type"] not in {"ENTITY", "EVENT", "FACT", "DOCUMENT", "DIRECTORY", "SESSION_SUMMARY"}:
+    if fm["node_type"] not in {
+        "ENTITY",
+        "EVENT",
+        "FACT",
+        "DOCUMENT",
+        "DIRECTORY",
+        "SESSION_SUMMARY",
+    }:
         raise FrontmatterError(f"invalid node_type: {fm['node_type']!r}")
     if fm["status"] not in {"ACTIVE", "HISTORICAL", "LOW_CONFIDENCE"}:
         raise FrontmatterError(f"invalid status: {fm['status']!r}")
@@ -66,7 +73,7 @@ def validate_required_keys(fm: dict[str, Any]) -> None:
 # Unreserved keys are permitted but not schema-validated.
 _RESERVED_KEY_TYPES: dict[str, tuple[type, ...]] = {
     "schema_version": (int,),
-    "temporal.asserted_at": (str,),       # ISO 8601
+    "temporal.asserted_at": (str,),  # ISO 8601
     "temporal.valid_from": (str, type(None)),
     "temporal.valid_until": (str, type(None)),
     "temporal.phrase": (str,),

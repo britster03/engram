@@ -89,6 +89,54 @@
         {"expr": "engram_kg_edge_count", "legendFormat": "edges"}
       ],
       "gridPos": {"h": 6, "w": 12, "x": 12, "y": 18}
+    },
+    {
+      "title": "Canonical commit latency",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(engram_canonical_commit_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(engram_canonical_commit_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 24}
+    },
+    {
+      "title": "Projection health",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "sum(engram_projection_dispatch_depth)", "legendFormat": "pending"},
+        {"expr": "max(engram_oldest_projection_age_seconds)", "legendFormat": "oldest seconds"},
+        {"expr": "max(engram_projection_revision_lag)", "legendFormat": "revision lag"},
+        {"expr": "sum(engram_dead_dispatch_depth)", "legendFormat": "dead"}
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 24}
+    },
+    {
+      "title": "Answerability distribution",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (assessment) (rate(engram_answerability_total[5m]))",
+          "legendFormat": "{{assessment}}"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 30}
+    },
+    {
+      "title": "Canonical verification rejections",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(engram_canonical_verification_rejections_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 30}
     }
   ],
   "refresh": "30s",

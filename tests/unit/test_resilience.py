@@ -40,8 +40,14 @@ def test_successful_call_resets_failures():
 def test_retries_then_succeeds():
     calls = {"n": 0}
 
-    @resilient(breaker="flaky", failure_threshold=5, max_attempts=3,
-               initial_delay=0.01, max_delay=0.02, retry_on=BoomError)
+    @resilient(
+        breaker="flaky",
+        failure_threshold=5,
+        max_attempts=3,
+        initial_delay=0.01,
+        max_delay=0.02,
+        retry_on=BoomError,
+    )
     def fn():
         calls["n"] += 1
         if calls["n"] < 3:
@@ -53,8 +59,9 @@ def test_retries_then_succeeds():
 
 
 def test_circuit_opens_after_threshold():
-    @resilient(breaker="fail", failure_threshold=2, max_attempts=1,
-               cool_down=0.2, retry_on=BoomError)
+    @resilient(
+        breaker="fail", failure_threshold=2, max_attempts=1, cool_down=0.2, retry_on=BoomError
+    )
     def fn():
         raise BoomError("always")
 
@@ -72,8 +79,9 @@ def test_circuit_opens_after_threshold():
 def test_circuit_closes_after_cooldown():
     calls = {"n": 0}
 
-    @resilient(breaker="recover", failure_threshold=1, max_attempts=1,
-               cool_down=0.05, retry_on=BoomError)
+    @resilient(
+        breaker="recover", failure_threshold=1, max_attempts=1, cool_down=0.05, retry_on=BoomError
+    )
     def fn():
         calls["n"] += 1
         if calls["n"] == 1:

@@ -29,6 +29,9 @@
             // Sessions tab state
             sessions: [],
             loadingSessions: false,
+            selectedSessionHistory: null,
+            loadingSessionHistory: false,
+            sessionHistoryError: '',
             _sessionsTimer: null,
 
             // Memories tab state
@@ -39,9 +42,12 @@
             // Ingest tab state
             ingest: { session_id: '', user: '', assistant: '' },
             ingestStatus: '',
-            bulk: { file: null, dryRun: false, sessionId: '', fileFormat: '' },
+            bulk: { file: null, dryRun: false, sessionId: '', projectName: '', fileFormat: '' },
             bulkStatus: '',
             bulkJob: null,
+            retryingEventId: '',
+            _bulkJobTimer: null,
+            _bulkPollAttempts: 0,
 
             // Settings tab state
             language: localStorage.getItem('engram-admin-lang') || 'en',
@@ -100,6 +106,8 @@
                 }
                 if (value === 'ingest') {
                     // nothing to preload
+                } else {
+                    this.stopBulkJobTimer();
                 }
             },
 
@@ -259,6 +267,35 @@
                 }
             },
 
+            async openSessionHistory(sessionId) {
+                this.selectedSessionHistory = null;
+                this.sessionHistoryError = '';
+                this.loadingSessionHistory = true;
+                try {
+                    const response = await fetch(
+                        '/admin/api/sessions/' + encodeURIComponent(sessionId) + '/history',
+                        { headers: this._authHeaders() },
+                    );
+                    if (response.ok) {
+                        this.selectedSessionHistory = await response.json();
+                    } else if (response.status === 401) {
+                        window.location.href = '/admin/login';
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.sessionHistoryError = data.detail || response.statusText;
+                    }
+                } catch (err) {
+                    this.sessionHistoryError = err.message || String(err);
+                } finally {
+                    this.loadingSessionHistory = false;
+                }
+            },
+
+            closeSessionHistory() {
+                this.selectedSessionHistory = null;
+                this.sessionHistoryError = '';
+            },
+
             startSessionsTimer() {
                 this.stopSessionsTimer();
                 this._sessionsTimer = setInterval(() => this.loadSessions(), 10000);
@@ -350,10 +387,13 @@
                 }
                 this.bulkStatus = 'Uploading...';
                 this.bulkJob = null;
+                this.stopBulkJobTimer();
+                this._bulkPollAttempts = 0;
                 const form = new FormData();
                 form.append('file', this.bulk.file);
                 form.append('dry_run', this.bulk.dryRun ? 'true' : 'false');
                 if (this.bulk.sessionId.trim()) form.append('session_id', this.bulk.sessionId.trim());
+                if (this.bulk.projectName.trim()) form.append('project_name', this.bulk.projectName.trim());
                 if (this.bulk.fileFormat) form.append('file_format', this.bulk.fileFormat);
                 try {
                     const response = await fetch('/admin/api/ingest/bulk', {
@@ -363,8 +403,7 @@
                     });
                     if (response.ok) {
                         const data = await response.json();
-                        this.bulkJob = data;
-                        this.bulkStatus = `${data.status}: ${data.accepted_count} accepted, ${data.rejected_count} rejected`;
+                        this.setBulkJob(data);
                         if (!data.dry_run && data.job_id) this.pollBulkJob(data.job_id);
                         this.pollPipeline();
                     } else if (response.status === 401) {
@@ -379,17 +418,101 @@
             },
 
             async pollBulkJob(jobId) {
+                this.stopBulkJobTimer();
                 try {
                     const response = await fetch('/admin/api/ingest/bulk/' + encodeURIComponent(jobId), {
                         headers: this._authHeaders(),
                     });
                     if (!response.ok) return;
                     const data = await response.json();
-                    this.bulkJob = data;
-                    this.bulkStatus = `${data.status}: ${data.accepted_count} accepted, ${data.rejected_count} rejected`;
+                    this.setBulkJob(data);
+                    if (this.bulkJobNeedsRefresh(data) && this._bulkPollAttempts < 45) {
+                        this._bulkPollAttempts += 1;
+                        this._bulkJobTimer = window.setTimeout(() => this.pollBulkJob(jobId), 2000);
+                    }
                 } catch (_) {
                     // best-effort status refresh
                 }
+            },
+
+            setBulkJob(data) {
+                this.bulkJob = data;
+                this.bulkStatus = `${data.status}: ${data.accepted_count} accepted, ${data.rejected_count} rejected`;
+            },
+
+            stopBulkJobTimer() {
+                if (this._bulkJobTimer) window.clearTimeout(this._bulkJobTimer);
+                this._bulkJobTimer = null;
+            },
+
+            bulkJobNeedsRefresh(job) {
+                if (!job || job.dry_run) return false;
+                return (job.events || []).some((event) => {
+                    if (event.status === 'RECEIVED' || event.status === 'PROCESSING') return true;
+                    return event.status === 'COMPLETE' && !['INDEXED', 'INDEX_FAILED'].includes(event.graph_status || '');
+                });
+            },
+
+            async refreshBulkJob() {
+                if (this.bulkJob && this.bulkJob.job_id) {
+                    this._bulkPollAttempts = 0;
+                    await this.pollBulkJob(this.bulkJob.job_id);
+                }
+            },
+
+            async retryBulkEvent(event) {
+                if (!this.bulkJob || !event || event.status !== 'FAILED') return;
+                this.retryingEventId = event.event_id;
+                try {
+                    const response = await fetch(
+                        '/admin/api/ingest/bulk/' + encodeURIComponent(this.bulkJob.job_id) +
+                        '/events/' + encodeURIComponent(event.event_id) + '/retry',
+                        { method: 'POST', headers: this._authHeaders() }
+                    );
+                    if (response.status === 401) {
+                        window.location.href = '/admin/login';
+                        return;
+                    }
+                    if (!response.ok) {
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.detail || response.statusText);
+                    }
+                    this.bulkStatus = 'Retry queued for ' + event.label;
+                    this._bulkPollAttempts = 0;
+                    await this.pollBulkJob(this.bulkJob.job_id);
+                    this.pollPipeline();
+                } catch (err) {
+                    this.bulkStatus = 'Retry failed: ' + err.message;
+                } finally {
+                    this.retryingEventId = '';
+                }
+            },
+
+            eventPipelineLabel(event) {
+                const labels = {
+                    RECEIVED: 'Queued', PROCESSING: 'Creating memory', COMPLETE: 'Memory created',
+                    INDEXED: 'Memory created', GATED_SKIP: 'Skipped', FAILED: 'Failed'
+                };
+                return labels[event.status] || event.status || 'Unknown';
+            },
+
+            eventPipelineClass(event) {
+                if (event.status === 'FAILED') return 'bg-red-50 text-red-700';
+                if (event.status === 'COMPLETE' || event.status === 'INDEXED') return 'bg-emerald-50 text-emerald-700';
+                if (event.status === 'GATED_SKIP') return 'bg-amber-50 text-amber-700';
+                return 'bg-blue-50 text-blue-700';
+            },
+
+            eventGraphLabel(event) {
+                if (event.status === 'FAILED') return 'Not indexed';
+                const labels = { WRITTEN: 'Indexing', INDEXED: 'Ready in graph', INDEX_FAILED: 'Index failed' };
+                return labels[event.graph_status] || 'Waiting for memory';
+            },
+
+            eventGraphClass(event) {
+                if (event.status === 'FAILED' || event.graph_status === 'INDEX_FAILED') return 'bg-red-50 text-red-700';
+                if (event.graph_status === 'INDEXED') return 'bg-emerald-50 text-emerald-700';
+                return 'bg-blue-50 text-blue-700';
             },
 
             // ========== Settings ==========

@@ -114,13 +114,5 @@ def _format_prompt(tokenizer: Any, system_prompt: str, user_prompt: str) -> str:
         {"role": "user", "content": user_prompt},
     ]
     if getattr(tokenizer, "chat_template", None):
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-    return (
-        "System:\n"
-        f"{system_prompt}\n\n"
-        "User:\n"
-        f"{user_prompt}\n\n"
-        "Assistant:\n"
-    )
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return f"System:\n{system_prompt}\n\nUser:\n{user_prompt}\n\nAssistant:\n"

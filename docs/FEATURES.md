@@ -17,7 +17,7 @@ Legend:
 | Capability | Status | Evidence |
 |---|---:|---|
 | Filesystem-authoritative `mem://` storage | yes | `engram/storage/filesystem.py`, `engram/rebuild_kg.py` |
-| SQLite event ledger and filesystem outbox | yes | `engram/storage/sqlite.py`, `engram/ingest/worker.py` |
+| PostgreSQL event ledger and filesystem outbox | yes | `engram/storage/postgres.py`, `engram/ingest/worker.py` |
 | Durable ingest worker owns event processing | yes | `engram/ingest/durable_worker.py`, `engram/api/app.py` |
 | API/session/chat/retry paths only enqueue or reset ingest rows | yes | `engram/api/routes/sessions.py`, `engram/api/routes/chat.py`, `engram/api/routes/events.py` |
 | Crash recovery and stuck-event reconciliation | yes | `engram/consolidation/reconciliation.py`, `tests/integration/test_crash_recovery.py` |
@@ -37,7 +37,7 @@ Legend:
 | REST API for ingest, query, sessions, memories, events, consolidation | yes | `engram/api/app.py`, `engram/api/routes/` |
 | Bearer-token auth | yes | `engram/api/auth.py` |
 | Telemetry and health/readiness | yes | `engram/metrics.py`, `engram/api/app.py` |
-| Migrations | yes | `engram/migrations/runner.py` |
+| PostgreSQL migrations | yes | `engram/migrations/alembic/` |
 | Training scripts and synthetic data | partial | `engram/training/`, optional training extras required |
 
 ## Post-SDD Extensions
@@ -45,13 +45,13 @@ Legend:
 | Capability | Status | Evidence |
 |---|---:|---|
 | Tenant registry and tenant-scoped API keys | yes | `engram/tenancy.py`, `engram/api/routes/admin.py` |
-| Tenant isolation across SQLite, filesystem, KG, sessions, and rate limits | yes | `tests/integration/test_tenant_isolation.py`, `tests/unit/test_session_cache.py` |
+| Tenant isolation across PostgreSQL, filesystem, KG, sessions, and rate limits | yes | `tests/integration/test_tenant_isolation.py`, `tests/unit/test_session_cache.py` |
 | Tenant-scoped Redis session keys | yes | `engram/storage/redis_cache.py` uses `session:{tenant_id}:{session_id}` |
 | Admin UI | yes | `engram/admin/routes.py`, `engram/admin/templates/`, `tests/e2e/test_admin_ui.py` |
 | Bulk upload API and Admin UI panel | yes | `engram/api/routes/bulk_ingest.py`, `engram/admin/templates/dashboard/_ingest.html`, `tests/integration/test_bulk_and_kg.py` |
 | KG graph API and Admin UI visualization | yes | `engram/api/routes/kg.py`, `engram/admin/templates/kg.html`, `engram/admin/static/js/graph-lite.js` |
 | In-memory KG backend | yes | `engram/storage/memory_kg.py` |
-| Ollama Cloud provider | yes | `engram/models/providers/ollama_cloud.py`, `config.ollama-cloud.yaml`, `tests/e2e/test_ollama_cloud_live.py` |
+| Muse Spark/OpenCode Go provider | yes | `engram/models/providers/openai_compat.py`, `config.opencode-go.yaml`, `tests/e2e/test_muse_spark_live.py` |
 | Local Ollama OpenAI-compatible provider | yes | `engram/models/providers/__init__.py`, `engram/models/providers/openai_compat.py` |
 | Local provider scaffold | yes | `engram/models/providers/local_provider.py` |
 | `api_base` on Core and Frontier configs | yes | `engram/config.py` |
@@ -70,15 +70,15 @@ Legend:
 |---|---:|---:|---|
 | `openai` | yes | yes | OpenAI-compatible adapter. |
 | `openai_compat` | yes | yes | Requires explicit `api_base`. |
+| `openai_responses` | yes | yes | Production default: Muse Spark through OpenCode Go. |
 | `ollama` | yes | yes | Local Ollama at `http://localhost:11434/v1`. |
-| `ollama_cloud` | yes | yes | Default provider; direct Ollama API at `https://ollama.com/api`; reads `OLLAMA_API_KEY`. |
 | `local` | yes | no | Core provider scaffold for local model use. |
 
 ## Cache And Storage Guarantees
 
 - Filesystem memory files are authoritative.
 - Neo4j and the in-memory KG are derived indexes.
-- SQLite is the control plane for events, outboxes, bulk jobs, recovery state,
+- PostgreSQL is the control plane for events, outboxes, bulk jobs, recovery state,
   consolidation tasks, tenants, and audit rows.
 - The session cache stores active conversation state only and is tenant-scoped.
 - Embedding and overview caches are post-SDD performance extensions. They are
@@ -91,7 +91,6 @@ Legend:
   conflict decisions.
 - Hard-delete of memories is not exposed; memory retirement is soft-delete.
 - Active/active multi-region replication is not shipped.
-- Postgres control-plane storage is not shipped.
 - Training scripts are runnable with optional extras, but this repo does not
   include a validated trained adapter artifact.
 - Some retained historical docs may lag the newest Admin UI, bulk upload, KG

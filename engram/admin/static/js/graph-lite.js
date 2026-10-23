@@ -27,10 +27,13 @@
     function colorFor(node) {
       if (node.status === 'LOW_CONFIDENCE') return '#b45309';
       if (node.status === 'HISTORICAL') return '#737373';
-      if (node.node_type === 'ENTITY') return '#2563eb';
-      if (node.node_type === 'FACT') return '#7c3aed';
-      if (node.node_type === 'SESSION_SUMMARY') return '#059669';
-      return '#111827';
+      if (node.node_type === 'DOCUMENT') return '#2563eb';
+      if (node.node_type === 'EPISODE') return '#0f766e';
+      if (node.node_type === 'ENTITY') return '#7c3aed';
+      if (node.node_type === 'FACT') return '#0891b2';
+      if (node.node_type === 'SESSION_SUMMARY') return '#d97706';
+      if (node.node_type === 'COLLECTION') return '#0369a1';
+      return '#64748b';
     }
 
     function displayLabel(node) {
@@ -44,7 +47,7 @@
         raw = raw.replace(/^\d{4}-\d{2}-\d{2}_/, '');
       }
       raw = String(raw).replace('mem://', '').replace(/\.md$/, '');
-      var max = nodes.length <= 3 ? 24 : 32;
+      var max = nodes.length <= 3 ? 26 : 34;
       if (raw.length > max) raw = raw.slice(0, max - 3) + '...';
       return raw;
     }
@@ -88,30 +91,48 @@
 
     function draw() {
       ctx.clearRect(0, 0, width, height);
-      ctx.strokeStyle = '#d4d4d4';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.36)';
       ctx.fillStyle = '#737373';
       ctx.font = '11px Inter, system-ui, sans-serif';
       edges.forEach(function (e) {
         var a = byId.get(e.source), b = byId.get(e.target);
+        var isSelectedEdge = options.selectedId &&
+          (e.source === options.selectedId || e.target === options.selectedId);
+        ctx.lineWidth = isSelectedEdge ? 2 : 1;
+        ctx.strokeStyle = isSelectedEdge ? '#64748b' : 'rgba(148, 163, 184, 0.32)';
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
-        if (e.label) {
+        if (e.label && isSelectedEdge && options.showSelectedEdgeLabels) {
+          ctx.fillStyle = '#475569';
+          ctx.font = '10px Inter, system-ui, sans-serif';
           ctx.fillText(e.label, (a.x + b.x) / 2 + 4, (a.y + b.y) / 2 - 4);
         }
       });
       nodes.forEach(function (n) {
+        var isSelected = n.id === options.selectedId;
+        var isSource = ['DOCUMENT', 'EPISODE', 'SESSION_SUMMARY', 'COLLECTION'].indexOf(n.node_type) !== -1;
+        var shouldLabel = nodes.length <= 18 || isSelected || isSource;
+        var radius = isSource ? 10 : 7;
         ctx.beginPath();
         ctx.fillStyle = colorFor(n);
-        ctx.arc(n.x, n.y, 9, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
         ctx.fill();
+        if (isSelected) {
+          ctx.beginPath();
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 3;
+          ctx.arc(n.x, n.y, radius + 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        if (!shouldLabel) return;
         ctx.fillStyle = '#111827';
         ctx.font = '12px Inter, system-ui, sans-serif';
         var label = displayLabel(n);
         var labelWidth = ctx.measureText(label).width;
         var drawLeft = n.x > width * 0.58;
-        var textX = drawLeft ? n.x - 13 : n.x + 13;
+        var textX = drawLeft ? n.x - radius - 5 : n.x + radius + 5;
         var textY = n.y + (n.y > height - 42 ? -14 : 4);
         var boxX = drawLeft ? textX - labelWidth - 4 : textX - 4;
         var boxY = textY - 13;

@@ -24,7 +24,7 @@ Usage (smoke first, then full):
 Env:
     ENGRAM_BASE_URL   default http://127.0.0.1:8000
     ENGRAM_ADMIN_KEY  required (used to create per-conversation tenants)
-    OLLAMA_API_KEY    required (judge model)
+    OPENCODE_GO_API_KEY required (Muse Spark judge model)
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ from pathlib import Path
 # Allow running as `python benchmarks/run_locomo.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engram_client import DrainConfig, DrainTimeout, EngramClient, EngramError  # noqa: E402
-from judge import OllamaJudge  # noqa: E402
-from loader import Conversation, load_locomo  # noqa: E402
+from engram_client import DrainConfig, DrainTimeoutError, EngramClient, EngramError
+from judge import MuseSparkJudge
+from loader import Conversation, load_locomo
 
 
 def _session_pairs(conv: Conversation):
@@ -83,9 +83,7 @@ def _dated(turn) -> str:
     return turn.attributed()
 
 
-def ingest_conversation(
-    client: EngramClient, conv: Conversation, *, limit_pairs: int = 0
-) -> int:
+def ingest_conversation(client: EngramClient, conv: Conversation, *, limit_pairs: int = 0) -> int:
     """Ingest every pair of one conversation. Returns the pair count.
 
     `limit_pairs` (>0) caps ingest for cheap plumbing smoke tests; the baseline
@@ -119,8 +117,8 @@ def run(args: argparse.Namespace) -> int:
     if not admin_key:
         print("error: set ENGRAM_ADMIN_KEY (needed to create tenants)", file=sys.stderr)
         return 2
-    if not os.environ.get("OLLAMA_API_KEY"):
-        print("error: set OLLAMA_API_KEY (needed for the judge)", file=sys.stderr)
+    if not os.environ.get("OPENCODE_GO_API_KEY"):
+        print("error: set OPENCODE_GO_API_KEY (needed for the judge)", file=sys.stderr)
         return 2
 
     conversations = load_locomo(args.data)
@@ -137,14 +135,16 @@ def run(args: argparse.Namespace) -> int:
     print(f"run {run_id}: {len(conversations)} conversation(s) -> {out_dir}")
 
     rows: list[dict] = []
-    with OllamaJudge() as judge, open(rows_path, "w", encoding="utf-8") as rows_fh:
+    with MuseSparkJudge() as judge, open(rows_path, "w", encoding="utf-8") as rows_fh:
         for cidx, conv in enumerate(conversations):
             tenant_id = f"{args.tenant_prefix}-{run_id}-c{cidx}"
             print(f"\n[conv {cidx}] {conv.sample_id} tenant={tenant_id}")
             try:
                 client = EngramClient.create_tenant(
-                    base_url=base_url, admin_key=admin_key,
-                    tenant_id=tenant_id, display_name=conv.sample_id,
+                    base_url=base_url,
+                    admin_key=admin_key,
+                    tenant_id=tenant_id,
+                    display_name=conv.sample_id,
                     query_timeout_s=args.query_timeout,
                 )
             except EngramError as err:
@@ -154,12 +154,14 @@ def run(args: argparse.Namespace) -> int:
             with client:
                 t0 = time.monotonic()
                 n_pairs = ingest_conversation(client, conv, limit_pairs=args.limit_pairs)
-                print(f"  ingested {n_pairs} pairs in {time.monotonic()-t0:.1f}s; draining...")
+                print(f"  ingested {n_pairs} pairs in {time.monotonic() - t0:.1f}s; draining...")
                 try:
                     drain = client.wait_for_drain(drain_cfg)
-                    print(f"  drained in {drain['waited_s']:.1f}s "
-                          f"(saw_activity={bool(drain['saw_activity'])})")
-                except DrainTimeout as err:
+                    print(
+                        f"  drained in {drain['waited_s']:.1f}s "
+                        f"(saw_activity={bool(drain['saw_activity'])})"
+                    )
+                except DrainTimeoutError as err:
                     print(f"  ! drain timeout, querying anyway: {err}")
 
                 questions = conv.qa[: args.limit_questions] if args.limit_questions else conv.qa
@@ -215,9 +217,11 @@ def run(args: argparse.Namespace) -> int:
 
                     mark = "OK " if jr.correct else "XX "
                     if qidx % 10 == 0 or not jr.correct:
-                        print(f"    [{mark}] q{qidx} {probe.category_name:>11} "
-                              f"l0={row['l0_decision']} depth={row['cascade_depth_reached']}"
-                              f" :: {probe.question[:60]}")
+                        print(
+                            f"    [{mark}] q{qidx} {probe.category_name:>11} "
+                            f"l0={row['l0_decision']} depth={row['cascade_depth_reached']}"
+                            f" :: {probe.question[:60]}"
+                        )
 
     summary = summarize(rows)
     summary["run_id"] = run_id
@@ -279,15 +283,27 @@ def main() -> int:
     p.add_argument("--admin-key", default=None)
     p.add_argument("--limit-convs", type=int, default=0, help="0 = all")
     p.add_argument("--limit-questions", type=int, default=0, help="0 = all per conv")
-    p.add_argument("--limit-pairs", type=int, default=0,
-                   help="0 = all; cap ingested pairs for a cheap plumbing smoke test")
+    p.add_argument(
+        "--limit-pairs",
+        type=int,
+        default=0,
+        help="0 = all; cap ingested pairs for a cheap plumbing smoke test",
+    )
     p.add_argument("--max-depth", default=None, help="cap cascade depth, e.g. L2")
     p.add_argument("--max-reentries", type=int, default=None)
-    p.add_argument("--drain-timeout", type=float, default=240.0,
-                   help="max wait for consolidation to settle; core memory is "
-                        "ready well before this, so we proceed on timeout")
-    p.add_argument("--query-timeout", type=float, default=300.0,
-                   help="per-query HTTP timeout (s); queries drive several LLM calls")
+    p.add_argument(
+        "--drain-timeout",
+        type=float,
+        default=240.0,
+        help="max wait for consolidation to settle; core memory is "
+        "ready well before this, so we proceed on timeout",
+    )
+    p.add_argument(
+        "--query-timeout",
+        type=float,
+        default=300.0,
+        help="per-query HTTP timeout (s); queries drive several LLM calls",
+    )
     p.add_argument("--tenant-prefix", default="locomo")
     p.add_argument("--out", default="benchmarks/results")
     return run(p.parse_args())

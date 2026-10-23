@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/snap-research/locomo",
+  "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+  "file": "task_eval/evaluation.py",
+  "sha256": "8e3be5d57ff2ff9ec5cd05939592f468c5f3f1fd95d13e431932bdf6bf0fd6fd",
+  "functions": [
+    "eval_question_answering",
+    "f1",
+    "f1_score",
+    "normalize_answer"
+  ]
+}

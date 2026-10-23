@@ -44,7 +44,9 @@ _REGEX_PATTERNS: list[re.Pattern[str]] = [
     # First/second-person pronouns implying prior context
     re.compile(r"^\s*(he|she|they|it|that|this|these|those)\s", re.IGNORECASE),
     # Syntactic incompleteness (ends with coordinator/dangling prep)
-    re.compile(r"\b(and|or|but|because|since|if|when|while|about|for|with)\s*\.?\s*$", re.IGNORECASE),
+    re.compile(
+        r"\b(and|or|but|because|since|if|when|while|about|for|with)\s*\.?\s*$", re.IGNORECASE
+    ),
 ]
 
 

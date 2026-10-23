@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -26,3 +27,10 @@ def render(template_name: str, **vars: Any) -> str:
     """Render `prompts/{template_name}.j2` with the given variables."""
     template = _env().get_template(f"{template_name}.j2")
     return template.render(**vars)
+
+
+def source_digest(template_name: str) -> str:
+    """Fingerprint the actual prompt source for derived-artifact identity."""
+    env = _env()
+    source, _, _ = env.loader.get_source(env, f"{template_name}.j2")
+    return hashlib.sha256(source.encode()).hexdigest()

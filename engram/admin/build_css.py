@@ -62,9 +62,12 @@ def main() -> None:
 
     cmd = [
         str(binary),
-        "-i", str(input_css),
-        "-o", str(output_css),
-        "-c", str(config),
+        "-i",
+        str(input_css),
+        "-o",
+        str(output_css),
+        "-c",
+        str(config),
         "--minify",
     ]
 

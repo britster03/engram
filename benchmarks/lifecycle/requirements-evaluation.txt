@@ -1,0 +1,11 @@
+nltk==3.9.1
+rouge-score==0.1.2
+pytest==8.3.3
+# The following run only in the separate scoring image, not native ingestion.
+bert-score==0.3.13
+pandas==2.2.3
+matplotlib==3.9.2
+transformers==4.44.2
+tokenizers==0.19.1
+huggingface-hub==0.24.7
+safetensors==0.4.5

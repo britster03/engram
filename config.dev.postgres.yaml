@@ -1,0 +1,60 @@
+# Local Postgres development profile. Copy deploy/env.dev.example to .env.dev
+# and keep this database isolated from staging and production.
+api:
+  api_key: ${ENGRAM_API_KEY}
+  admin_key: ${ENGRAM_ADMIN_KEY}
+
+filesystem:
+  data_dir: "./data/dev-postgres/export"
+  create_dirs: false
+
+canonical_memory:
+  enabled: true
+  require_temporal: true
+  allow_filesystem_runtime: false
+  evidence_mode: enforce
+  automatic_user_memory_enabled: false
+
+core_model:
+  provider: "openai_responses"
+  model_path: "muse-spark-1.3-contributor"
+  api_base: "https://opencode.ai/zen/go/v1"
+  api_key: ${OPENCODE_GO_API_KEY}
+
+frontier_llm:
+  provider: "openai_responses"
+  model_path: "muse-spark-1.3-contributor"
+  api_base: "https://opencode.ai/zen/go/v1"
+  api_key: ${OPENCODE_GO_API_KEY}
+
+knowledge_graph:
+  backend: "neo4j"
+  uri: "bolt://localhost:7687"
+  writer_username: "neo4j"
+  writer_password: ${NEO4J_ADMIN_PASSWORD}
+  reader_username: "neo4j"
+  reader_password: ${NEO4J_ADMIN_PASSWORD}
+
+event_ledger:
+  backend: "postgres"
+  dsn: ${ENGRAM_DEV_DATABASE_URL}
+  reconciliation_interval_seconds: 60
+
+temporal:
+  enabled: true
+  address: "127.0.0.1:7233"
+  namespace: "engram-dev"
+
+consolidation:
+  quality_mode: enforce
+  overview_max_tokens: 2048
+  overview_debounce_seconds: 30
+  overview_max_children: 100
+  overview_input_tokens: 12000
+
+retrieval:
+  quality_mode: enforce
+
+session_cache:
+  backend: "redis"
+  redis_url: "redis://localhost:6379"

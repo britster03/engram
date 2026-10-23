@@ -1,0 +1,5 @@
+# Benchmark images install dependencies only. Never send result archives or
+# private runtime credentials to the builder.
+**
+!lifecycle/
+!lifecycle/Dockerfile

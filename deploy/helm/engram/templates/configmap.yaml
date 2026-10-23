@@ -3,6 +3,11 @@ kind: ConfigMap
 metadata:
   name: {{ include "engram.fullname" . }}-config
 data:
+  ENGRAM_SESSION_COMPACTION_TRIGGER_TOKENS: {{ .Values.config.session.compaction_trigger_tokens | quote }}
+  ENGRAM_SESSION_COMPACTION_TARGET_RATIO: {{ .Values.config.session.compaction_target_ratio | quote }}
+  ENGRAM_SESSION_COMPACTION_INPUT_TOKENS: {{ .Values.config.session.compaction_input_tokens | quote }}
+  ENGRAM_SESSION_COMPACTION_SUMMARY_TOKENS: {{ .Values.config.session.compaction_summary_tokens | quote }}
+  ENGRAM_RETRIEVAL_QUALITY_MODE: {{ .Values.config.retrieval.quality_mode | quote }}
   config.yaml: |
     api:
       host: "0.0.0.0"
@@ -17,17 +22,29 @@ data:
       classification_threshold: 0.3
       device: "cpu"
     core_model:
-      provider: "ollama_cloud"
-      model_path: "kimi-k2.7-code:cloud"
-      api_base: "https://ollama.com/api"
-      api_key: ${OLLAMA_API_KEY}
+      provider: "openai_responses"
+      model_path: "muse-spark-1.3-contributor"
+      api_base: "https://opencode.ai/zen/go/v1"
+      api_key: ${OPENCODE_GO_API_KEY}
+      temperature: 1.0
     frontier_llm:
-      provider: "ollama_cloud"
-      model_path: "kimi-k2.7-code:cloud"
-      api_base: "https://ollama.com/api"
-      api_key: ${OLLAMA_API_KEY}
+      provider: "openai_responses"
+      model_path: "muse-spark-1.3-contributor"
+      api_base: "https://opencode.ai/zen/go/v1"
+      api_key: ${OPENCODE_GO_API_KEY}
+      temperature: 1.0
+      reasoning_effort: "low"
     filesystem:
-      data_dir: "/var/lib/engram/mem"
+      data_dir: "/var/lib/engram/export"
+      create_dirs: false
+    canonical_memory:
+      enabled: true
+      require_temporal: true
+      allow_filesystem_runtime: false
+      evidence_mode: enforce
+      automatic_user_memory_enabled: false
+      legacy_uri_status_code: 410
+      artifact_retention_hours: 24
     knowledge_graph:
       backend: "neo4j"
       uri: {{ .Values.neo4j.uri | default (printf "bolt://%s-neo4j:7687" (include "engram.fullname" .)) | quote }}
@@ -36,20 +53,46 @@ data:
       reader_username: "neo4j"
       reader_password: ${NEO4J_ADMIN_PASSWORD}
     event_ledger:
-      path: "/var/lib/engram/event_ledger.db"
+      backend: "postgres"
+      dsn: ${ENGRAM_DATABASE_URL}
+      reconciliation_interval_seconds: 60
+      stale_overview_scan_interval_seconds: 86400
+    temporal:
+      enabled: true
+      address: {{ .Values.temporal.address | quote }}
+      namespace: {{ .Values.temporal.namespace | quote }}
+      ingest_task_queue: {{ .Values.temporal.ingestTaskQueue | quote }}
+      code_ingest_task_queue: {{ .Values.temporal.codeIngestTaskQueue | quote }}
+      projection_task_queue: {{ .Values.temporal.projectionTaskQueue | quote }}
+      consolidation_task_queue: {{ .Values.temporal.consolidationTaskQueue | quote }}
+      maintenance_task_queue: {{ .Values.temporal.maintenanceTaskQueue | quote }}
+      worker_concurrency: {{ .Values.temporal.workerConcurrency }}
+      maintenance_worker_concurrency: {{ .Values.temporal.maintenanceWorkerConcurrency }}
+      dispatch_interval_seconds: {{ .Values.temporal.dispatchIntervalSeconds }}
+      history_retention_days: {{ .Values.temporal.historyRetentionDays }}
     consolidation:
-      db_path: "/var/lib/engram/consolidation.db"
+      quality_mode: enforce
+      overview_max_tokens: 2048
+      overview_debounce_seconds: 30
+      overview_max_children: 100
+      overview_input_tokens: 12000
       max_concurrent_tasks: {{ .Values.config.consolidation.max_concurrent_tasks }}
       max_backlog: {{ .Values.config.consolidation.max_backlog }}
     session_cache:
       backend: "redis"
       redis_url: {{ .Values.redis.url | default (printf "redis://%s-redis:6379" (include "engram.fullname" .)) | quote }}
     retrieval:
+      quality_mode: {{ .Values.config.retrieval.quality_mode | quote }}
       l0_skip: {{ .Values.config.retrieval.l0_skip }}
       max_reentries: {{ .Values.config.retrieval.max_reentries }}
       max_depth: {{ .Values.config.retrieval.max_depth }}
     decay:
       preset: "personal_conversation"
       schedule: "0 3 * * *"
+      schedule_timezone: "UTC"
     session:
+      compaction_trigger_tokens: {{ .Values.config.session.compaction_trigger_tokens }}
+      compaction_target_ratio: {{ .Values.config.session.compaction_target_ratio }}
+      compaction_input_tokens: {{ .Values.config.session.compaction_input_tokens }}
+      compaction_summary_tokens: {{ .Values.config.session.compaction_summary_tokens }}
       timeout_minutes: {{ .Values.config.session.timeout_minutes }}

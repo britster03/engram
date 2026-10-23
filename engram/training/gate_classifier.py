@@ -38,8 +38,13 @@ def load_dataset(path: Path) -> list[dict]:
 
 
 def train(
-    data_path: Path, out_dir: Path, *,
-    epochs: int = 5, lr: float = 2e-5, batch: int = 64, max_len: int = 128,
+    data_path: Path,
+    out_dir: Path,
+    *,
+    epochs: int = 5,
+    lr: float = 2e-5,
+    batch: int = 64,
+    max_len: int = 128,
 ) -> None:
     try:
         import torch  # type: ignore
@@ -66,11 +71,16 @@ def train(
     head = torch.nn.Linear(384, 2)
 
     class GateDS(Dataset):
-        def __len__(self) -> int: return len(rows)
+        def __len__(self) -> int:
+            return len(rows)
+
         def __getitem__(self, i: int) -> dict:
             r = rows[i]
             enc = tokenizer(
-                r["query"], truncation=True, max_length=max_len, return_tensors="pt",
+                r["query"],
+                truncation=True,
+                max_length=max_len,
+                return_tensors="pt",
             )
             return {
                 "input_ids": enc.input_ids.squeeze(0),
@@ -80,6 +90,7 @@ def train(
 
     def collate(batch_: list[dict]) -> dict:
         from torch.nn.utils.rnn import pad_sequence  # type: ignore
+
         ids = pad_sequence([b["input_ids"] for b in batch_], batch_first=True)
         mask = pad_sequence([b["attention_mask"] for b in batch_], batch_first=True)
         labels = torch.tensor([b["label"] for b in batch_])
@@ -88,11 +99,14 @@ def train(
     loader = DataLoader(GateDS(), batch_size=batch, shuffle=True, collate_fn=collate)
     optim = torch.optim.AdamW(
         list(backbone.parameters()) + list(head.parameters()),
-        lr=lr, weight_decay=0.01,
+        lr=lr,
+        weight_decay=0.01,
     )
     total_steps = len(loader) * epochs
     sched = get_cosine_schedule_with_warmup(
-        optim, int(total_steps * 0.1), total_steps,
+        optim,
+        int(total_steps * 0.1),
+        total_steps,
     )
     weights = torch.tensor([1.0, 1.5])
     loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
@@ -136,8 +150,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-len", type=int, default=128)
     args = parser.parse_args(argv)
     train(
-        args.data, args.out,
-        epochs=args.epochs, lr=args.lr, batch=args.batch, max_len=args.max_len,
+        args.data,
+        args.out,
+        epochs=args.epochs,
+        lr=args.lr,
+        batch=args.batch,
+        max_len=args.max_len,
     )
     return 0
 

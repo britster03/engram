@@ -1,0 +1,27 @@
+log:
+  stdout: true
+persistence:
+  defaultStore: default
+  visibilityStore: visibility
+  numHistoryShards: 4
+  datastores:
+    default:
+      sql:
+        pluginName: postgres12
+        databaseName: temporal
+        connectAddr: postgres:5432
+        connectProtocol: tcp
+        user: temporal_app
+        password: '{{ .Env.ENGRAM_DB_PASSWORD }}'
+    visibility:
+      sql:
+        pluginName: postgres12
+        databaseName: temporal_visibility
+        connectAddr: postgres:5432
+        connectProtocol: tcp
+        user: temporal_app
+        password: '{{ .Env.ENGRAM_DB_PASSWORD }}'
+services:
+  frontend:
+    rpc:
+      grpcPort: 7233

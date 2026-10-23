@@ -32,10 +32,13 @@ from tenacity import (
     RetryError,
     Retrying,
     retry_if_exception_type,
+    retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
     wait_random,
 )
+
+from engram.models.budget import BudgetExceededError, bounded_sleep
 
 log = logging.getLogger(__name__)
 
@@ -52,29 +55,48 @@ class _BreakerState:
     cool_down: float
     failures: int = 0
     opened_at: float = 0.0
+    probe_in_flight: bool = False
+    generation: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def record_failure(self) -> None:
+    def record_failure(self, generation: int | None = None) -> None:
         with self.lock:
+            if generation is not None and generation != self.generation:
+                return
             self.failures += 1
-            if self.failures >= self.failure_threshold:
+            if self.probe_in_flight or self.failures >= self.failure_threshold:
                 self.opened_at = time.monotonic()
+                self.probe_in_flight = False
+                self.generation += 1
 
-    def record_success(self) -> None:
+    def record_success(self, generation: int | None = None) -> None:
         with self.lock:
+            if generation is not None and generation != self.generation:
+                return
             self.failures = 0
             self.opened_at = 0.0
+            self.probe_in_flight = False
 
     def is_open(self) -> bool:
+        """Inspect state without consuming a recovery probe."""
         with self.lock:
-            if self.opened_at == 0.0:
-                return False
-            if time.monotonic() - self.opened_at > self.cool_down:
-                # Half-open: allow one trial call through.
-                self.opened_at = 0.0
-                self.failures = max(0, self.failures - 1)
-                return False
-            return True
+            return self.opened_at != 0.0
+
+    def release(self, generation: int) -> None:
+        """Local admission/deadline failure says nothing about provider health."""
+        with self.lock:
+            if generation == self.generation and self.probe_in_flight:
+                self.probe_in_flight = False
+                self.generation += 1
+
+    def acquire(self) -> int:
+        with self.lock:
+            if self.opened_at:
+                if self.probe_in_flight or time.monotonic() - self.opened_at < self.cool_down:
+                    raise CircuitOpenError("provider circuit is cooling down or probing")
+                self.probe_in_flight = True
+                self.generation += 1
+            return self.generation
 
 
 _BREAKERS: dict[str, _BreakerState] = {}
@@ -110,7 +132,7 @@ def resilient(
     """Decorator: apply a circuit breaker + bounded exponential-backoff retry.
 
     Usage:
-        @resilient(breaker="ollama_cloud", max_attempts=3)
+        @resilient(breaker="muse_spark", max_attempts=3)
         def call_model(...): ...
 
     Failures bump the named breaker; after `failure_threshold` failures the
@@ -123,10 +145,7 @@ def resilient(
         @functools.wraps(fn)
         def wrapper(*args, **kwargs) -> T:
             state = _get_breaker(breaker, failure_threshold, cool_down)
-            if state.is_open():
-                raise CircuitOpenError(
-                    f"breaker {breaker!r} is open (last {state.failures} failures)"
-                )
+            generation = state.acquire()
             try:
                 for attempt in Retrying(
                     stop=stop_after_attempt(max_attempts),
@@ -134,22 +153,29 @@ def resilient(
                         wait_exponential(multiplier=initial_delay, max=max_delay)
                         + wait_random(0, 0.5)
                     ),
-                    retry=retry_if_exception_type(retry_on),
+                    retry=retry_if_exception_type(retry_on) & retry_if_not_exception_type(BudgetExceededError),
                     reraise=True,
+                    sleep=bounded_sleep,
                 ):
                     with attempt:
                         result = fn(*args, **kwargs)
-                state.record_success()
+                state.record_success(generation)
                 return result
+            except BudgetExceededError:
+                state.release(generation)
+                raise
             except RetryError as err:
-                state.record_failure()
+                state.record_failure(generation)
                 log.warning(
                     "resilient call %s exhausted retries (breaker=%s): %s",
-                    log_context or fn.__name__, breaker, err,
+                    log_context or fn.__name__,
+                    breaker,
+                    err,
                 )
                 raise
-            except Exception:
-                state.record_failure()
+            except BaseException:
+                # A cancelled half-open probe must never strand the breaker.
+                state.record_failure(generation)
                 raise
 
         return wrapper
@@ -196,9 +222,12 @@ def breaker_snapshot() -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     with _BREAKERS_LOCK:
         for name, state in _BREAKERS.items():
-            out[name] = {
-                "failures": state.failures,
-                "opened_at": state.opened_at,
-                "is_open": 1.0 if state.is_open() else 0.0,
-            }
+            with state.lock:
+                out[name] = {
+                    "failures": state.failures,
+                    "opened_at": state.opened_at,
+                    "is_open": float(bool(state.opened_at)),
+                    "probe_in_flight": float(state.probe_in_flight),
+                    "retry_after_seconds": max(0.0, state.cool_down - (time.monotonic() - state.opened_at)) if state.opened_at else 0.0,
+                }
     return out

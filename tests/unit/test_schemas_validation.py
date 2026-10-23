@@ -52,6 +52,12 @@ def test_ingest_rejects_oversized_turn_content():
         )
 
 
+@pytest.mark.parametrize("key", ["", "has spaces", "line\nbreak", "x" * 129])
+def test_ingest_rejects_invalid_idempotency_keys(key):
+    with pytest.raises(ValidationError):
+        schemas.IngestRequest(idempotency_key=key)
+
+
 def test_ingest_effective_pair_for_turn_group():
     req = schemas.IngestRequest(
         turn_group=schemas.TurnGroup(

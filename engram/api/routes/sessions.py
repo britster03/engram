@@ -55,12 +55,8 @@ class CompactResponse(BaseModel):
 
 
 def _manager(state: AppState) -> SessionManager:
-    return SessionManager(
-        state.session_cache,
-        window_threshold_ratio=state.cfg.session.window_threshold_ratio,
-        max_turns_before_window=state.cfg.session.max_turns_before_window,
-        session_ttl_minutes=state.cfg.session.timeout_minutes,
-    )
+    from engram.deps import make_session_manager
+    return make_session_manager(state)
 
 
 @router.post("", response_model=CreateResponse, status_code=201)
@@ -99,10 +95,11 @@ def end_session(session_id: str) -> dict[str, Any]:
         mgr,
         sess,
         state.core,
-        sqlite=state.sqlite,
+        control_plane=state.control_plane,
         fs=state.fs,
         neo4j=state.neo4j,
         embed=state.embed,
+        memory_repository=(state.memory_repository if state.cfg.canonical_memory.enabled else None),
         tenant_id=current_tenant_id(),
     )
     mgr.delete(session_id)
@@ -119,7 +116,7 @@ def add_message(session_id: str, req: MessageRequest) -> MessageResponse:
     user_turn = sess.turns[-2]
     asst_turn = sess.turns[-1]
     pid = pair_id_fn(session_id, user_turn.turn_idx, asst_turn.turn_idx)
-    event_id, _ = state.sqlite.record_event(
+    event_id, _ = state.control_plane.record_event(
         pair_id=pid,
         session_id=session_id,
         source="session",
@@ -145,7 +142,9 @@ def compact_now(session_id: str) -> CompactResponse:
     sess = mgr.get(session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="session not found")
-    sess = compact_session(mgr, sess, state.core, sqlite=state.sqlite, tenant_id=tenant_id)
+    sess = compact_session(
+        mgr, sess, state.core, control_plane=state.control_plane, tenant_id=tenant_id
+    )
     return CompactResponse(
         session_id=sess.session_id,
         status=sess.status,
@@ -162,10 +161,13 @@ def _run_compaction(state: AppState, session_id: str, tenant_id: str) -> None:
             return
         if not mgr.needs_compaction(sess):
             return
-        # Pass sqlite so §8.3.2 re-ingest of the uncompacted turns kicks in.
-        compact_session(mgr, sess, state.core, sqlite=state.sqlite, tenant_id=tenant_id)
+        # Pass control_plane so §8.3.2 re-ingest of the uncompacted turns kicks in.
+        compact_session(
+            mgr, sess, state.core, control_plane=state.control_plane, tenant_id=tenant_id
+        )
     except Exception:
         import logging
+
         logging.getLogger(__name__).exception("auto-compaction failed for session %s", session_id)
 
 

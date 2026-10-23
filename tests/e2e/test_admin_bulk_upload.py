@@ -44,8 +44,7 @@ def test_dashboard_bulk_upload_dry_run_posts_and_renders_result(
 
     with page.expect_response(
         lambda response: (
-            "/admin/api/ingest/bulk" in response.url
-            and response.request.method == "POST"
+            "/admin/api/ingest/bulk" in response.url and response.request.method == "POST"
         ),
         timeout=30000,
     ) as response_info:

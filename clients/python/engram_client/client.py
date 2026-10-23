@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -84,18 +85,23 @@ class EngramClient:
         user_turn_idx: int = 0,
         assistant_turn_idx: int | None = None,
         source: str = "client",
+        idempotency_key: str | None = None,
+        entity_bindings: list[dict[str, Any]] | None = None,
     ) -> IngestResponse:
         body = {
+            "idempotency_key": idempotency_key if idempotency_key is not None else uuid.uuid4().hex,
             "session_id": session_id,
             "source": source,
             "turn_pair": {
                 "user": {"content": user, "turn_idx": user_turn_idx},
                 "assistant": {
                     "content": assistant,
-                    "turn_idx": assistant_turn_idx or user_turn_idx + 1,
+                    "turn_idx": assistant_turn_idx if assistant_turn_idx is not None else user_turn_idx + 1,
                 },
             },
         }
+        if entity_bindings:
+            body["entity_bindings"] = entity_bindings
         raw = self._post("/api/v1/ingest", body)
         return IngestResponse.model_validate(raw)
 
@@ -133,7 +139,9 @@ class EngramClient:
             "stream": True,
         }
         with self._http.stream(
-            "POST", "/api/v1/query", json=body,
+            "POST",
+            "/api/v1/query",
+            json=body,
             headers=self._auth_headers(),
         ) as r:
             r.raise_for_status()
@@ -141,9 +149,9 @@ class EngramClient:
             event = None
             for line in r.iter_lines():
                 if line.startswith("event:"):
-                    event = line[len("event:"):].strip()
+                    event = line[len("event:") :].strip()
                 elif line.startswith("data:"):
-                    data = line[len("data:"):].strip()
+                    data = line[len("data:") :].strip()
                     if event == "delta":
                         try:
                             payload = json.loads(data)
@@ -160,6 +168,7 @@ class EngramClient:
         messages: list[dict[str, str]],
         *,
         session_id: str | None = None,
+        client_message_id: str | None = None,
         stream: bool = False,
         session_context: str | None = None,
         max_depth: str | None = None,
@@ -167,6 +176,7 @@ class EngramClient:
     ) -> dict[str, Any]:
         body = {
             "messages": messages,
+            "client_message_id": client_message_id,
             "session_id": session_id,
             "stream": stream,
             "session_context": session_context,
@@ -180,12 +190,14 @@ class EngramClient:
         messages: list[dict[str, str]],
         *,
         session_id: str | None = None,
+        client_message_id: str | None = None,
         session_context: str | None = None,
         max_depth: str | None = None,
         max_reentries: int | None = None,
     ) -> Iterator[str]:
         body = {
             "messages": messages,
+            "client_message_id": client_message_id,
             "session_id": session_id,
             "session_context": session_context,
             "max_depth": max_depth,
@@ -193,16 +205,18 @@ class EngramClient:
             "stream": True,
         }
         with self._http.stream(
-            "POST", "/api/v1/chat/completions", json=body,
+            "POST",
+            "/api/v1/chat/completions",
+            json=body,
             headers=self._auth_headers(),
         ) as r:
             r.raise_for_status()
             event = None
             for line in r.iter_lines():
                 if line.startswith("event:"):
-                    event = line[len("event:"):].strip()
+                    event = line[len("event:") :].strip()
                 elif line.startswith("data:"):
-                    data = line[len("data:"):].strip()
+                    data = line[len("data:") :].strip()
                     if event == "delta":
                         try:
                             payload = json.loads(data)
@@ -230,15 +244,21 @@ class EngramClient:
         self._delete(f"/api/v1/sessions/{session_id}")
 
     def send_message(
-        self, session_id: str, *, user: str, assistant: str,
+        self,
+        session_id: str,
+        *,
+        user: str,
+        assistant: str,
     ) -> IngestResponse:
         body = {"user": user, "assistant": assistant}
         raw = self._post(f"/api/v1/sessions/{session_id}/message", body)
-        return IngestResponse.model_validate({
-            "event_id": raw["event_id"],
-            "pair_id": raw["pair_id"],
-            "status": "RECEIVED",
-        })
+        return IngestResponse.model_validate(
+            {
+                "event_id": raw["event_id"],
+                "pair_id": raw["pair_id"],
+                "status": "RECEIVED",
+            }
+        )
 
     # ------------------------------------------------------------------
     # Memory helpers
@@ -248,7 +268,11 @@ class EngramClient:
         return self._get(f"/api/v1/memories/{_strip_scheme(source_uri)}")
 
     def list_memories(
-        self, *, prefix: str = "mem://", limit: int = 50, cursor: str | None = None,
+        self,
+        *,
+        prefix: str = "mem://",
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"prefix": prefix, "limit": limit}
         if cursor:
@@ -266,7 +290,11 @@ class EngramClient:
     # ------------------------------------------------------------------
 
     def create_tenant(
-        self, tenant_id: str, *, display_name: str = "", quotas: dict[str, int] | None = None,
+        self,
+        tenant_id: str,
+        *,
+        display_name: str = "",
+        quotas: dict[str, int] | None = None,
     ) -> tuple[TenantPayload, str]:
         """Create a tenant. Returns (payload, api_key). The api_key is
         shown exactly once — persist it immediately.
@@ -328,13 +356,13 @@ class EngramClient:
                 last_err = err
                 if attempt >= self.retries:
                     raise
-                time.sleep(min(8.0, 0.5 * (2 ** attempt)))
+                time.sleep(min(8.0, 0.5 * (2**attempt)))
                 continue
             if r.status_code < 500 and r.status_code != 429:
                 return r
             if attempt >= self.retries:
                 return r
-            retry_after = float(r.headers.get("Retry-After", "0")) or min(8.0, 0.5 * (2 ** attempt))
+            retry_after = float(r.headers.get("Retry-After", "0")) or min(8.0, 0.5 * (2**attempt))
             time.sleep(retry_after)
         raise last_err or RuntimeError("unreachable")
 
@@ -349,9 +377,17 @@ class EngramClient:
         raise EngramError(r.status_code, detail, r.headers.get("X-Request-ID"))
 
     def _get(
-        self, path: str, *, params: dict[str, Any] | None = None, auth: bool = True,
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        auth: bool = True,
     ) -> Any:
-        headers = self._auth_headers() if auth else {"User-Agent": self._http.headers.get("User-Agent", "")}
+        headers = (
+            self._auth_headers()
+            if auth
+            else {"User-Agent": self._http.headers.get("User-Agent", "")}
+        )
         r = self._with_retry("GET", path, params=params, headers=headers)
         self._raise_for_status(r)
         return r.json()
@@ -368,5 +404,5 @@ class EngramClient:
 
 def _strip_scheme(uri: str) -> str:
     if uri.startswith("mem://"):
-        return uri[len("mem://"):]
+        return uri[len("mem://") :]
     return uri

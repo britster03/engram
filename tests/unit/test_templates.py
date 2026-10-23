@@ -6,6 +6,7 @@ from engram.retrieval import templates
 def test_available_templates_cover_spec():
     """§16.3 lists 8 Cypher template files. Ensure we have them."""
     expected = {
+        "t_canonical_paths",
         "t_children_of",
         "t_neighbours_by_relation",
         "t_path_between",

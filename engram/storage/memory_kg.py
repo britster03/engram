@@ -22,10 +22,13 @@ to `neo4j`. The indexes created in `ensure_indexes()` are no-ops.
 from __future__ import annotations
 
 import logging
+import math
 import threading
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from engram.storage.lexical import TEXT_LIMIT, query_terms
 from engram.tenancy import current_tenant_id
 
 log = logging.getLogger(__name__)
@@ -116,9 +119,13 @@ class InMemoryKnowledgeGraph:
                     for e in self._edges
                 ):
                     self._edges.append(
-                        _Edge(type="CONTAINS", subject_uri=parent_uri,
-                              object_uri=source_uri, relation_label="CONTAINS",
-                              tenant_id=tid)
+                        _Edge(
+                            type="CONTAINS",
+                            subject_uri=parent_uri,
+                            object_uri=source_uri,
+                            relation_label="CONTAINS",
+                            tenant_id=tid,
+                        )
                     )
             return dict(merged)
 
@@ -149,14 +156,517 @@ class InMemoryKnowledgeGraph:
                     return
             self._edges.append(
                 _Edge(
-                    type=edge_type, subject_uri=subject_uri, object_uri=object_uri,
-                    relation_label=relation_label, tenant_id=tid, props=props,
+                    type=edge_type,
+                    subject_uri=subject_uri,
+                    object_uri=object_uri,
+                    relation_label=relation_label,
+                    tenant_id=tid,
+                    props=props,
                 )
             )
 
     # ------------------------------------------------------------------
+    # Canonical PostgreSQL projection ----------------------------------
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _projection_revision(revision: int) -> int:
+        try:
+            value = int(revision)
+        except (TypeError, ValueError) as err:
+            raise ValueError("projection revision must be an integer") from err
+        if value < 0:
+            raise ValueError("projection revision must be non-negative")
+        return value
+
+    def upsert_memory_projection(
+        self,
+        *,
+        memory_id: str,
+        revision: int,
+        properties: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a stable-ID, revision-guarded memory projection in memory."""
+        if not memory_id:
+            raise ValueError("memory_id is required for projection")
+        tid = tenant_id or current_tenant_id()
+        incoming = self._projection_revision(revision)
+        key = (tid, f"memory:{memory_id}")
+        props = dict(properties or {})
+        for field_name in ("tenant_id", "memory_id", "projected_revision"):
+            props.pop(field_name, None)
+        props.setdefault("status", "ACTIVE")
+        props["search_text"] = str(
+            props.get("search_text")
+            or props.get("l0_abstract")
+            or props.get("abstract")
+            or props.get("canonical_name")
+            or ""
+        )[:TEXT_LIMIT]
+        with self._lock:
+            existing = self._nodes.get(key, {})
+            current = int(existing.get("projected_revision", -1))
+            if current > incoming:
+                return {
+                    "node": dict(existing),
+                    "applied": False,
+                    "projected_revision": current,
+                }
+            merged = {
+                **existing,
+                **props,
+                "source_uri": props.get(
+                    "source_uri", existing.get("source_uri", f"mem://memory/{memory_id}")
+                ),
+                "tenant_id": tid,
+                "memory_id": memory_id,
+                "projected_revision": incoming,
+            }
+            self._nodes[key] = merged
+            return {"node": dict(merged), "applied": True, "projected_revision": incoming}
+
+    def delete_memory_projection(
+        self,
+        *,
+        memory_id: str,
+        revision: int,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Retain a keyed tombstone so late older projections cannot resurrect it."""
+        if not memory_id:
+            raise ValueError("memory_id is required for projection")
+        tid = tenant_id or current_tenant_id()
+        incoming = self._projection_revision(revision)
+        key = (tid, f"memory:{memory_id}")
+        with self._lock:
+            existing = self._nodes.get(key, {})
+            current = int(existing.get("projected_revision", -1))
+            if current > incoming:
+                return {
+                    "node": dict(existing),
+                    "applied": False,
+                    "projected_revision": current,
+                }
+            merged = {
+                **existing,
+                "source_uri": existing.get("source_uri", f"mem://{memory_id}"),
+                "tenant_id": tid,
+                "memory_id": memory_id,
+                "status": "DELETED",
+                "projected_revision": incoming,
+            }
+            for field in (
+                "search_text",
+                "l0_embedding",
+                "l0_abstract",
+                "body",
+                "abstract",
+                "current_body",
+                "current_abstract",
+            ):
+                merged.pop(field, None)
+            self._nodes[key] = merged
+            return {"node": dict(merged), "applied": True, "projected_revision": incoming}
+
+    def upsert_claim_projection(
+        self,
+        *,
+        claim_id: str,
+        subject_memory_id: str,
+        object_memory_id: str,
+        predicate: str,
+        revision: int,
+        properties: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a stable claim edge keyed by tenant and claim ID."""
+        if not claim_id:
+            raise ValueError("claim_id is required for projection")
+        if not subject_memory_id or not object_memory_id:
+            raise ValueError("subject_memory_id and object_memory_id are required")
+        if not predicate:
+            raise ValueError("predicate is required for projection")
+        tid = tenant_id or current_tenant_id()
+        incoming = self._projection_revision(revision)
+        props = dict(properties or {})
+        for field_name in (
+            "tenant_id",
+            "claim_id",
+            "projected_revision",
+            "subject_memory_id",
+            "object_memory_id",
+        ):
+            props.pop(field_name, None)
+        props.setdefault("predicate", predicate)
+        props.setdefault("relation_label", predicate)
+        props.setdefault("status", "ACTIVE")
+        with self._lock:
+            if (tid, f"memory:{subject_memory_id}") not in self._nodes or (
+                tid,
+                f"memory:{object_memory_id}",
+            ) not in self._nodes:
+                return {"edge": {}, "applied": False, "projected_revision": None}
+            existing = next(
+                (
+                    edge
+                    for edge in self._edges
+                    if edge.tenant_id == tid and edge.props.get("claim_id") == claim_id
+                ),
+                None,
+            )
+            if existing is not None:
+                current = int(existing.props.get("projected_revision", -1))
+                if current > incoming:
+                    return {
+                        "edge": dict(existing.props),
+                        "applied": False,
+                        "projected_revision": current,
+                    }
+                self._edges.remove(existing)
+            edge_props = {
+                **props,
+                "tenant_id": tid,
+                "claim_id": claim_id,
+                "subject_memory_id": subject_memory_id,
+                "object_memory_id": object_memory_id,
+                "predicate": predicate,
+                "projected_revision": incoming,
+            }
+            self._edges.append(
+                _Edge(
+                    type="RELATES_TO",
+                    subject_uri=f"memory:{subject_memory_id}",
+                    object_uri=f"memory:{object_memory_id}",
+                    relation_label=predicate,
+                    tenant_id=tid,
+                    props=edge_props,
+                )
+            )
+            return {"edge": dict(edge_props), "applied": True, "projected_revision": incoming}
+
+    def delete_claim_projection(
+        self,
+        *,
+        claim_id: str,
+        revision: int,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a claim edge only when its incoming revision is current."""
+        if not claim_id:
+            raise ValueError("claim_id is required for projection")
+        tid = tenant_id or current_tenant_id()
+        incoming = self._projection_revision(revision)
+        with self._lock:
+            for edge in list(self._edges):
+                if edge.tenant_id != tid or edge.props.get("claim_id") != claim_id:
+                    continue
+                current = int(edge.props.get("projected_revision", -1))
+                if current > incoming:
+                    return {"applied": False, "projected_revision": current}
+                self._edges.remove(edge)
+                return {"applied": True, "projected_revision": incoming}
+        return {"applied": False, "projected_revision": None}
+
+    def upsert_hierarchy_projection(
+        self,
+        *,
+        hierarchy_id: str,
+        parent_memory_id: str,
+        child_memory_id: str,
+        revision: int,
+        properties: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a stable-ID, revision-aware canonical hierarchy edge."""
+
+        if not hierarchy_id or not parent_memory_id or not child_memory_id:
+            raise ValueError("hierarchy_id, parent_memory_id, and child_memory_id are required")
+        tid = tenant_id or current_tenant_id()
+        incoming = self._projection_revision(revision)
+        props = dict(properties or {})
+        with self._lock:
+            if (tid, f"memory:{parent_memory_id}") not in self._nodes or (
+                tid,
+                f"memory:{child_memory_id}",
+            ) not in self._nodes:
+                return {"edge": {}, "applied": False, "projected_revision": None}
+            existing = next(
+                (
+                    edge
+                    for edge in self._edges
+                    if edge.tenant_id == tid and edge.props.get("hierarchy_id") == hierarchy_id
+                ),
+                None,
+            )
+            if existing is not None:
+                current = int(existing.props.get("projected_revision", -1))
+                if current > incoming:
+                    return {
+                        "edge": dict(existing.props),
+                        "applied": False,
+                        "projected_revision": current,
+                    }
+                self._edges.remove(existing)
+            edge_props = {
+                **props,
+                "tenant_id": tid,
+                "hierarchy_id": hierarchy_id,
+                "projected_revision": incoming,
+            }
+            self._edges.append(
+                _Edge(
+                    type="CONTAINS",
+                    subject_uri=f"memory:{parent_memory_id}",
+                    object_uri=f"memory:{child_memory_id}",
+                    relation_label="contains",
+                    tenant_id=tid,
+                    props=edge_props,
+                )
+            )
+            return {
+                "edge": dict(edge_props),
+                "applied": True,
+                "projected_revision": incoming,
+            }
+
+    project_memory = upsert_memory_projection
+    project_claim = upsert_claim_projection
+
+    # ------------------------------------------------------------------
+    # Code-map replacement and read models
+    # ------------------------------------------------------------------
+
+    def replace_code_project(
+        self,
+        *,
+        project_uri: str,
+        nodes: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+        tenant_id: str | None = None,
+    ) -> None:
+        """Replace one structural project without affecting semantic memories."""
+        tid = tenant_id or current_tenant_id()
+        with self._lock:
+            stale = {
+                uri
+                for (tenant, uri), node in self._nodes.items()
+                if tenant == tid and node.get("project_uri") == project_uri
+            }
+            for uri in stale:
+                self._nodes.pop((tid, uri), None)
+            self._edges = [
+                edge
+                for edge in self._edges
+                if edge.tenant_id != tid
+                or (edge.subject_uri not in stale and edge.object_uri not in stale)
+            ]
+            for item in nodes:
+                props = dict(item.get("properties") or {})
+                uri = str(item["source_uri"])
+                self._nodes[(tid, uri)] = {**props, "source_uri": uri, "tenant_id": tid}
+            for item in nodes:
+                parent_uri = item.get("parent_uri")
+                if parent_uri:
+                    self.merge_edge(
+                        subject_uri=parent_uri,
+                        object_uri=item["source_uri"],
+                        edge_type="CONTAINS",
+                        relation_label="contains",
+                        properties={
+                            "parser": "archive-hierarchy",
+                            "confidence": 1.0,
+                            "resolution": "RESOLVED",
+                        },
+                        tenant_id=tid,
+                    )
+            for item in edges:
+                self.merge_edge(
+                    subject_uri=item["subject_uri"],
+                    object_uri=item["object_uri"],
+                    edge_type=item["edge_type"],
+                    relation_label=item["relation_label"],
+                    properties=dict(item.get("properties") or {}),
+                    tenant_id=tid,
+                )
+
+    def list_code_projects(self, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        tid = tenant_id or current_tenant_id()
+        with self._lock:
+            projects = [
+                {
+                    "source_uri": uri,
+                    "name": node.get("display_name") or uri,
+                    "l0_abstract": node.get("l0_abstract"),
+                    "created_at": node.get("created_at"),
+                }
+                for (tenant, uri), node in self._nodes.items()
+                if tenant == tid
+                and node.get("node_type") == "PROJECT"
+                and node.get("project_uri") == uri
+            ]
+        return sorted(projects, key=lambda item: str(item["name"]).lower())
+
+    def code_map(
+        self,
+        *,
+        project_uri: str,
+        depth: int = 2,
+        limit: int = 200,
+        tenant_id: str | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        tid = tenant_id or current_tenant_id()
+        depth = max(0, min(int(depth), 6))
+        limit = max(1, min(int(limit), 500))
+        hierarchy = {"CONTAINS", "DEFINES"}
+        with self._lock:
+            if (tid, project_uri) not in self._nodes:
+                return {"nodes": [], "edges": []}
+            selected = {project_uri}
+            frontier = {project_uri}
+            for _ in range(depth):
+                next_frontier = {
+                    edge.object_uri
+                    for edge in self._edges
+                    if edge.tenant_id == tid
+                    and edge.type in hierarchy
+                    and edge.subject_uri in frontier
+                    and edge.object_uri not in selected
+                }
+                selected.update(next_frontier)
+                frontier = next_frontier
+                if not frontier or len(selected) >= limit:
+                    break
+            selected = set(sorted(selected)[:limit])
+            nodes = []
+            for uri in sorted(selected):
+                node = self._nodes[(tid, uri)]
+                nodes.append(
+                    {
+                        "id": uri,
+                        "source_uri": uri,
+                        "label": node.get("display_name") or node.get("relative_path") or uri,
+                        "node_type": node.get("node_type"),
+                        "status": node.get("status"),
+                        "l0_abstract": node.get("l0_abstract"),
+                        "relative_path": node.get("relative_path"),
+                        "language": node.get("language"),
+                        "signature": node.get("signature"),
+                        "line_start": node.get("line_start"),
+                        "line_end": node.get("line_end"),
+                    }
+                )
+            edges = [
+                {
+                    "source": edge.subject_uri,
+                    "target": edge.object_uri,
+                    "type": edge.type,
+                    "label": edge.relation_label,
+                    "status": edge.props.get("status"),
+                }
+                for edge in self._edges
+                if edge.tenant_id == tid
+                and edge.type in hierarchy
+                and edge.subject_uri in selected
+                and edge.object_uri in selected
+            ]
+            return {"nodes": nodes, "edges": edges}
+
+    def code_node_details(
+        self,
+        *,
+        source_uri: str,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        tid = tenant_id or current_tenant_id()
+        with self._lock:
+            node = self._nodes.get((tid, source_uri))
+            if node is None:
+                return None
+            clean_node = {key: value for key, value in node.items() if key != "l0_embedding"}
+
+            def relation(edge: _Edge, other_uri: str) -> dict[str, Any]:
+                other = self._nodes.get((tid, other_uri), {})
+                return {
+                    "source_uri": other_uri,
+                    "display_name": other.get("display_name") or other_uri,
+                    "node_type": other.get("node_type"),
+                    "relation": edge.type,
+                    "label": edge.relation_label,
+                    "source_path": edge.props.get("source_path"),
+                    "line_start": edge.props.get("line_start"),
+                    "line_end": edge.props.get("line_end"),
+                    "confidence": edge.props.get("confidence"),
+                    "resolution": edge.props.get("resolution"),
+                }
+
+            outgoing = [
+                relation(edge, edge.object_uri)
+                for edge in self._edges
+                if edge.tenant_id == tid and edge.subject_uri == source_uri
+            ]
+            incoming = [
+                relation(edge, edge.subject_uri)
+                for edge in self._edges
+                if edge.tenant_id == tid and edge.object_uri == source_uri
+            ]
+            return {"node": clean_node, "outgoing": outgoing, "incoming": incoming}
+
+    # ------------------------------------------------------------------
     # Vector search
     # ------------------------------------------------------------------
+
+    def bm25_search(
+        self, query: str, k: int = 20, *, tenant_id: str, timeout_s: float = 3.0
+    ) -> list[dict[str, Any]]:
+        """Small-fixture BM25 with Unicode tokenization; production uses Lucene."""
+        del timeout_s
+        terms = query_terms(query)
+        if not terms:
+            return []
+        with self._lock:
+            corpus = [
+                dict(node)
+                for node in self._nodes.values()
+                if node.get("memory_id") and node.get("status") == "ACTIVE"
+            ]
+        # Do not use query_terms here: document term frequencies and length
+        # must retain repeated tokens and must not use the query's 32-term cap.
+        import re
+
+        counts = [
+            Counter(re.findall(r"[^\W_]+", str(n.get("search_text") or "").casefold()))
+            for n in corpus
+        ]
+        nonempty = sum(bool(c) for c in counts)
+        if not nonempty:
+            return []
+        average = sum(sum(c.values()) for c in counts) / nonempty
+        frequencies = {term: sum(term in c for c in counts) for term in terms}
+        rows = []
+        for node, count in zip(corpus, counts, strict=True):
+            if node.get("tenant_id") != tenant_id or not count:
+                continue
+            length = sum(count.values())
+            score = sum(
+                math.log(1 + (nonempty - frequencies[t] + 0.5) / (frequencies[t] + 0.5))
+                * count[t]
+                / (count[t] + 1.2 * (0.25 + 0.75 * length / average))
+                for t in terms
+                if count[t]
+            )
+            if score > 0:
+                rows.append(
+                    {
+                        "memory_id": node["memory_id"],
+                        "tenant_id": tenant_id,
+                        "projected_revision": node.get("projected_revision"),
+                        "score": score,
+                    }
+                )
+        return sorted(rows, key=lambda row: (-row["score"], row["memory_id"]))[
+            : max(1, min(k, 100))
+        ]
 
     def vector_search(
         self,
@@ -190,7 +700,8 @@ class InMemoryKnowledgeGraph:
                             "source_uri": uri,
                             "l0_abstract": node.get("l0_abstract"),
                             "score": score,
-                            "id": node.get("id"),
+                            "memory_id": node.get("memory_id"),
+                            "projected_revision": node.get("projected_revision"),
                             "node_type": node.get("node_type"),
                         },
                     )
@@ -226,20 +737,58 @@ class InMemoryKnowledgeGraph:
         cypher_upper = cypher.upper()
 
         with self._lock:
+            if "T_CANONICAL_PATHS" in cypher_upper:
+                statuses = set(params.get("statuses", ["ACTIVE", "CURRENT"]))
+                hops = max(1, min(int(params.get("hops", 2)), 4))
+                queue = [(f"memory:{memory_id}", []) for memory_id in params["memory_ids"]]
+                paths = []
+                while queue and len(paths) < limit:
+                    node_key, edges = queue.pop(0)
+                    node = self._nodes.get((tid, node_key))
+                    if node is None or node.get("status") not in statuses:
+                        continue
+                    if edges:
+                        paths.append({"claims": edges})
+                    if len(edges) >= hops:
+                        continue
+                    for edge in self._edges:
+                        if (
+                            edge.tenant_id != tid
+                            or edge.type != "RELATES_TO"
+                            or edge.props.get("status") not in statuses
+                            or not edge.props.get("claim_id")
+                        ):
+                            continue
+                        if edge.props["claim_id"] in {item["claim_id"] for item in edges}:
+                            continue
+                        if node_key not in {edge.subject_uri, edge.object_uri}:
+                            continue
+                        neighbor = (
+                            edge.object_uri if node_key == edge.subject_uri else edge.subject_uri
+                        )
+                        candidate = {
+                            "claim_id": edge.props["claim_id"],
+                            "memory_id": edge.props.get("subject_memory_id"),
+                            "projected_revision": edge.props.get("projected_revision"),
+                        }
+                        queue.append((neighbor, [*edges, candidate]))
+                return paths
+
             # t_children_of — CONTAINS traversal
             if "CONTAINS" in cypher_upper and uri and "SHORTESTPATH" not in cypher_upper:
                 out: list[dict[str, Any]] = []
                 for e in self._edges:
-                    if (e.type == "CONTAINS" and e.subject_uri == uri
-                            and e.tenant_id == tid):
+                    if e.type == "CONTAINS" and e.subject_uri == uri and e.tenant_id == tid:
                         child = self._nodes.get((tid, e.object_uri))
                         if child and child.get("status") == "ACTIVE":
-                            out.append({
-                                "source_uri": e.object_uri,
-                                "l0_abstract": child.get("l0_abstract"),
-                                "node_type": child.get("node_type"),
-                                "retrieval_weight": child.get("retrieval_weight", 1.0),
-                            })
+                            out.append(
+                                {
+                                    "source_uri": e.object_uri,
+                                    "l0_abstract": child.get("l0_abstract"),
+                                    "node_type": child.get("node_type"),
+                                    "retrieval_weight": child.get("retrieval_weight", 1.0),
+                                }
+                            )
                 return out[:limit]
 
             # t_neighbours_by_relation
@@ -247,34 +796,41 @@ class InMemoryKnowledgeGraph:
                 relation = params.get("relation")
                 out = []
                 for e in self._edges:
-                    if (e.type == "RELATES_TO" and e.subject_uri == uri
-                            and e.tenant_id == tid and e.props.get("status") == "ACTIVE"):
+                    if (
+                        e.type == "RELATES_TO"
+                        and e.subject_uri == uri
+                        and e.tenant_id == tid
+                        and e.props.get("status") == "ACTIVE"
+                    ):
                         if relation and e.relation_label != relation:
                             continue
                         node = self._nodes.get((tid, e.object_uri))
                         if node and node.get("status") == "ACTIVE":
-                            out.append({
-                                "source_uri": e.object_uri,
-                                "l0_abstract": node.get("l0_abstract"),
-                                "node_type": node.get("node_type"),
-                                "distance": 1,
-                            })
+                            out.append(
+                                {
+                                    "source_uri": e.object_uri,
+                                    "l0_abstract": node.get("l0_abstract"),
+                                    "node_type": node.get("node_type"),
+                                    "distance": 1,
+                                }
+                            )
                 return out[:limit]
 
             # t_cross_references
             if "REFERENCES" in cypher_upper and uri:
                 out = []
                 for e in self._edges:
-                    if (e.type == "REFERENCES" and e.subject_uri == uri
-                            and e.tenant_id == tid):
+                    if e.type == "REFERENCES" and e.subject_uri == uri and e.tenant_id == tid:
                         node = self._nodes.get((tid, e.object_uri))
                         if node and node.get("status") == "ACTIVE":
-                            out.append({
-                                "source_uri": e.object_uri,
-                                "node_type": node.get("node_type"),
-                                "relation": e.props.get("relation_label") or e.relation_label,
-                                "l0_abstract": node.get("l0_abstract"),
-                            })
+                            out.append(
+                                {
+                                    "source_uri": e.object_uri,
+                                    "node_type": node.get("node_type"),
+                                    "relation": e.props.get("relation_label") or e.relation_label,
+                                    "l0_abstract": node.get("l0_abstract"),
+                                }
+                            )
                 return out[:limit]
 
             # t_find_by_uri_prefix
@@ -285,24 +841,28 @@ class InMemoryKnowledgeGraph:
                     if t != tid or node.get("status") != "ACTIVE":
                         continue
                     if node_uri.startswith(prefix):
-                        out.append({
-                            "source_uri": node_uri,
-                            "node_type": node.get("node_type"),
-                            "l0_abstract": node.get("l0_abstract"),
-                            "retrieval_weight": node.get("retrieval_weight", 1.0),
-                        })
+                        out.append(
+                            {
+                                "source_uri": node_uri,
+                                "node_type": node.get("node_type"),
+                                "l0_abstract": node.get("l0_abstract"),
+                                "retrieval_weight": node.get("retrieval_weight", 1.0),
+                            }
+                        )
                 return sorted(out, key=lambda r: r["source_uri"])[:limit]
 
             # t_history_chain
             if "SUPERSEDES" in cypher_upper and uri:
                 # Follow SUPERSEDES edges from the node
-                out = [{
-                    "source_uri": uri,
-                    "status": (self._nodes.get((tid, uri)) or {}).get("status"),
-                    "l0_abstract": (self._nodes.get((tid, uri)) or {}).get("l0_abstract"),
-                    "created_at": (self._nodes.get((tid, uri)) or {}).get("created_at"),
-                    "distance": 0,
-                }]
+                out = [
+                    {
+                        "source_uri": uri,
+                        "status": (self._nodes.get((tid, uri)) or {}).get("status"),
+                        "l0_abstract": (self._nodes.get((tid, uri)) or {}).get("l0_abstract"),
+                        "created_at": (self._nodes.get((tid, uri)) or {}).get("created_at"),
+                        "distance": 0,
+                    }
+                ]
                 return out[:limit]
 
             # Fallback: mutation-style templates used elsewhere (touch/supersede/merge)
@@ -392,13 +952,15 @@ class InMemoryKnowledgeGraph:
                 if key in seen_edges:
                     continue
                 seen_edges.add(key)
-                edges.append({
-                    "source": e.subject_uri,
-                    "target": e.object_uri,
-                    "type": e.type,
-                    "label": e.props.get("relation_label") or e.relation_label or e.type,
-                    "status": e.props.get("status"),
-                })
+                edges.append(
+                    {
+                        "source": e.subject_uri,
+                        "target": e.object_uri,
+                        "type": e.type,
+                        "label": e.props.get("relation_label") or e.relation_label or e.type,
+                        "status": e.props.get("status"),
+                    }
+                )
             return {"nodes": nodes, "edges": edges}
 
     # ------------------------------------------------------------------

@@ -4,9 +4,8 @@ LoCoMo answers are free-form ("Psychology, counseling certification"), so a
 string match cannot decide correctness -- Engram may phrase the same fact
 completely differently. We ask a model to grade semantic equivalence instead.
 
-Judge model: Kimi via Ollama Cloud, using the same native /chat + format=json
-call shape Engram itself uses (see engram/models/providers/ollama_cloud.py).
-Kept dependency-free of Engram internals so the harness runs on its own.
+Judge model: Muse Spark through the OpenCode Go Responses API, matching
+Engram's production model path.
 
 Two grading modes:
 
@@ -27,19 +26,19 @@ import os
 import time
 from dataclasses import dataclass
 
-import httpx
+import openai
 
 # Defaults mirror config.yaml so the judge lines up with Engram's own provider.
-DEFAULT_BASE = "https://ollama.com/api"
-DEFAULT_MODEL = "kimi-k2.7-code:cloud"
+DEFAULT_BASE = "https://opencode.ai/zen/go/v1"
+DEFAULT_MODEL = "muse-spark-1.3-contributor"
 
 
 @dataclass
 class JudgeResult:
     correct: bool
     reason: str
-    raw: str = ""          # raw judge text, kept for auditing disagreements
-    judged: bool = True    # False if the judge call failed and we defaulted
+    raw: str = ""  # raw judge text, kept for auditing disagreements
+    judged: bool = True  # False if the judge call failed and we defaulted
 
 
 _NORMAL_SYSTEM = (
@@ -77,8 +76,8 @@ _ADVERSARIAL_SYSTEM = (
 )
 
 
-class OllamaJudge:
-    """Grades predictions with Kimi via Ollama Cloud's native chat API."""
+class MuseSparkJudge:
+    """Grade predictions with Muse Spark through OpenCode Go."""
 
     def __init__(
         self,
@@ -89,57 +88,51 @@ class OllamaJudge:
         timeout_s: float = 60.0,
         max_retries: int = 3,
     ) -> None:
-        api_key = api_key or os.environ.get("OLLAMA_API_KEY")
+        api_key = api_key or os.environ.get("OPENCODE_GO_API_KEY")
         if not api_key:
-            raise RuntimeError("OLLAMA_API_KEY is required for the judge")
+            raise RuntimeError("OPENCODE_GO_API_KEY is required for the judge")
         self.model = model
         self.max_retries = max_retries
-        self._http = httpx.Client(
+        self._client = openai.OpenAI(
+            api_key=api_key,
             base_url=base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout_s,
+            max_retries=0,
         )
 
     def close(self) -> None:
-        self._http.close()
+        self._client.close()
 
-    def __enter__(self) -> OllamaJudge:
+    def __enter__(self) -> MuseSparkJudge:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
     def _chat(self, system: str, user: str) -> str:
-        """One deterministic JSON chat call, with a small retry on transport."""
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 0.0, "num_predict": 256},
-        }
+        """Make one Responses API call, with a small transport retry."""
         last_err: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                resp = self._http.post("/chat", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                content = ""
-                msg = data.get("message")
-                if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                    content = msg["content"]
-                elif isinstance(data.get("response"), str):
-                    content = data["response"]
+                response = self._client.responses.create(
+                    model=self.model,
+                    instructions=system,
+                    input=user,
+                    max_output_tokens=1024,
+                    temperature=1.0,
+                    extra_headers={
+                        "User-Agent": "engram-locomo/0.1.0",
+                        "x-opencode-session": "engram-locomo-judge",
+                    },
+                )
+                content = response.output_text or ""
                 # An empty 200 reply (the model returned nothing) is transient —
                 # treat it like a transport error and retry rather than surfacing
                 # it as an unparseable grade.
                 if content.strip():
                     return content
                 last_err = RuntimeError("empty judge response")
-            except (httpx.HTTPError, json.JSONDecodeError) as err:
+            except openai.APIError as err:
                 last_err = err
             if attempt < self.max_retries:
                 time.sleep(0.5 * (attempt + 1))
@@ -185,10 +178,13 @@ class OllamaJudge:
         # before we give up and flag the row for re-judging.
         last_raw = ""
         for attempt in range(2):
-            user = base_user if attempt == 0 else (
+            user = (
                 base_user
-                + '\n\nReturn ONLY this JSON object and nothing else: '
-                '{"correct": true or false, "reason": "one short sentence"}'
+                if attempt == 0
+                else (
+                    base_user + "\n\nReturn ONLY this JSON object and nothing else: "
+                    '{"correct": true or false, "reason": "one short sentence"}'
+                )
             )
             try:
                 raw = self._chat(system, user)
@@ -201,35 +197,42 @@ class OllamaJudge:
             if parsed is not None:
                 correct, reason = parsed
                 return JudgeResult(correct=correct, reason=reason, raw=raw)
-        return JudgeResult(
-            correct=False, reason="judge-unparseable", raw=last_raw, judged=False
-        )
+        return JudgeResult(correct=False, reason="judge-unparseable", raw=last_raw, judged=False)
 
 
 if __name__ == "__main__":
     # Self-test with fixed cases so you can eyeball the judge before a real run.
-    # Needs OLLAMA_API_KEY in the environment.
+    # Needs OPENCODE_GO_API_KEY in the environment.
     cases = [
         # (question, gold, predicted, is_adversarial, expected_correct)
-        ("When did Caroline go to the support group?", "7 May 2023",
-         "She went on May 7th, 2023.", False, True),
-        ("When did Melanie paint a sunrise?", "2022",
-         "In 2021.", False, False),
-        ("What is Caroline's dog's name?", "(unanswerable)",
-         "I don't think that was mentioned in the conversation.", True, True),
-        ("What is Caroline's dog's name?", "(unanswerable)",
-         "Her dog's name is Rex.", True, False),
+        (
+            "When did Caroline go to the support group?",
+            "7 May 2023",
+            "She went on May 7th, 2023.",
+            False,
+            True,
+        ),
+        ("When did Melanie paint a sunrise?", "2022", "In 2021.", False, False),
+        (
+            "What is Caroline's dog's name?",
+            "(unanswerable)",
+            "I don't think that was mentioned in the conversation.",
+            True,
+            True,
+        ),
+        ("What is Caroline's dog's name?", "(unanswerable)", "Her dog's name is Rex.", True, False),
     ]
-    with OllamaJudge() as judge:
+    with MuseSparkJudge() as judge:
         passed = 0
         for q, gold, pred, adv, expected in cases:
             r = judge.judge(
-                question=q, gold_answer=gold,
-                predicted_answer=pred, is_adversarial=adv,
+                question=q,
+                gold_answer=gold,
+                predicted_answer=pred,
+                is_adversarial=adv,
             )
             ok = r.correct == expected
             passed += ok
             tag = "PASS" if ok else "FAIL"
-            print(f"[{tag}] correct={r.correct} (expected {expected}) "
-                  f"adv={adv} :: {r.reason}")
+            print(f"[{tag}] correct={r.correct} (expected {expected}) adv={adv} :: {r.reason}")
         print(f"\n{passed}/{len(cases)} self-test cases behaved as expected")

@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class ModelTokenCall(BaseModel):
+    stage: str
+    provider: str
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated: bool = False
+
+
+class QueryTokenUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated: bool = False
+    query_tokens: int = 0
+    session_context_tokens: int = 0
+    retrieval_context_tokens: int = 0
+    model_calls: list[ModelTokenCall] = Field(default_factory=list)
 
 
 class RetrievalMetadata(BaseModel):
@@ -15,6 +38,21 @@ class RetrievalMetadata(BaseModel):
     latency_ms: dict[str, float] = {}
     l0_decision: str | None = None
     l0_reason: str | None = None
+    retrieval_route: str | None = None
+    routes_attempted: list[str] = Field(default_factory=list)
+    answer_mode: str | None = None
+    stop_reason: str | None = None
+    source_records: list[dict[str, Any]] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    degraded_sources: list[str] = Field(default_factory=list)
+    token_usage: QueryTokenUsage = Field(default_factory=QueryTokenUsage)
+    quality_policy: str | None = None
+    sufficiency_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    packed_evidence_ids: list[str] = Field(default_factory=list)
+    declared_support: list[dict[str, Any]] = Field(default_factory=list)
+    avoided_model_calls: int = 0
+    provider_attempts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):

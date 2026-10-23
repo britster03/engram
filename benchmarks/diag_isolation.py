@@ -2,35 +2,48 @@
 
 Confirms or refutes the finding that LoCoMo data landed in `_default` instead
 of its per-conversation tenant. Talks to the server over HTTP (so it is
-working-directory independent for the API calls) and then reads the event
-ledger to see how each ingest was tagged.
+working-directory independent for the API calls) and then reads PostgreSQL
+to see how each ingest was tagged.
 
 It ingests TWO pairs:
   * one with a freshly-minted tenant key  -> should be tagged <that tenant>
   * one with the legacy/default key        -> should be tagged _default
 
-Run from the folder the SERVER was started in (so the ledger path matches),
-e.g. from Code\\engram:  python ..\\benchmarks\\diag_isolation.py
+Set ENGRAM_DATABASE_URL to the same PostgreSQL database used by the server
+before running this diagnostic.
 """
 
 from __future__ import annotations
 
 import os
-import sqlite3
-import sys
 import time
 from pathlib import Path
 
 import httpx
+import psycopg
 
 BASE = os.environ.get("ENGRAM_BASE_URL", "http://127.0.0.1:8000")
 
 
 def load_env_keys() -> dict[str, str]:
     """Pull keys from environment, falling back to a nearby .env file."""
-    keys = {k: os.environ[k] for k in ("ENGRAM_ADMIN_KEY", "ENGRAM_API_KEY")
-            if k in os.environ}
-    if "ENGRAM_ADMIN_KEY" in keys and "ENGRAM_API_KEY" in keys:
+    keys = {
+        k: os.environ[k]
+        for k in (
+            "ENGRAM_ADMIN_KEY",
+            "ENGRAM_API_KEY",
+            "ENGRAM_DATABASE_URL",
+        )
+        if k in os.environ
+    }
+    if all(
+        name in keys
+        for name in (
+            "ENGRAM_ADMIN_KEY",
+            "ENGRAM_API_KEY",
+            "ENGRAM_DATABASE_URL",
+        )
+    ):
         return keys
     for candidate in (".env", "../.env", "../../.env"):
         p = Path(candidate)
@@ -43,20 +56,6 @@ def load_env_keys() -> dict[str, str]:
                 keys.setdefault(name.strip(), val.strip().strip('"').strip("'"))
         break
     return keys
-
-
-def find_ledger() -> Path | None:
-    """Locate the event ledger the running server is writing to."""
-    candidates = [
-        Path("data/event_ledger.db"),
-        Path("engram/data/event_ledger.db"),
-        Path("../data/event_ledger.db"),
-    ]
-    existing = [c for c in candidates if c.exists()]
-    if not existing:
-        return None
-    # The server writes to exactly one; pick the most recently modified.
-    return max(existing, key=lambda c: c.stat().st_mtime)
 
 
 def ingest_one(key: str, source: str) -> int:
@@ -75,13 +74,12 @@ def ingest_one(key: str, source: str) -> int:
     return r.status_code
 
 
-def tenant_for_source(ledger: Path, source: str) -> str | None:
-    con = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
-    row = con.execute(
-        "SELECT tenant_id FROM events WHERE source = ? ORDER BY rowid DESC LIMIT 1",
-        (source,),
-    ).fetchone()
-    con.close()
+def tenant_for_source(database_url: str, source: str) -> str | None:
+    with psycopg.connect(database_url) as connection:
+        row = connection.execute(
+            "SELECT tenant_id FROM events WHERE source = %s ORDER BY created_at DESC LIMIT 1",
+            (source,),
+        ).fetchone()
     return row[0] if row else None
 
 
@@ -89,15 +87,15 @@ def main() -> int:
     keys = load_env_keys()
     admin = keys.get("ENGRAM_ADMIN_KEY")
     default_key = keys.get("ENGRAM_API_KEY")
+    database_url = keys.get("ENGRAM_DATABASE_URL")
     if not admin:
         print("ERROR: ENGRAM_ADMIN_KEY not found in env or .env")
         return 2
 
-    ledger = find_ledger()
-    if ledger is None:
-        print("ERROR: could not find event_ledger.db near", Path.cwd())
+    if not database_url:
+        print("ERROR: ENGRAM_DATABASE_URL not found in env or .env")
         return 2
-    print(f"using ledger: {ledger.resolve()}\n")
+    print("using PostgreSQL control plane\n")
 
     # 1) mint a fresh tenant + key
     tid = "diag-" + time.strftime("%H%M%S")
@@ -122,8 +120,8 @@ def main() -> int:
     time.sleep(1.5)
 
     # 3) read back how each was tagged
-    got_minted = tenant_for_source(ledger, src_minted)
-    got_default = tenant_for_source(ledger, src_default) if default_key else "(skipped)"
+    got_minted = tenant_for_source(database_url, src_minted)
+    got_default = tenant_for_source(database_url, src_default) if default_key else "(skipped)"
 
     print("\n--- VERDICT ---")
     print(f"minted-key ingest : expected={tid:<14} got={got_minted}")

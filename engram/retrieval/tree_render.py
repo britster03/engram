@@ -42,7 +42,9 @@ def render_tree(
     if not root_path.exists():
         return "(filesystem is empty)"
     # Level-0 root
-    nodes_by_level: list[list[_Node]] = [[_Node(uri=root_uri, path=root_path, is_dir=True, depth=0)]]
+    nodes_by_level: list[list[_Node]] = [
+        [_Node(uri=root_uri, path=root_path, is_dir=True, depth=0)]
+    ]
     # Expand BFS
     for depth in range(max_display_depth):
         parents = nodes_by_level[-1]

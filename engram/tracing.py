@@ -101,6 +101,7 @@ def _try_instrument_http(app) -> None:
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
         if app is not None:
             FastAPIInstrumentor.instrument_app(app)
         HTTPXClientInstrumentor().instrument()
@@ -111,6 +112,7 @@ def _try_instrument_http(app) -> None:
 def _try_instrument_redis() -> None:
     try:
         from opentelemetry.instrumentation.redis import RedisInstrumentor
+
         RedisInstrumentor().instrument()
     except Exception as err:
         log.debug("Redis instrumentation skipped: %s", err)
@@ -125,6 +127,7 @@ def _try_instrument_neo4j() -> None:
 def _version() -> str:
     try:
         from engram import __version__
+
         return __version__
     except Exception:
         return "0.0.0"
@@ -133,6 +136,7 @@ def _version() -> str:
 # ----------------------------------------------------------------------
 # Public tracing helpers
 # ----------------------------------------------------------------------
+
 
 @contextlib.contextmanager
 def span(name: str, **attributes: Any) -> Iterator[Any]:
@@ -146,12 +150,15 @@ def span(name: str, **attributes: Any) -> Iterator[Any]:
         yield None
         return
     from engram.tenancy import current_tenant_id
+
     attrs = {"tenant_id": current_tenant_id(), **attributes}
     with _tracer.start_as_current_span(name, attributes=attrs) as s:
         yield s
 
 
-def traced(name: str | None = None, **default_attrs: Any) -> Callable[[Callable[..., T]], Callable[..., T]]:
+def traced(
+    name: str | None = None, **default_attrs: Any
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """Decorator that wraps a function call in a span."""
 
     def deco(fn: Callable[..., T]) -> Callable[..., T]:

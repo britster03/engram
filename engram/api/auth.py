@@ -23,41 +23,21 @@ import os
 from fastapi import Depends, Header, HTTPException, status
 
 from engram.config import get_config
-from engram.tenancy import DEFAULT_TENANT_ID, set_current_tenant
+from engram.tenancy import set_current_tenant
 
 
 def _lookup_tenant(api_key: str):
-    """Resolve a bearer token. Tries the TenantRegistry first, then the
-    legacy single-key path so existing deployments keep working until they
-    cut over to tenants."""
+    """Resolve a token using the authoritative registry, including revocation."""
     from engram.deps import get_state
+
     try:
         state = get_state()
+        return state.tenant_registry.resolve_key(api_key)
     except Exception:
-        state = None
-
-    if state is not None:
-        try:
-            t = state.tenant_registry.resolve_key(api_key)
-            if t is not None:
-                return t
-        except Exception:
-            pass
-    # Legacy single-tenant key
-    cfg = get_config()
-    if cfg.api.api_key and api_key == cfg.api.api_key:
-        from engram.tenancy import Tenant, TenantQuotas
-        return Tenant(
-            tenant_id=DEFAULT_TENANT_ID,
-            display_name="Default tenant (legacy key)",
-            api_key_hashes=[],
-            quotas=TenantQuotas(
-                requests_per_minute=cfg.api.rate_limit_query_per_minute,
-                ingest_per_minute=cfg.api.rate_limit_ingest_per_minute,
-            ),
-            status="ACTIVE",
-        )
-    return None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="authentication service unavailable",
+        ) from None
 
 
 def _extract_bearer(authorization: str | None) -> str:

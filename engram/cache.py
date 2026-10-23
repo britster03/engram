@@ -116,6 +116,7 @@ def build_cache(url: str | None, namespace: str) -> CacheBackend:
 # EmbeddingCache
 # ----------------------------------------------------------------------
 
+
 class EmbeddingCache:
     """text → list[float] cache keyed by SHA-256(text).
 
@@ -150,11 +151,13 @@ class EmbeddingCache:
 
 def _encode_vec(vec: list[float]) -> bytes:
     import struct
+
     return struct.pack(f"<{len(vec)}f", *vec)
 
 
 def _decode_vec(data: bytes) -> list[float]:
     import struct
+
     count = len(data) // 4
     return list(struct.unpack(f"<{count}f", data))
 
@@ -162,6 +165,7 @@ def _decode_vec(data: bytes) -> list[float]:
 # ----------------------------------------------------------------------
 # OverviewCache
 # ----------------------------------------------------------------------
+
 
 class OverviewCache:
     """dir_uri → overview markdown. Invalidated by the consolidation worker
@@ -177,8 +181,7 @@ class OverviewCache:
         return raw.decode("utf-8") if raw else None
 
     def set(self, tenant_id: str, dir_uri: str, text: str) -> None:
-        self.backend.set(f"{tenant_id}:{dir_uri}", text.encode("utf-8"),
-                          ttl_seconds=self.ttl)
+        self.backend.set(f"{tenant_id}:{dir_uri}", text.encode("utf-8"), ttl_seconds=self.ttl)
 
     def invalidate(self, tenant_id: str, dir_uri: str) -> None:
         self.backend.delete(f"{tenant_id}:{dir_uri}")

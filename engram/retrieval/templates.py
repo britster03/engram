@@ -18,6 +18,7 @@ _TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates" / "cypher"
 
 # Default limits per template (overrideable by params["limit"]).
 _DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
+    "t_canonical_paths": {"hops": 2, "limit": 12, "statuses": ["ACTIVE", "CURRENT"]},
     "t_children_of": {"limit": 50},
     "t_neighbours_by_relation": {"hops": 1, "relation": None, "limit": 25},
     "t_path_between": {"max_hops": 4},
@@ -32,6 +33,7 @@ _DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
 # Each template records its required parameters so the caller can be validated
 # before a Cypher string ever reaches Neo4j.
 _REQUIRED: dict[str, set[str]] = {
+    "t_canonical_paths": {"memory_ids", "tenant_id"},
     "t_children_of": {"uri"},
     "t_neighbours_by_relation": {"node_uri"},
     "t_path_between": {"src_uri", "dst_uri"},
@@ -76,11 +78,15 @@ def run_template(
     missing = _REQUIRED[name] - merged.keys()
     if missing:
         raise TemplateError(f"template {name!r} missing params: {sorted(missing)}")
+    if "limit" in merged:
+        if isinstance(merged["limit"], bool) or not isinstance(merged["limit"], int):
+            raise TemplateError("limit must be an integer")
+        merged["limit"] = max(1, min(merged["limit"], 200))
     # Clamp hops
     if "hops" in merged and isinstance(merged["hops"], int):
-        merged["hops"] = min(merged["hops"], _HOPS_CAP)
+        merged["hops"] = max(1, min(merged["hops"], _HOPS_CAP))
     if "max_hops" in merged and isinstance(merged["max_hops"], int):
-        merged["max_hops"] = min(merged["max_hops"], _HOPS_CAP)
+        merged["max_hops"] = max(1, min(merged["max_hops"], _HOPS_CAP))
     cypher = _load(name)
     return neo4j.run_template(cypher, merged, timeout_s=timeout_s)
 

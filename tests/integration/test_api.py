@@ -34,13 +34,15 @@ def client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Pre-set required env so any config load works in isolation
     monkeypatch.setenv("ENGRAM_API_KEY", "test-real-key")
     monkeypatch.setenv("NEO4J_ADMIN_PASSWORD", "x")
-    monkeypatch.setenv("OLLAMA_API_KEY", "real-ollama-key")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "real-opencode-key")
 
     def build(middleware=True):
         app = FastAPI()
         if middleware:
             app.add_middleware(
-                RateLimitMiddleware, query_per_min=2, ingest_per_min=4,
+                RateLimitMiddleware,
+                query_per_min=2,
+                ingest_per_min=4,
                 redis_url=None,
             )
             app.add_middleware(BodySizeLimitMiddleware)
@@ -57,6 +59,7 @@ def client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         @app.get("/livez")
         def liv():
             from fastapi.responses import PlainTextResponse
+
             return PlainTextResponse("ok")
 
         return app
@@ -67,8 +70,9 @@ def client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_request_id_is_reflected(client_factory):
     app = client_factory()
     with TestClient(app) as c:
-        r = c.post("/api/v1/ingest", json={"hello": "world"},
-                    headers={"X-Request-ID": "req-custom-123"})
+        r = c.post(
+            "/api/v1/ingest", json={"hello": "world"}, headers={"X-Request-ID": "req-custom-123"}
+        )
         assert r.status_code == 200
         assert r.headers.get("X-Request-ID") == "req-custom-123"
 
@@ -85,8 +89,7 @@ def test_body_size_limit_returns_413(client_factory):
     app = client_factory()
     with TestClient(app) as c:
         payload = b'{"k":"' + b"x" * 20_000 + b'"}'  # > 16 KiB query limit
-        r = c.post("/api/v1/query", content=payload,
-                    headers={"Content-Type": "application/json"})
+        r = c.post("/api/v1/query", content=payload, headers={"Content-Type": "application/json"})
         assert r.status_code == 413
 
 

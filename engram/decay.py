@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,9 +27,9 @@ class DecayPreset:
 
 
 PRESETS: dict[str, DecayPreset] = {
-    "personal_conversation": DecayPreset(0.40, 0.30, 0.30, 0.01),   # ~69 days
-    "coding_agent":          DecayPreset(0.40, 0.50, 0.10, 0.05),   # ~14 days
-    "knowledge_base":        DecayPreset(0.20, 0.30, 0.50, 0.005),  # ~138 days
+    "personal_conversation": DecayPreset(0.40, 0.30, 0.30, 0.01),  # ~69 days
+    "coding_agent": DecayPreset(0.40, 0.50, 0.10, 0.05),  # ~14 days
+    "knowledge_base": DecayPreset(0.20, 0.30, 0.50, 0.005),  # ~138 days
 }
 
 
@@ -47,29 +48,28 @@ def compute_weight(
     frequency = min(1.0, freq_num / freq_den)
     cent_den = p95_relates_to_degree or 1.0
     centrality = min(1.0, relates_to_degree / cent_den)
-    return (
-        preset.alpha * recency
-        + preset.beta * frequency
-        + preset.gamma * centrality
-    )
+    return preset.alpha * recency + preset.beta * frequency + preset.gamma * centrality
 
 
 # ----------------------------------------------------------------------
 # Daily run
 # ----------------------------------------------------------------------
 
+
 def run_daily(
     neo4j: Any,
     cfg: DecayConfig,
     *,
     batch_size: int = 10_000,
+    progress_callback: Callable[[int], None] | None = None,
+    strict: bool = False,
 ) -> int:
     preset = PRESETS[cfg.preset]
-    p95_access, p95_deg = _compute_percentiles(neo4j)
+    p95_access, p95_deg = _compute_percentiles(neo4j, strict=strict)
     updated = 0
     offset = 0
     while True:
-        rows = _fetch_batch(neo4j, offset, batch_size)
+        rows = _fetch_batch(neo4j, offset, batch_size, strict=strict)
         if not rows:
             break
         for r in rows:
@@ -81,11 +81,19 @@ def run_daily(
                 relates_to_degree=int(r.get("degree") or 0),
                 p95_relates_to_degree=p95_deg,
             )
-            _write_weight(neo4j, r["source_uri"], weight)
+            _write_weight(
+                neo4j,
+                str(r["source_uri"]),
+                str(r.get("tenant_id") or "_default"),
+                weight,
+                strict=strict,
+            )
             updated += 1
+        if progress_callback is not None:
+            progress_callback(updated)
         offset += len(rows)
     # Clamp HISTORICAL nodes to 0
-    _clamp_historical(neo4j)
+    _clamp_historical(neo4j, strict=strict)
     return updated
 
 
@@ -93,6 +101,7 @@ def _days_since(iso_ts: str | None) -> float:
     if not iso_ts:
         return 0.0
     from datetime import datetime, timezone
+
     try:
         then = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
     except ValueError:
@@ -101,20 +110,26 @@ def _days_since(iso_ts: str | None) -> float:
     return max(0.0, (now - then).total_seconds() / 86400.0)
 
 
-def _compute_percentiles(neo4j: Any) -> tuple[float, float]:
+def _compute_percentiles(
+    neo4j: Any,
+    *,
+    strict: bool = False,
+) -> tuple[float, float]:
     try:
         access_rows = neo4j.run_template(
-            "MATCH (n:Node) WHERE n.status = 'ACTIVE' "
-            "RETURN coalesce(n.access_count, 0) AS v",
+            "MATCH (n:Node) WHERE n.status = 'ACTIVE' RETURN coalesce(n.access_count, 0) AS v",
             {},
         )
         degree_rows = neo4j.run_template(
             "MATCH (n:Node) WHERE n.status = 'ACTIVE' "
-            "OPTIONAL MATCH (n)-[r:RELATES_TO]-() WHERE r.status = 'ACTIVE' "
-            "RETURN count(r) AS v",
+            "OPTIONAL MATCH (n)-[r:RELATES_TO]-() "
+            "WHERE r.status = 'ACTIVE' AND r.tenant_id = n.tenant_id "
+            "WITH n, count(r) AS v RETURN v",
             {},
         )
     except Exception:
+        if strict:
+            raise
         return 1.0, 1.0
     access = sorted(int(r["v"]) for r in access_rows) or [0]
     degree = sorted(int(r["v"]) for r in degree_rows) or [0]
@@ -128,36 +143,57 @@ def _percentile(values: list[int], pct: float) -> int:
     return max(1, values[k])
 
 
-def _fetch_batch(neo4j: Any, offset: int, batch_size: int) -> list[dict]:
+def _fetch_batch(
+    neo4j: Any,
+    offset: int,
+    batch_size: int,
+    *,
+    strict: bool = False,
+) -> list[dict]:
     try:
         return neo4j.run_template(
             "MATCH (n:Node) WHERE n.status = 'ACTIVE' "
-            "OPTIONAL MATCH (n)-[r:RELATES_TO]-() WHERE r.status = 'ACTIVE' "
+            "OPTIONAL MATCH (n)-[r:RELATES_TO]-() "
+            "WHERE r.status = 'ACTIVE' AND r.tenant_id = n.tenant_id "
             "WITH n, count(r) AS degree "
-            "RETURN n.source_uri AS source_uri, n.last_accessed_at AS last_accessed_at, "
+            "RETURN n.tenant_id AS tenant_id, n.source_uri AS source_uri, "
+            "n.last_accessed_at AS last_accessed_at, "
             "n.access_count AS access_count, degree "
-            "ORDER BY n.source_uri SKIP $offset LIMIT $limit",
+            "ORDER BY n.tenant_id, n.source_uri SKIP $offset LIMIT $limit",
             {"offset": offset, "limit": batch_size},
         )
     except Exception:
+        if strict:
+            raise
         return []
 
 
-def _write_weight(neo4j: Any, source_uri: str, weight: float) -> None:
+def _write_weight(
+    neo4j: Any,
+    source_uri: str,
+    tenant_id: str,
+    weight: float,
+    *,
+    strict: bool = False,
+) -> None:
     try:
         neo4j.run_template(
-            "MATCH (n:Node {source_uri: $uri}) SET n.retrieval_weight = $w",
-            {"uri": source_uri, "w": float(weight)},
+            "MATCH (n:Node {tenant_id: $tenant_id, source_uri: $uri}) SET n.retrieval_weight = $w",
+            {"tenant_id": tenant_id, "uri": source_uri, "w": float(weight)},
         )
     except Exception:
+        if strict:
+            raise
         log.debug("write weight failed for %s", source_uri, exc_info=True)
 
 
-def _clamp_historical(neo4j: Any) -> None:
+def _clamp_historical(neo4j: Any, *, strict: bool = False) -> None:
     try:
         neo4j.run_template(
             "MATCH (n:Node) WHERE n.status = 'HISTORICAL' SET n.retrieval_weight = 0.0",
             {},
         )
     except Exception:
+        if strict:
+            raise
         log.debug("historical clamp failed", exc_info=True)

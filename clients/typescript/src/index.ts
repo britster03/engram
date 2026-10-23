@@ -16,6 +16,42 @@ export interface RetrievalMetadata {
   latency_ms: Record<string, number>;
   l0_decision: string | null;
   l0_reason: string | null;
+  retrieval_route?: string | null;
+  routes_attempted?: string[];
+  answer_mode?: string | null;
+  stop_reason?: string | null;
+  source_records?: Record<string, unknown>[];
+  tool_calls?: Record<string, unknown>[];
+  degraded_sources?: string[];
+  token_usage: QueryTokenUsage;
+  quality_policy?: string | null;
+  sufficiency_decisions?: Record<string, unknown>[];
+  evidence_diagnostics?: Record<string, unknown>[];
+  packed_evidence_ids?: string[];
+  declared_support?: Record<string, unknown>[];
+  avoided_model_calls?: number;
+  provider_attempts?: Record<string, unknown>[];
+}
+
+export interface ModelTokenCall {
+  stage: string;
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated: boolean;
+}
+
+export interface QueryTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated: boolean;
+  query_tokens: number;
+  session_context_tokens: number;
+  retrieval_context_tokens: number;
+  model_calls: ModelTokenCall[];
 }
 
 export interface QueryResponse {
@@ -29,6 +65,15 @@ export interface IngestResponse {
   pair_id: string;
   status: string;
 }
+
+export type EntityBinding = {
+  name: string;
+  aliases?: string[];
+  attributes?: Record<string, string>;
+} & (
+  | { entityId: string; identityKey?: never }
+  | { identityKey: string; entityId?: never }
+);
 
 export interface SessionState {
   session_id: string;
@@ -96,10 +141,22 @@ export class EngramClient {
     userTurnIdx?: number;
     assistantTurnIdx?: number;
     source?: string;
+    idempotencyKey?: string;
+    entityBindings?: EntityBinding[];
   }): Promise<IngestResponse> {
     const body = {
+      idempotency_key: params.idempotencyKey ?? globalThis.crypto.randomUUID(),
       session_id: params.sessionId ?? null,
       source: params.source ?? 'client',
+      ...(params.entityBindings?.length ? {
+        entity_bindings: params.entityBindings.map(binding => ({
+          name: binding.name,
+          aliases: binding.aliases,
+          attributes: binding.attributes,
+          entity_id: binding.entityId,
+          identity_key: binding.identityKey,
+        })),
+      } : {}),
       turn_pair: {
         user: { content: params.user, turn_idx: params.userTurnIdx ?? 0 },
         assistant: {
@@ -185,16 +242,20 @@ export class EngramClient {
   async chatCompletions(params: {
     messages: Array<{ role: string; content: string }>;
     sessionId?: string | null;
+    clientMessageId?: string | null;
     sessionContext?: string | null;
     maxDepth?: string;
     maxReentries?: number;
   }): Promise<{
     answer: string;
     session_id: string;
+    run_id?: string;
+    input_event_id?: string;
     retrieval_metadata: RetrievalMetadata;
     finish_reason: string;
   }> {
     const body = {
+      client_message_id: params.clientMessageId ?? null,
       session_id: params.sessionId ?? null,
       messages: params.messages,
       session_context: params.sessionContext ?? null,
@@ -216,11 +277,13 @@ export class EngramClient {
   async *chatCompletionsStream(params: {
     messages: Array<{ role: string; content: string }>;
     sessionId?: string | null;
+    clientMessageId?: string | null;
     sessionContext?: string | null;
     maxDepth?: string;
     maxReentries?: number;
   }): AsyncIterable<string> {
     const body = {
+      client_message_id: params.clientMessageId ?? null,
       session_id: params.sessionId ?? null,
       messages: params.messages,
       session_context: params.sessionContext ?? null,

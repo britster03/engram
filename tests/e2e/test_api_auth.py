@@ -3,6 +3,7 @@
 Since admin UI pages (/admin/*) are NOT mounted in the app,
 these tests verify the REST API endpoints directly.
 """
+
 import os
 
 import pytest
@@ -64,9 +65,7 @@ class TestAPIAuth:
         if not key:
             pytest.skip("No API key available")
         resp = requests.get(
-            f"{base_url}/api/v1/config",
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=10
+            f"{base_url}/api/v1/config", headers={"Authorization": f"Bearer {key}"}, timeout=10
         )
         assert resp.status_code == 200
 
@@ -78,13 +77,13 @@ class TestIngest:
             pytest.skip("No API key available")
         turn_pair = {
             "user": {"content": "Hello", "timestamp": "2026-04-25T00:00:00Z"},
-            "assistant": {"content": "Hi", "timestamp": "2026-04-25T00:00:01Z"}
+            "assistant": {"content": "Hi", "timestamp": "2026-04-25T00:00:01Z"},
         }
         resp = requests.post(
             f"{base_url}/api/v1/ingest",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json={"session_id": "test-001", "turn_pair": turn_pair},
-            timeout=30
+            timeout=30,
         )
         assert resp.status_code in (200, 202)
         data = resp.json()
@@ -100,7 +99,7 @@ class TestQuery:
             f"{base_url}/api/v1/query",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json={"query": "test query"},
-            timeout=60
+            timeout=60,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -113,9 +112,7 @@ class TestSessions:
         if not key:
             pytest.skip("No API key available")
         resp = requests.post(
-            f"{base_url}/api/v1/sessions",
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=10
+            f"{base_url}/api/v1/sessions", headers={"Authorization": f"Bearer {key}"}, timeout=10
         )
         assert resp.status_code in (200, 201)
         data = resp.json()
@@ -134,6 +131,6 @@ class TestAdminAPI:
         resp = requests.get(
             f"{base_url}/api/v1/admin/tenants",
             headers={"Authorization": f"Bearer {key}"},
-            timeout=10
+            timeout=10,
         )
         assert resp.status_code in (200, 403)

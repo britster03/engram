@@ -55,6 +55,30 @@ groups:
         annotations:
           summary: "Ingest stopped while consolidation queue is saturated"
 
+      - alert: EngramCanonicalCommitLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(engram_canonical_commit_latency_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Canonical PostgreSQL commit p95 latency exceeds 2s"
+
+      - alert: EngramProjectionBacklog
+        expr: engram_projection_dispatch_depth > 1000 or engram_oldest_projection_age_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Neo4j projection is more than 15 minutes behind"
+
+      - alert: EngramDeadDispatches
+        expr: sum(engram_dead_dispatch_depth) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Temporal dispatches require operator intervention"
+
   - name: engram-retrieval
     interval: 30s
     rules:
@@ -85,3 +109,11 @@ groups:
           severity: warning
         annotations:
           summary: "Query p95 latency > 8s"
+
+      - alert: EngramCanonicalVerificationRejections
+        expr: sum(rate(engram_canonical_verification_rejections_total[10m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Canonical verification is rejecting stale or invalid candidates"

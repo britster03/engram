@@ -9,7 +9,8 @@ from engram.tenancy import Tenant, TenantQuotas, set_current_tenant
 
 def _mem_cache() -> SessionCache:
     return SessionCache(
-        SessionCacheConfig(backend="memory"), default_ttl_seconds=60,
+        SessionCacheConfig(backend="memory"),
+        default_ttl_seconds=60,
     )
 
 
@@ -22,8 +23,11 @@ def _redis_cache() -> SessionCache:
 
 def _tenant(tid: str) -> Tenant:
     return Tenant(
-        tenant_id=tid, display_name=tid, api_key_hashes=[],
-        quotas=TenantQuotas(), status="ACTIVE",
+        tenant_id=tid,
+        display_name=tid,
+        api_key_hashes=[],
+        quotas=TenantQuotas(),
+        status="ACTIVE",
     )
 
 

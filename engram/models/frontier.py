@@ -1,6 +1,8 @@
-"""FrontierLLMProvider — final answer generation with NEED_MORE re-entry (§4.3).
+"""FrontierLLMProvider — retrieval tool planning and answerability (§4.3).
 
-Providers expose two methods:
+Providers expose three methods:
+
+  - `plan_retrieval(...)` → structured request for the next retrieval tool.
 
   - `answer(...)` → buffered: used for the first pass, where we must inspect
     the verdict before deciding whether to stream or re-enter.
@@ -15,7 +17,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+
+from engram.models.core import CompletionResult
 
 
 @dataclass
@@ -31,6 +35,20 @@ class FrontierVerdict:
 
 
 class FrontierLLMProvider(ABC):
+    def plan_retrieval(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        output_schema: dict[str, Any],
+    ) -> CompletionResult | None:
+        """Request structured search arguments from the frontier model.
+
+        Legacy answer-only providers may return None. The retrieval controller
+        then uses its deterministic plan without calling a different model.
+        """
+        return None
+
     @abstractmethod
     def answer(
         self,
@@ -56,7 +74,9 @@ class FrontierLLMProvider(ABC):
         backend supports it.
         """
         verdict = self.answer(
-            system_prompt=system_prompt, msc=msc, user_query=user_query,
+            system_prompt=system_prompt,
+            msc=msc,
+            user_query=user_query,
             allow_need_more=False,
         )
         yield verdict.answer or ""

@@ -15,7 +15,7 @@ def test_memory_cache_roundtrip():
 
 def test_embedding_cache_encodes_and_decodes():
     ec = EmbeddingCache(MemoryCache())
-    vec = [0.1, -0.25, 1.5, 0.0] * 96   # 384 dims
+    vec = [0.1, -0.25, 1.5, 0.0] * 96  # 384 dims
     ec.set("hello world", vec, model_tag="bge-small-v1.5")
     out = ec.get("hello world", model_tag="bge-small-v1.5")
     assert out is not None

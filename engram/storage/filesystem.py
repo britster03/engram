@@ -58,7 +58,7 @@ class FilesystemStore:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, target)
-        if os.name != 'nt':
+        if os.name != "nt":
             parent_fd = os.open(str(target.parent), os.O_RDONLY)
             try:
                 os.fsync(parent_fd)

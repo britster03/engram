@@ -6,7 +6,7 @@ Why this exists:
   the task firing, the event stays in RECEIVED and nothing processes it for
   up to five minutes (until the reconciliation worker notices).
 
-This worker polls the SQLite event ledger directly. The API endpoint's
+This worker polls the PostgreSQL event ledger directly. The API endpoint's
 responsibility shrinks to exactly one thing: commit the event row. The
 worker owns everything after that, with bounded concurrency and graceful
 shutdown.
@@ -25,7 +25,7 @@ Failure model:
 Concurrency:
   A pool of N worker threads (default `max_concurrent` from config) pulls
   events from a single queue. Each thread builds its own IngestContext so
-  SQLite / Neo4j driver connections are per-thread.
+  PostgreSQL / Neo4j driver connections are per-thread.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from engram.ingest.worker import IngestContext, process_event
 from engram.models.core import CoreModelProvider
 from engram.models.embeddings import EmbeddingService
 from engram.storage.filesystem import FilesystemStore
-from engram.storage.sqlite import SqliteStore
+from engram.storage.postgres import PostgresStore
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class DurableIngestContext:
     cfg: EngramConfig
-    sqlite: SqliteStore
+    control_plane: PostgresStore
     fs: FilesystemStore
     neo4j: Any
     core: CoreModelProvider
@@ -99,7 +99,9 @@ class DurableIngestWorker:
             t.start()
             self._workers.append(t)
         self._poll_thread = threading.Thread(
-            target=self._poll_loop, name="engram-ingest-poll", daemon=True,
+            target=self._poll_loop,
+            name="engram-ingest-poll",
+            daemon=True,
         )
         self._poll_thread.start()
         log.info("durable ingest worker started (concurrency=%d)", self.max_concurrent)
@@ -139,11 +141,11 @@ class DurableIngestWorker:
     def _claim_batch(self) -> list[str]:
         """Claim up to `batch_size` events in status=RECEIVED.
 
-        Claiming is an SQLite transaction that flips RECEIVED → PROCESSING.
+        Claiming is a PostgreSQL transaction that flips RECEIVED → PROCESSING.
         That state transition is shared across API workers and replicas,
         unlike the process-local `_in_flight` set used only for queue hygiene.
         """
-        rows = self.ctx.sqlite.claim_pending_events(limit=self.batch_size)
+        rows = self.ctx.control_plane.claim_pending_events(limit=self.batch_size)
         claimed: list[str] = []
         with self._in_flight_lock:
             for r in rows:
@@ -178,21 +180,19 @@ class DurableIngestWorker:
         except Exception as err:
             log.exception("durable ingest failed for %s", event_id)
             try:
-                self.ctx.sqlite.set_event_status(
+                self.ctx.control_plane.set_event_status(
                     event_id, "FAILED", error_message=str(err)[:500]
                 )
                 metrics_mod.ingest_events_total.labels(final_status="FAILED").inc()
             except Exception:
                 log.exception("failed to mark event FAILED")
         finally:
-            metrics_mod.ingest_stage.labels(stage="total").observe(
-                time.perf_counter() - started
-            )
+            metrics_mod.ingest_stage.labels(stage="total").observe(time.perf_counter() - started)
 
 
 def start_background(
     cfg: EngramConfig,
-    sqlite: SqliteStore,
+    control_plane: PostgresStore,
     fs: FilesystemStore,
     neo4j: Any,
     core: CoreModelProvider,
@@ -203,11 +203,21 @@ def start_background(
 ) -> DurableIngestWorker:
     def _factory() -> IngestContext:
         return IngestContext(
-            cfg=cfg, sqlite=sqlite, fs=fs, neo4j=neo4j, core=core, embed=embed,
+            cfg=cfg,
+            control_plane=control_plane,
+            fs=fs,
+            neo4j=neo4j,
+            core=core,
+            embed=embed,
         )
 
     ctx = DurableIngestContext(
-        cfg=cfg, sqlite=sqlite, fs=fs, neo4j=neo4j, core=core, embed=embed,
+        cfg=cfg,
+        control_plane=control_plane,
+        fs=fs,
+        neo4j=neo4j,
+        core=core,
+        embed=embed,
         ingest_context_factory=_factory,
     )
     worker = DurableIngestWorker(

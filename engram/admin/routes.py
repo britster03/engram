@@ -2,12 +2,12 @@ import json
 import logging
 import os
 from contextlib import suppress
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     File,
     Form,
     HTTPException,
@@ -32,9 +32,9 @@ from engram.admin.auth import (
     verify_api_key,
 )
 from engram.api import schemas
+from engram.api.ingestion import accept_ingest
 from engram.deps import get_state
 from engram.tenancy import DEFAULT_TENANT_ID, Tenant, TenantQuotas, set_current_tenant
-from engram.uri import pair_id as pair_id_fn
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +153,7 @@ async def admin_static(path: str) -> FileResponse:
 # Admin API - lightweight wrappers around engram APIs for the dashboard UI
 # ---------------------------------------------------------------------------
 
+
 def _get_state_safe():
     try:
         return get_state()
@@ -185,6 +186,112 @@ def _configured_admin_key() -> str | None:
         return os.environ.get("ENGRAM_ADMIN_KEY")
 
 
+def _serialize_timestamp(value: object) -> str:
+    """Return a stable JSON-safe representation for database timestamps."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value or "")
+
+
+def _event_pair(event: dict) -> dict | None:
+    """Read the source pair for the memory-details view."""
+    payload = event.get("payload") or {}
+    pair = payload.get("turn_pair") or payload.get("turn_group")
+    if not isinstance(pair, dict):
+        return None
+    user, assistant = pair.get("user"), pair.get("assistant")
+    if not isinstance(user, dict) or not isinstance(assistant, dict):
+        return None
+    if not isinstance(user.get("content"), str) or not isinstance(assistant.get("content"), str):
+        return None
+    return {
+        "key": str(event.get("pair_id") or event.get("event_id")),
+        "user": user,
+        "assistant": assistant,
+        "created_at": _serialize_timestamp(event.get("created_at")),
+    }
+
+
+def _history_payload(state, *, session_id: str, tenant_id: str) -> dict | None:
+    """Merge individual turns; durable chat stores user and answer separately."""
+    cached = state.session_cache.get(session_id, tenant_id=tenant_id)
+    durable = state.control_plane.get_session_state(session_id, tenant_id=tenant_id)
+    ledger_events = state.control_plane.list_session_events(session_id, tenant_id=tenant_id)
+    if cached is None and durable is None and not ledger_events:
+        return None
+
+    merged: dict[str, dict] = {}
+
+    def add_turn(turn: dict, *, role: str, fallback: str, timestamp: object, **identity) -> None:
+        content = turn.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str) or not content.strip():
+            return
+        index = turn.get("turn_idx")
+        key = f"turn:{role}:{index}" if isinstance(index, int) else fallback
+        merged[key] = (
+            merged.get(key, {})
+            | {
+                "id": key,
+                "role": role,
+                "content": content,
+                "timestamp": _serialize_timestamp(turn.get("timestamp") or timestamp),
+                "turn_idx": index,
+            }
+            | {key: value for key, value in identity.items() if value is not None}
+        )
+
+    for event in ledger_events:
+        payload = event.get("payload") or {}
+        pair = payload.get("turn_pair") or payload.get("turn_group")
+        if not isinstance(pair, dict):
+            continue
+        for role in ("user", "assistant"):
+            if isinstance(pair.get(role), dict):
+                add_turn(
+                    pair[role],
+                    role=role,
+                    fallback=f"event:{event.get('pair_id') or event['event_id']}:{role}",
+                    timestamp=event.get("created_at"),
+                    client_message_id=payload.get("client_message_id") if role == "user" else None,
+                    run_id=payload.get("run_id") if role == "assistant" else None,
+                    input_event_id=event["event_id"]
+                    if role == "user"
+                    else payload.get("input_event_id"),
+                )
+    # PostgreSQL is authoritative; Redis may still contain a stale snapshot.
+    snapshot = durable if durable is not None else cached
+    for index, turn in enumerate((snapshot or {}).get("turns") or []):
+        add_turn(
+            turn,
+            role=turn.get("role"),
+            fallback=f"snapshot:{index}",
+            timestamp=(snapshot or {}).get("created_at"),
+        )
+    turns = sorted(
+        merged.values(),
+        key=lambda turn: (
+            not isinstance(turn["turn_idx"], int),
+            turn["turn_idx"] if isinstance(turn["turn_idx"], int) else 0,
+            turn["timestamp"],
+            turn["id"],
+        ),
+    )
+
+    first_ledger = ledger_events[0]["created_at"] if ledger_events else None
+    return {
+        "session_id": session_id,
+        "status": (snapshot or {}).get("status", "ARCHIVED"),
+        "created_at": _serialize_timestamp((snapshot or {}).get("created_at") or first_ledger),
+        "last_active": _serialize_timestamp(
+            turns[-1]["timestamp"]
+            if turns
+            else (ledger_events[-1]["created_at"] if ledger_events else None)
+        ),
+        "turn_count": len(turns),
+        "turns": turns,
+    }
+
+
 @admin_router.get("/admin/api/stats")
 async def admin_stats(request: Request):
     verify_ui_auth(request)
@@ -204,7 +311,7 @@ async def admin_stats(request: Request):
         pass
     queue_depth = 0
     with suppress(Exception):
-        queue_depth = state.sqlite.queue_depth(tenant_id=tenant.tenant_id)
+        queue_depth = state.control_plane.queue_depth(tenant_id=tenant.tenant_id)
     return JSONResponse({**kg_counts, "queue_depth": queue_depth})
 
 
@@ -216,37 +323,71 @@ async def admin_pipeline(request: Request):
     processing_events = 0
     outbox_pending = 0
     try:
-        pending_events = state.sqlite.count_events_by_status("RECEIVED")
-        processing_events = state.sqlite.count_events_by_status("PROCESSING")
-        outbox_pending = state.sqlite.count_outbox_pending()
+        pending_events = state.control_plane.count_events_by_status("RECEIVED")
+        processing_events = state.control_plane.count_events_by_status("PROCESSING")
+        outbox_pending = state.control_plane.count_outbox_pending()
     except Exception:
         pass
-    return JSONResponse({
-        "pending_events": pending_events,
-        "processing_events": processing_events,
-        "outbox_pending": outbox_pending,
-    })
+    return JSONResponse(
+        {
+            "pending_events": pending_events,
+            "processing_events": processing_events,
+            "outbox_pending": outbox_pending,
+        }
+    )
 
 
 @admin_router.get("/admin/api/sessions")
 async def admin_sessions(request: Request):
     verify_ui_auth(request)
-    state, _tenant = _bind_default_tenant()
+    state, tenant = _bind_default_tenant()
     try:
-        raw_sessions = state.session_cache.list_sessions()
-        sessions = []
+        raw_sessions = state.session_cache.list_sessions(tenant_id=tenant.tenant_id)
+        sessions_by_id = {}
         for data in raw_sessions:
             sid = data.get("session_id", "")
-            sessions.append({
+            if not sid:
+                continue
+            last_turn = (data.get("turns") or [])[-1] if data.get("turns") else {}
+            sessions_by_id[sid] = {
                 "id": sid,
                 "status": data.get("status", "ACTIVE"),
                 "turns": len(data.get("turns", [])),
-                "last_active": data.get("created_at", ""),
-            })
+                "last_active": _serialize_timestamp(
+                    last_turn.get("timestamp") or data.get("created_at")
+                ),
+                "history_available": True,
+            }
+        for row in state.control_plane.list_session_rollups(tenant_id=tenant.tenant_id):
+            sid = row["session_id"]
+            if sid in sessions_by_id:
+                continue
+            sessions_by_id[sid] = {
+                "id": sid,
+                "status": "ARCHIVED",
+                "turns": int(row["pair_count"]) * 2,
+                "last_active": _serialize_timestamp(row["last_active"]),
+                "history_available": True,
+            }
+        sessions = list(sessions_by_id.values())
         sessions.sort(key=lambda s: s["last_active"] or "", reverse=True)
         return JSONResponse({"sessions": sessions})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@admin_router.get("/admin/api/sessions/{session_id}/history")
+async def admin_session_history(request: Request, session_id: str):
+    verify_ui_auth(request)
+    state, tenant = _bind_default_tenant()
+    payload = _history_payload(
+        state,
+        session_id=session_id,
+        tenant_id=tenant.tenant_id,
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="session history not found")
+    return JSONResponse(payload)
 
 
 @admin_router.post("/admin/api/sessions")
@@ -272,33 +413,68 @@ async def admin_memories(
     return list_memories(prefix=prefix, limit=limit, cursor=cursor)
 
 
+@admin_router.get("/admin/api/memories/detail")
+async def admin_memory_detail(
+    request: Request,
+    source_uri: str = Query(..., min_length=1),
+):
+    """Return the canonical PostgreSQL snapshot used by the KG detail panel."""
+
+    verify_ui_auth(request)
+    state, tenant = _bind_default_tenant()
+    from engram.api.routes.memories import get_memory
+
+    memory = get_memory(source_uri)
+    payload = memory.model_dump(mode="json")
+    repository = state.memory_repository
+    if repository is None:
+        return payload
+    node = repository.resolve_memory_ref(
+        source_uri,
+        tenant_id=tenant.tenant_id,
+        include_historical=True,
+    )
+    if node is None:
+        return payload
+    payload.update(
+        {
+            "canonical_name": node.canonical_name,
+            "origin_event_id": node.origin_event_id,
+            "created_at": _serialize_timestamp(node.created_at),
+            "updated_at": _serialize_timestamp(node.updated_at),
+        }
+    )
+    if node.origin_event_id:
+        event = state.control_plane.get_event(
+            node.origin_event_id,
+            tenant_id=tenant.tenant_id,
+        )
+        if event is not None:
+            payload["source_event"] = {
+                "event_id": event.get("event_id"),
+                "session_id": event.get("session_id"),
+                "source": event.get("source"),
+                "status": event.get("status"),
+                "created_at": _serialize_timestamp(event.get("created_at")),
+                "turn_pair": _event_pair(event),
+            }
+    return payload
+
+
 @admin_router.post("/admin/api/ingest")
 async def admin_ingest(request: Request, req: schemas.IngestRequest):
     verify_ui_auth(request)
     state, tenant = _bind_default_tenant()
-    depth = state.sqlite.queue_depth(tenant_id=tenant.tenant_id)
+    depth = state.control_plane.queue_depth(tenant_id=tenant.tenant_id)
     if depth > state.cfg.consolidation.max_backlog:
         raise HTTPException(
             status_code=503,
             detail=(
-                "consolidation queue saturated "
-                f"({depth} > {state.cfg.consolidation.max_backlog})"
+                f"consolidation queue saturated ({depth} > {state.cfg.consolidation.max_backlog})"
             ),
             headers={"Retry-After": "30"},
         )
-    pair = req.effective_pair()
-    user_idx = pair.user.turn_idx or 0
-    asst_idx = pair.assistant.turn_idx or (user_idx + 1)
-    pid = pair_id_fn(req.session_id or "stateless", user_idx, asst_idx)
-    event_id, _ = state.sqlite.record_event(
-        pair_id=pid,
-        session_id=req.session_id,
-        source=req.source,
-        event_type="INGEST",
-        payload=req.model_dump(),
-        tenant_id=tenant.tenant_id,
-    )
-    response = schemas.IngestResponse(event_id=event_id, pair_id=pid, status="RECEIVED")
+    response = accept_ingest(state, req, tenant_id=tenant.tenant_id)
     return JSONResponse(content=response.model_dump(), status_code=status.HTTP_202_ACCEPTED)
 
 
@@ -308,8 +484,10 @@ async def admin_create_bulk_job(
     file: Annotated[UploadFile, File()],
     dry_run: Annotated[bool, Form()] = False,
     session_id: Annotated[str | None, Form()] = None,
-    file_format: Annotated[
-        Literal["jsonl", "csv", "zip"] | None, Form()
+    project_name: Annotated[str | None, Form()] = None,
+    file_format: Annotated[Literal["jsonl", "csv", "zip"] | None, Form()] = None,
+    idempotency_key: Annotated[
+        str | None, Form(min_length=1, max_length=schemas.MAX_ID_LENGTH, pattern=r"^\S+$")
     ] = None,
 ):
     verify_ui_auth(request)
@@ -320,7 +498,9 @@ async def admin_create_bulk_job(
         file=file,
         dry_run=dry_run,
         session_id=session_id,
+        project_name=project_name,
         file_format=file_format,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -333,17 +513,56 @@ async def admin_get_bulk_job(request: Request, job_id: str):
     return get_bulk_job(job_id)
 
 
+@admin_router.post("/admin/api/ingest/bulk/{job_id}/events/{event_id}/retry")
+async def admin_retry_bulk_event(request: Request, job_id: str, event_id: str):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.bulk_ingest import retry_failed_bulk_event
+
+    return retry_failed_bulk_event(job_id, event_id)
+
+
 @admin_router.post("/admin/api/chat/completions")
 async def admin_chat_completions(
     request: Request,
     req: schemas.ChatCompletionRequest,
-    background: BackgroundTasks,
 ):
     verify_ui_auth(request)
     _bind_default_tenant()
     from engram.api.routes.chat import chat_completions
 
-    return chat_completions(req, background)
+    return chat_completions(req)
+
+
+@admin_router.post("/admin/api/chat/runs/{run_id}/cancel")
+async def admin_cancel_chat(request: Request, run_id: str):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.chat import cancel_chat_run
+
+    return cancel_chat_run(run_id)
+
+
+@admin_router.get("/admin/api/chat/runs/{run_id}")
+async def admin_chat_run(request: Request, run_id: str):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.chat import chat_run
+
+    return chat_run(run_id)
+
+
+@admin_router.get("/admin/api/sessions/{session_id}/chat-run")
+async def admin_session_chat_run(
+    request: Request,
+    session_id: str,
+    client_message_id: str | None = Query(default=None, min_length=1, max_length=128),
+):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.chat import session_chat_run
+
+    return session_chat_run(session_id, client_message_id=client_message_id)
 
 
 @admin_router.get("/admin/api/kg/graph")
@@ -352,13 +571,66 @@ async def admin_kg_graph(
     root_uri: str | None = Query(default=None),
     depth: int = Query(default=1, ge=0, le=4),
     limit: int = Query(default=100, ge=1, le=500),
-    type: Literal["ENTITY", "EVENT", "FACT", "DOCUMENT", "DIRECTORY", "SESSION_SUMMARY"] | None = Query(default=None),
+    type: Literal[
+        "ENTITY",
+        "EPISODE",
+        "EVENT",
+        "FACT",
+        "DOCUMENT",
+        "DIRECTORY",
+        "SESSION_SUMMARY",
+        "COLLECTION",
+        "PROFILE",
+        "PREFERENCE",
+        "PROJECT",
+        "FILE",
+        "CLASS",
+        "FUNCTION",
+        "METHOD",
+        "EXTERNAL_MODULE",
+    ]
+    | None = Query(default=None),
 ):
     verify_ui_auth(request)
     _bind_default_tenant()
     from engram.api.routes.kg import graph
 
     return graph(root_uri=root_uri, depth=depth, limit=limit, type=type)
+
+
+@admin_router.get("/admin/api/kg/projects")
+async def admin_code_projects(request: Request):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.kg import code_projects
+
+    return code_projects()
+
+
+@admin_router.get("/admin/api/kg/code-map")
+async def admin_code_map(
+    request: Request,
+    project_uri: str = Query(..., min_length=1),
+    depth: int = Query(default=2, ge=0, le=6),
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.kg import code_map
+
+    return code_map(project_uri=project_uri, depth=depth, limit=limit)
+
+
+@admin_router.get("/admin/api/kg/node-details")
+async def admin_code_node_details(
+    request: Request,
+    source_uri: str = Query(..., min_length=1),
+):
+    verify_ui_auth(request)
+    _bind_default_tenant()
+    from engram.api.routes.kg import code_node_details
+
+    return code_node_details(source_uri=source_uri)
 
 
 @admin_router.post("/admin/api/logout")
@@ -394,6 +666,7 @@ def verify_ui_auth(request: Request):
     token = request.cookies.get("engram_session_token")
     if token:
         from engram.admin.auth import verify_session_token
+
         if verify_session_token(token):
             return
     auth = request.headers.get("Authorization", "")

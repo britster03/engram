@@ -1,4 +1,5 @@
-# Default values for Engram. Override with -f values-prod.yaml.
+# Production-oriented defaults. PostgreSQL, Temporal, Neo4j, Redis, and the
+# referenced Secret must exist before installation. Runtime memory has no PVC.
 
 image:
   repository: ghcr.io/your-org/engram
@@ -43,8 +44,8 @@ ingress:
 
 # External services — point at managed or in-cluster deployments.
 neo4j:
-  deployInCluster: true
-  uri: ""                      # override when deployInCluster=false
+  deployInCluster: false
+  uri: "bolt://neo4j.engram.svc.cluster.local:7687"
   storageClass: ssd
   storage: 100Gi
   resources:
@@ -52,28 +53,65 @@ neo4j:
     limits:   { cpu: 4000m, memory: 8Gi }
 
 redis:
-  deployInCluster: true
-  url: ""                      # override when deployInCluster=false
+  deployInCluster: false
+  url: "redis://redis.engram.svc.cluster.local:6379"
   storageClass: ssd
   storage: 20Gi
 
-persistence:
-  enabled: true
-  accessMode: ReadWriteMany
-  storageClass: nfs-csi
-  size: 200Gi
-
-# All secrets — prefer ExternalSecrets / SealedSecrets in production
-# rather than raw values. This is the template shape the chart expects.
+# Production uses an externally managed Secret. Set create=true only for a
+# non-production install with migrations disabled.
 secrets:
-  create: true
+  create: false
+  existingSecret: engram-secrets
   apiKey: ""
   adminKey: ""
-  ollamaApiKey: ""
+  secretKey: ""
+  openCodeGoApiKey: ""
   neo4jAdminPassword: ""
+  databaseUrl: ""
+
+temporal:
+  address: "temporal-frontend.temporal.svc.cluster.local:7233"
+  namespace: "engram-prod"
+  ingestTaskQueue: "engram-ingest"
+  codeIngestTaskQueue: "engram-code-ingest"
+  projectionTaskQueue: "engram-projection"
+  consolidationTaskQueue: "engram-consolidation"
+  maintenanceTaskQueue: "engram-maintenance"
+  workerConcurrency: 4
+  maintenanceWorkerConcurrency: 1
+  dispatchIntervalSeconds: 1.0
+  historyRetentionDays: 14
+
+worker:
+  queues:
+    # One deployment hosts Temporal Workers for every task queue. Increase
+    # replicaCount to scale ingestion and projection together.
+    - { name: all, queue: all, replicaCount: 2 }
+  pdb:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests: { cpu: 1000m, memory: 2Gi }
+    limits: { cpu: 3000m, memory: 6Gi }
+
+dispatcher:
+  replicaCount: 2
+  pdb:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+migrations:
+  enabled: true
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
 
 config:
   retrieval:
+    quality_mode: enforce
     l0_skip: false
     max_reentries: 2
     max_depth: L4
@@ -81,11 +119,22 @@ config:
     max_concurrent_tasks: 4
     max_backlog: 10000
   session:
+    compaction_trigger_tokens: 64000
+    compaction_target_ratio: 0.5
+    compaction_input_tokens: 64000
+    compaction_summary_tokens: 2000
     timeout_minutes: 30
 
 tracing:
   enabled: false
   otlpEndpoint: ""             # e.g. http://otel-collector:4317
+
+networkPolicy:
+  enabled: true
+  ingressNamespaceLabels:
+    kubernetes.io/metadata.name: ingress-nginx
+  monitoringNamespaceLabels:
+    kubernetes.io/metadata.name: monitoring
 
 prometheus:
   serviceMonitor:
@@ -95,7 +144,8 @@ prometheus:
 
 cronjobs:
   decay:
-    enabled: true
+    # Temporal owns decay in production; this is intentionally disabled.
+    enabled: false
     schedule: "0 3 * * *"
 
 podSecurityContext:
@@ -122,3 +172,4 @@ topologySpreadConstraints:
     labelSelector:
       matchLabels:
         app.kubernetes.io/name: engram
+        app.kubernetes.io/component: api

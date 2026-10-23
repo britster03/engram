@@ -26,7 +26,7 @@ No auth. Returns per-component readiness.
 {
   "status": "healthy",
   "components": {
-    "sqlite": true,
+    "control_plane": true,
     "neo4j": true,
     "redis": true,
     "filesystem": true
@@ -42,8 +42,8 @@ cascade / model settings.
 ```json
 {
   "retrieval": { "max_depth": "L4", "max_reentries": 2, ... },
-  "core_model": { "provider": "ollama_cloud", "model_path": "kimi-k2.7-code:cloud" },
-  "frontier_llm": { "provider": "ollama_cloud", "model_path": "kimi-k2.7-code:cloud" }
+  "core_model": { "provider": "openai_responses", "model_path": "muse-spark-1.3-contributor" },
+  "frontier_llm": { "provider": "openai_responses", "model_path": "muse-spark-1.3-contributor" }
 }
 ```
 
@@ -53,6 +53,7 @@ cascade / model settings.
 
 ```json
 {
+  "idempotency_key": "import-request-123",             // optional; reuse for retries
   "session_id": "sess-abc-123",                       // optional
   "turn_pair": {
     "user": { "content": "I just started a new job at Meta.",
@@ -76,8 +77,17 @@ Response — 202 Accepted:
 }
 ```
 
-Ingest is **idempotent** by `pair_id = sha256(session_id || user_idx || assistant_idx)`.
-Duplicate submissions return the existing event_id without re-processing.
+Explicit ingestion uses an optional, tenant-scoped `idempotency_key` in the JSON
+body (1–128 characters, without whitespace). Reusing the key with the same
+normalized request returns the original event ID and its current status without
+creating another event or dispatch. Reusing it with different content, session,
+context, source or processing options returns `409 Conflict`.
+
+Without a key, every submission receives a fresh identity, including identical
+text or requests with the same session and turn numbers. Session/turn metadata
+does not provide request idempotency. `pair_id` is an opaque request identity;
+clients must not derive it from session/turn coordinates. Internal session replay
+continues to use stable turn-pair IDs.
 
 #### Turn groups (§5.2)
 
@@ -102,10 +112,138 @@ Intermediate turns are preserved in the event payload for provenance.
 
 ### `POST /api/v1/ingest/batch`
 
-Accepts up to 100 IngestRequest objects in a single call. Each is processed
-independently; response is 202 with a list of per-item results.
+Accepts up to 100 IngestRequest objects in a single call. Each item can supply its
+own `idempotency_key`, shared with the single-request endpoint. Response is 202
+with a list of per-item results. Acceptance is atomic: a key/payload conflict
+returns 409 and rolls back all new events and dispatches from that batch.
+
+### `POST /api/v1/ingest/bulk`
+
+Upload JSONL, CSV or ZIP using multipart form data. An optional form field
+`idempotency_key` makes the entire upload retryable: identical bytes, filename,
+format and processing options return the original job and event IDs. Changed
+input with the same key returns 409. Without a key, another upload creates a new
+job. Upload keys have a separate namespace from individual ingest keys.
+
+Rows are identified by their upload and row position, independently of session
+metadata or any per-row ingest key. Default sessions are unique to the upload;
+explicitly supplied session IDs are preserved. Receipt, events, dispatches and
+job bookkeeping commit in one transaction. Keyed uploads have a completed
+`BULK_UPLOAD` receipt event; only their ingestion items are dispatched.
+
+ZIP text/Markdown members are limited to 32,000 Unicode characters each. A
+larger member is rejected with its filename, actual size and limit in
+`rejected_rows`; it creates no ingestion event. Split the document before
+uploading. Accepted documents retain their complete text. Other valid members
+in the archive can still be accepted, so inspect the rejection counts.
+
+### Explicit entity identity
+
+Names and aliases alone do not authorize joining entities from different source
+events, even within one session. Unqualified entities are scoped to the original
+source event. Distinguishing attributes on extracted structured entities separate
+same-name mentions within that source. Uncertain attribution is deferred by the
+claim reviewer. No automatic first-name/full-name expansion is performed.
+
+For deliberate identity reuse, provide `entity_bindings` on an ingest request
+(also supported in JSONL rows). Each binding needs a name and exactly one of an
+existing tenant-local `entity_id` or an application-defined `identity_key`:
+
+```json
+{"name":"John Smith","identity_key":"employee:42",
+ "aliases":["John"],"attributes":{"employee_id":"42"}}
+```
+
+Bindings are caller assertions, not model-selected IDs. Use different keys for
+different people. Aliases must be unambiguous within the request. Conflicting
+distinguishing attributes fail ingestion rather than changing an existing
+identity. Existing merged data requires a source-by-source audit; deploying this
+policy does not automatically split historical entities.
+
+### `POST /api/v1/events/{event_id}/reprocess`
+
+Requires canonical strict evidence mode and Temporal. Supply:
+
+```json
+{"idempotency_key":"policy-upgrade-2026-10","reason":"Re-evaluate with the updated extraction policy"}
+```
+
+Returns 202 with a **new event ID** to poll using the event endpoint. Source text,
+original event IDs, evidence and versions remain available. Gate, extraction,
+typing and verification run under a newly pinned policy. Successful canonical
+commit atomically replaces the previous generation's contribution and records
+its supersession. Independently supported shared claims stay active. A failed
+replacement leaves the previous generation active; an explicit retry can resume
+that failed request if a newer request has not replaced it. A successful gate
+skip or zero accepted claims retires that source's previous contribution.
+
+The key is scoped to the original source and tenant. Repeating a key with the
+same reason and policy returns the same event; changed input returns 409. Only
+one replacement can be pending per source. Overlapping requests, unfinished
+terminal bookkeeping and unsupported event types return 409; another tenant's
+source returns 404. Code archives use their dedicated retry workflow and do not
+support conversational extraction reprocessing.
+
+Ordinary retries reuse their pinned policy and artifacts. Changing generator
+settings midway causes `ProcessingPolicyChanged`, requiring explicit
+reprocessing. Increment `canonical_memory.extraction_policy_version` when a
+provider changes an underlying model behind an unchanged model name.
+
+### Ingestion claim verification
+
+In canonical `evidence_mode: enforce`, final proposed claims receive a separate
+source-support review before canonical commit. Only supported direct positive
+statements become active claims. Rejected and deferred candidates retain their
+original source and an audit decision. Event status `COMPLETE` describes the
+completed processing operation; it does not promise that any claims were accepted.
+
+`GET /api/v1/events/{event_id}/verification` uses the same tenant authentication
+as the event endpoint and returns the committed review, or the latest pending
+review if no review has committed. The response includes `binding` (source,
+candidate and policy hashes), `candidates`, `reviews`, `counts`, `artifact_key`
+and `committed`. Each review includes the claim index, `SUPPORTED`/
+`CONTRADICTED`/`UNCLEAR` verdict, assertion kind, polarity, server-enforced
+`ACCEPTED`/`REJECTED`/`DEFERRED` disposition and a reason. A missing event or
+unavailable review returns 404. A pending report is not proof of canonical commit.
+The response also includes original `sources`, the supplied `preceding_context`,
+and `source_matches`, which indicates whether the source still matches the
+reviewed payload hash.
+
+For example, a completed source may have:
+
+```json
+{
+  "counts": {"accepted": 1, "rejected": 1, "deferred": 0},
+  "committed": true
+}
+```
+
+The full response also contains the candidate statements and their reasons.
+Verification improves fidelity to source assertions; it does not establish their
+external truth. Existing committed claims are not automatically reprocessed.
 
 ## Query
+
+Query and chat share the required ordered cascade:
+`L0` parametric → `L1` current session → `L2` past sessions → `L3_FACTS` →
+`L3_VECTOR` → `L3_GRAPH`. The server stops when the complete question is supported.
+The tentative sufficiency gate uses the existing ANSWER/NEED_MORE protocol;
+no separately trained classifier is required.
+
+`max_depth` now limits this public cascade: `L0` allows only parametric answers,
+`L1` (or `SESSION`) allows the current session, `L2` includes past sessions, and
+`L3` allows the full knowledge base. `L4` is retained as an alias for the full
+cascade. It no longer selects the legacy internal history capability.
+
+`retrieval_metadata` includes `retrieval_route`, `routes_attempted`, `answer_mode`,
+`stop_reason`, `tool_calls`, `degraded_sources`, and `source_records`.
+`source_records` identifies conversational event/session references; these are
+distinct from the top-level `sources` array of verified canonical memory.
+`max_reentries` remains accepted for compatibility; the cascade advances through
+bounded stages instead of restarting retrieval.
+
+Deploy migration `0005_ordered_retrieval` before the updated API. See
+[the implementation plan](ORDERED_RETRIEVAL_PLAN.md).
 
 ### `POST /api/v1/query`
 
@@ -131,6 +269,26 @@ Response — 200 OK:
     "predicted_depth": "L2",
     "nodes_retrieved": 3,
     "total_context_tokens": 1842,
+    "token_usage": {
+      "input_tokens": 2100,
+      "output_tokens": 96,
+      "total_tokens": 2196,
+      "estimated": false,
+      "query_tokens": 8,
+      "session_context_tokens": 120,
+      "retrieval_context_tokens": 1842,
+      "model_calls": [
+        {
+          "stage": "frontier_answer_0",
+          "provider": "openai_responses",
+          "model": "muse-spark-1.3-contributor",
+          "input_tokens": 2100,
+          "output_tokens": 96,
+          "total_tokens": 2196,
+          "estimated": false
+        }
+      ]
+    },
     "reentries": 0,
     "l0_decision": "CONTINUE",
     "l0_reason": "regex:\\bmy\\s+(wife|husband|partner…",
@@ -153,6 +311,43 @@ Response — 200 OK:
 
 Buffered mode is the default (`stream=false`).
 
+The latest implementation saves the user message before generation. Optional
+`client_message_id` supplies tenant-scoped idempotency; completed retries replay
+the saved result, while changed input or a non-completed existing run returns
+409. Responses also include `run_id` and `input_event_id`. The final user message
+must contain 1-8,000 characters.
+
+Use `GET /api/v1/chat/runs/{run_id}` to read response/memory status, and
+`POST /api/v1/chat/runs/{run_id}/cancel` to fence late answer publication.
+Both use the same tenant API key and return 404 for another tenant's run.
+Run status includes `client_message_id`, `created_at`, and the absolute `deadline`.
+`GET /api/v1/sessions/{session_id}/chat-run` returns `{"run": <run status>}` for
+the latest run, or `{"run": null}` for an existing session without a run. Optional
+`?client_message_id=...` discovers a particular submission when its acknowledgement
+was lost. Missing or foreign sessions return 404.
+
+A concurrent submission receives HTTP 409 with a readable `detail`,
+`code: "session_busy"`, and `run` identifiers/status/deadline. Poll the existing
+run rather than submitting another message. Identical retries of running messages
+return the same recovery information; terminal unsuccessful retries use
+`code: "message_finalized"`. Completed retries still replay the saved response.
+The five-minute deadline is absolute; retrieval progress does not extend it.
+Authenticated admin wrappers expose the same status and discovery paths under
+`/admin/api`. The admin chat restores durable history and polls after refresh or
+disconnect, preserving an unsent draft and the Stop action. Operational notices
+are excluded from model conversation context.
+
+Cancellation preserves the accepted user message and any ingestion dispatch.
+Streaming emits `accepted` with session/run/input-event IDs before answer
+delivery. Answer deltas are currently sent after generation and persistence;
+they are not upstream model token streaming.
+
+Automatic user-only memory evaluation is opt-in through
+`canonical_memory.automatic_user_memory_enabled=true` in canonical mode.
+Assistant responses remain derived history. See the
+[implementation record](IMPLEMENTATION_STATUS.md) for migration prerequisites,
+source policy, feature flags and limitations.
+
 ```json
 {
   "messages": [
@@ -160,6 +355,7 @@ Buffered mode is the default (`stream=false`).
     { "role": "user",    "content": "What project is Alice working on?" }
   ],
   "session_id": "sess-abc-123",    // optional; omit to auto-create
+  "client_message_id": "message-unique-to-this-tenant", // optional retry key
   "stream": false,                 // optional, default false
   "session_context": "...",        // optional explicit override
   "max_depth": "L4",               // optional, default from config
@@ -185,6 +381,26 @@ Response - 200 OK:
     "predicted_depth": "L2",
     "nodes_retrieved": 3,
     "total_context_tokens": 1842,
+    "token_usage": {
+      "input_tokens": 2100,
+      "output_tokens": 96,
+      "total_tokens": 2196,
+      "estimated": false,
+      "query_tokens": 8,
+      "session_context_tokens": 120,
+      "retrieval_context_tokens": 1842,
+      "model_calls": [
+        {
+          "stage": "frontier_answer_0",
+          "provider": "openai_responses",
+          "model": "muse-spark-1.3-contributor",
+          "input_tokens": 2100,
+          "output_tokens": 96,
+          "total_tokens": 2196,
+          "estimated": false
+        }
+      ]
+    },
     "reentries": 0,
     "l0_decision": "CONTINUE",
     "l0_reason": "regex:\\bmy\\s+(wife|husband|partner…",
@@ -338,6 +554,16 @@ for await (const chunk of client.chatCompletionsStream({
 - After the assistant answer is complete, the turn pair is appended to the session and a background ingest event fires automatically.
 - Auth and rate limits match `/api/v1/query` exactly.
 - The SSE stream is true token-by-token via the frontier LLM provider, not artificially chunked.
+
+#### Per-query token usage
+
+Every query response includes `retrieval_metadata.token_usage`. `input_tokens`
+and `output_tokens` are the summed tokens reported by the Core planner and
+Frontier answer providers; `total_tokens` is their sum. `model_calls` shows the
+stage-by-stage breakdown. `query_tokens`, `session_context_tokens`, and
+`retrieval_context_tokens` are separate tokenizer counts that explain the
+request size. When a provider does not return usage metadata, the affected call
+is tokenizer-estimated and its `estimated` flag is `true`.
 
 ## Sessions
 

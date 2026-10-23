@@ -8,12 +8,13 @@ depth against oversized payloads.
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # --- Per-field caps (characters, not tokens) -----------------------------
-MAX_CONTENT_LENGTH = 32_000          # per turn
-MAX_QUERY_LENGTH = 8_000             # single user query
+MAX_CONTENT_LENGTH = 32_000  # per turn
+MAX_QUERY_LENGTH = 8_000  # single user query
 MAX_SESSION_CONTEXT_LENGTH = 64_000
 MAX_SESSION_SUMMARY_LENGTH = 16_000
 MAX_ID_LENGTH = 128
@@ -50,13 +51,51 @@ class TurnGroup(BaseModel):
     intermediate: list[TurnContent] | None = None  # tool-call, tool-result, etc.
 
 
+class EntityBinding(BaseModel):
+    """Caller-authorized identity; extraction cannot choose cross-source IDs."""
+    name: str = Field(min_length=1, max_length=256)
+    aliases: list[str] = Field(default_factory=list, max_length=20)
+    entity_id: UUID | None = None
+    identity_key: str | None = Field(default=None, min_length=1, max_length=128)
+    attributes: dict[str, str] = Field(default_factory=dict, max_length=20)
+
+    @model_validator(mode="after")
+    def identity_required(self) -> EntityBinding:
+        if (self.entity_id is None) == (self.identity_key is None):
+            raise ValueError("provide exactly one of entity_id or identity_key")
+        if not self.name.strip() or (self.identity_key is not None and not self.identity_key.strip()):
+            raise ValueError("entity identity must not be blank")
+        if any(not a.strip() or len(a) > 256 for a in self.aliases):
+            raise ValueError("entity aliases must contain 1-256 characters")
+        if any(not k.strip() or len(k) > 128 or not v.strip() or len(v) > 512 for k, v in self.attributes.items()):
+            raise ValueError("invalid distinguishing attribute")
+        return self
+
+
 class IngestRequest(BaseModel):
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=MAX_ID_LENGTH)
     session_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
     turn_pair: TurnPair | None = None
     turn_group: TurnGroup | None = None
     source: str = Field(default="client", max_length=32)
     session_summary: str | None = Field(default=None, max_length=MAX_SESSION_SUMMARY_LENGTH)
     session_context: str | None = Field(default=None, max_length=MAX_SESSION_CONTEXT_LENGTH)
+    force_store: bool = False
+    entity_bindings: list[EntityBinding] = Field(default_factory=list, max_length=100)
+
+    @field_validator("entity_bindings")
+    @classmethod
+    def unambiguous_bindings(cls, bindings: list[EntityBinding]) -> list[EntityBinding]:
+        seen: set[str] = set()
+        for binding in bindings:
+            local: set[str] = set()
+            for name in {binding.name, *binding.aliases}:
+                normalized = " ".join(name.replace("_", " ").casefold().split())
+                if normalized in seen:
+                    raise ValueError("entity binding names and aliases must be unambiguous")
+                local.add(normalized)
+            seen.update(local)
+        return bindings
 
     def effective_pair(self) -> TurnPair:
         if self.turn_pair is not None:
@@ -65,7 +104,7 @@ class IngestRequest(BaseModel):
             return TurnPair(user=self.turn_group.user, assistant=self.turn_group.assistant)
         raise ValueError("IngestRequest requires either turn_pair or turn_group")
 
-    @field_validator("session_id", "source")
+    @field_validator("session_id", "source", "idempotency_key")
     @classmethod
     def _safe_ascii(cls, v: str | None) -> str | None:
         if v is None:
@@ -80,6 +119,7 @@ class IngestResponse(BaseModel):
     event_id: str
     pair_id: str
     status: str
+    projection_status: Literal["PENDING", "PROJECTING", "INDEXED", "FAILED"] = "PENDING"
 
 
 class QueryRequest(BaseModel):
@@ -95,6 +135,12 @@ class QueryResponse(BaseModel):
     answer: str
     session_id: str | None = None
     retrieval_metadata: dict[str, Any]
+    answerability: str
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    verification_rejections: list[str] = Field(default_factory=list)
+    route_metadata: dict[str, Any] = Field(default_factory=dict)
+    projection_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatCompletionMessage(BaseModel):
@@ -105,6 +151,7 @@ class ChatCompletionMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     messages: list[ChatCompletionMessage] = Field(..., min_length=1)
     session_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    client_message_id: str | None = Field(default=None, min_length=1, max_length=MAX_ID_LENGTH)
     stream: bool = False
     session_context: str | None = Field(default=None, max_length=MAX_SESSION_CONTEXT_LENGTH)
     max_depth: str | None = Field(default=None, pattern=r"^L[0-4]$|^SESSION$")
@@ -117,6 +164,8 @@ class ChatCompletionRequest(BaseModel):
             raise ValueError("messages must contain at least one user message")
         if v[-1].role != "user":
             raise ValueError("last message must be from user")
+        if not v[-1].content.strip() or len(v[-1].content) > MAX_QUERY_LENGTH:
+            raise ValueError(f"last user message must contain 1-{MAX_QUERY_LENGTH} characters")
         return v
 
     @field_validator("session_id")
@@ -132,7 +181,13 @@ class ChatCompletionRequest(BaseModel):
 class ChatCompletionResponse(BaseModel):
     answer: str
     session_id: str
+    run_id: str | None = None
+    input_event_id: str | None = None
     retrieval_metadata: dict[str, Any]
+    answerability: str
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    verification_rejections: list[str] = Field(default_factory=list)
     finish_reason: str = "stop"
 
 

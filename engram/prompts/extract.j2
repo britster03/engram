@@ -28,7 +28,12 @@ Produce three outputs:
 2. `triplets`: atomic subject-relation-object facts extracted from
    `resolved_text`. Use snake_case relation labels (works_at, lives_in,
    reports_to, started_on, owns, manages, working_on, references,
-   prefers, decided_to, has_deadline, located_in, depends_on).
+   prefers, decided_to, has_deadline, located_in, depends_on, has_manager,
+   has_assistant_manager).
+
+   Preserve relationship precision. Use `has_manager` for a person's manager
+   and `has_assistant_manager` for their assistant/deputy manager. Never
+   collapse those two roles into one predicate.
 
    Distinguish two kinds of facts and assign confidence accordingly:
 
@@ -54,6 +59,11 @@ Produce three outputs:
      Alice", "Project Atlas uses Ray").
    - Domain-specific framings ("the Henderson deal closes in Q3",
      "the auth service is owned by the platform team").
+
+   Source coordinates are not entities. Do not create triplets whose subject
+   is only a sequence label such as "story event 102", "turn 7", "message 4",
+   or "chapter 3". The ingestion system already preserves that ordering in the
+   episode and provenance record.
 
 3. `l0_abstract`: one sentence (≤ 30 words), information-dense and
    self-contained, capturing the most important fact for vector

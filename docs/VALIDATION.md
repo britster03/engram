@@ -218,7 +218,7 @@ shape matches what `gating.classifier_path` expects.
 | Helm chart against a real cluster | No `kind` / k3s cluster spun up yet | Next validation round: `kind create cluster` + `helm install` + `kubectl get pods` screenshot |
 | Production-scale load test | Locust harness exists; no measured numbers | 100 VUs × 15 min against a single pod; collect p50/p95/p99 for /query and /ingest |
 | End-to-end Qwen3.5-0.8B SFT | Multi-GPU-day experiment | Out of scope for codebase validation; will run on real traces post-deploy |
-| Live Ollama Cloud integration | Operator-side testing | Validate with a real `OLLAMA_API_KEY` via `ENGRAM_CONFIG_PATH=./config.yaml python -m engram.cli smoke` |
+| Live Muse Spark integration | Validated | Use `OPENCODE_GO_API_KEY`; covered by `tests/e2e/test_muse_spark_live.py` and a full Temporal ingest. |
 
 These are the final gaps between "code that works in principle" and
 "battle-tested in production." Each is pure configuration / operator

@@ -1,16 +1,12 @@
 """Selenium E2E tests for the Engram admin UI.
 
 These tests exercise the full browser stack: login, navigation,
-ingest pipeline, chat, and SQLite data propagation.
+ingest pipeline, chat, and PostgreSQL-backed session history.
 """
 
-import os
-import sqlite3
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
-import yaml
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -26,23 +22,6 @@ TAB_LABELS = {
     "ingest": "Ingest",
     "settings": "Settings",
 }
-
-
-def _event_ledger_path() -> Path:
-    override = os.environ.get("ENGRAM_EVENT_LEDGER_PATH")
-    if override:
-        return Path(override).expanduser().resolve()
-
-    cfg_path = os.environ.get("ENGRAM_CONFIG_PATH")
-    if cfg_path:
-        with open(cfg_path, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        configured = (cfg.get("event_ledger") or {}).get("path")
-        if configured:
-            path = Path(configured).expanduser()
-            return path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
-
-    return (Path.cwd() / "data" / "event_ledger.db").resolve()
 
 
 @pytest.fixture(scope="session")
@@ -91,11 +70,7 @@ def admin_logged_in_driver(selenium_driver, base_url, admin_key):
     submit_btn.click()
 
     wait.until(EC.url_contains("/admin/dashboard"))
-    wait.until(
-        EC.visibility_of_element_located(
-            (By.CSS_SELECTOR, 'nav img[src*="engram_logo"]')
-        )
-    )
+    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'nav img[src*="engram_logo"]')))
 
     yield drv
 
@@ -126,9 +101,7 @@ def test_login_page_shows_engram_logo(selenium_driver, base_url):
     drv.get(f"{base_url}/admin/login")
 
     wait = WebDriverWait(drv, 30)
-    logo = wait.until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, 'img[src*="engram_logo"]'))
-    )
+    logo = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'img[src*="engram_logo"]')))
     assert logo.is_displayed()
     src = logo.get_attribute("src")
     assert "engram_logo" in src
@@ -171,9 +144,7 @@ def test_dashboard_tabs_exist(admin_logged_in_driver):
 
     for label, tab_key in tabs.items():
         btn = wait.until(
-            EC.visibility_of_element_located(
-                (By.XPATH, f"//nav//button[contains(., '{label}')]")
-            )
+            EC.visibility_of_element_located((By.XPATH, f"//nav//button[contains(., '{label}')]"))
         )
         assert btn.is_displayed()
         assert label in btn.text
@@ -216,9 +187,11 @@ def test_chat_page_loads(selenium_driver, base_url, admin_key):
     wait.until(EC.url_contains("/admin/dashboard"))
 
     drv.get(f"{base_url}/admin/chat")
-    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, '#chat-history')))
+    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#chat-history")))
 
-    initial_count = drv.execute_script("return document.querySelectorAll('#chat-history > div').length")
+    initial_count = drv.execute_script(
+        "return document.querySelectorAll('#chat-history > div').length"
+    )
 
     inp = drv.find_element(By.CSS_SELECTOR, 'input[type="text"]')
     inp.clear()
@@ -229,10 +202,10 @@ def test_chat_page_loads(selenium_driver, base_url, admin_key):
     send_btn.click()
 
     wait.until(
-        lambda d: d.execute_script(
-            "return document.querySelectorAll('#chat-history > div').length"
-        )
-        > initial_count,
+        lambda d: (
+            d.execute_script("return document.querySelectorAll('#chat-history > div').length")
+            > initial_count
+        ),
         message="Chat messages did not grow after sending",
     )
 
@@ -247,9 +220,13 @@ def test_ingest_via_dashboard(admin_logged_in_driver, base_url):
     drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", ingest_btn)
     ingest_btn.click()
 
-    wait.until(EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Ingest Pipeline')]")))
+    wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Ingest Pipeline')]"))
+    )
 
-    user_ta = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]')))
+    user_ta = wait.until(
+        EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]'))
+    )
     asst_ta = drv.find_element(By.CSS_SELECTOR, 'textarea[x-model="ingest.assistant"]')
     _set_ingest_session(drv, f"e2e-dashboard-{uuid4().hex}")
 
@@ -278,9 +255,13 @@ def test_session_appears_after_ingest(admin_logged_in_driver, base_url):
     drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", ingest_btn)
     ingest_btn.click()
 
-    wait.until(EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Ingest Pipeline')]")))
+    wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Ingest Pipeline')]"))
+    )
 
-    user_ta = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]')))
+    user_ta = wait.until(
+        EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]'))
+    )
     asst_ta = drv.find_element(By.CSS_SELECTOR, 'textarea[x-model="ingest.assistant"]')
     _set_ingest_session(drv, f"e2e-session-{uuid4().hex}")
     user_ta.clear()
@@ -298,7 +279,9 @@ def test_session_appears_after_ingest(admin_logged_in_driver, base_url):
     )
 
     drv.get(f"{base_url}/admin/dashboard?tab=sessions")
-    wait.until(EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Active Sessions')]")))
+    wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Active Sessions')]"))
+    )
 
     try:
         wait.until(
@@ -314,48 +297,44 @@ def test_session_appears_after_ingest(admin_logged_in_driver, base_url):
 
 
 @pytest.mark.e2e
-def test_sqlite_events_after_ingest(admin_logged_in_driver, base_url):
-    """After ingest, the SQLite events table must contain a new row."""
+def test_session_history_opens_from_session_id(admin_logged_in_driver, base_url):
+    """Clicking a session ID should show its stored conversation turns."""
     drv = admin_logged_in_driver
     wait = WebDriverWait(drv, 30)
-
-    db_path = _event_ledger_path()
-    conn_before = sqlite3.connect(str(db_path))
-    cur_before = conn_before.cursor()
-    cur_before.execute("SELECT COUNT(*) FROM events")
-    count_before = cur_before.fetchone()[0]
-    conn_before.close()
+    session_id = f"history-session-{uuid4().hex}"
 
     ingest_btn = _nav_tab_button(wait, "ingest")
     drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", ingest_btn)
     ingest_btn.click()
-    wait.until(EC.visibility_of_element_located((By.XPATH, "//h3[contains(text(), 'Ingest Pipeline')]")))
-
-    user_ta = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]')))
+    user_ta = wait.until(
+        EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[x-model="ingest.user"]'))
+    )
     asst_ta = drv.find_element(By.CSS_SELECTOR, 'textarea[x-model="ingest.assistant"]')
-    _set_ingest_session(drv, f"e2e-sqlite-{uuid4().hex}")
+    _set_ingest_session(drv, session_id)
     user_ta.clear()
-    user_ta.send_keys("SQLite propagation test")
+    user_ta.send_keys("History question")
     asst_ta.clear()
-    asst_ta.send_keys("SQLite propagation response")
-
-    submit = drv.find_element(By.CSS_SELECTOR, "button[type='submit']")
-    drv.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit)
-    submit.click()
-
+    asst_ta.send_keys("History answer")
+    drv.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
     wait.until(
-        EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'Ingested:')]")),
-        message="Ingest success indicator did not appear",
+        EC.visibility_of_element_located((By.XPATH, "//span[contains(text(), 'Ingested:')]"))
     )
 
-    conn_after = sqlite3.connect(str(db_path))
-    cur_after = conn_after.cursor()
-    cur_after.execute("SELECT COUNT(*) FROM events")
-    count_after = cur_after.fetchone()[0]
-    conn_after.close()
-
-    assert count_after > count_before, (
-        f"Expected events table to grow, but before={count_before} and after={count_after}"
+    drv.get(f"{base_url}/admin/dashboard?tab=sessions")
+    history_button = wait.until(
+        EC.element_to_be_clickable(
+            (By.CSS_SELECTOR, f'[data-testid="session-history-{session_id}"]')
+        ),
+    )
+    history_button.click()
+    wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//*[contains(text(), 'Session history')]"))
+    )
+    wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//*[contains(text(), 'History question')]"))
+    )
+    wait.until(
+        EC.visibility_of_element_located((By.XPATH, "//*[contains(text(), 'History answer')]"))
     )
 
 

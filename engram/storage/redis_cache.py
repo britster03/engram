@@ -48,7 +48,10 @@ class SessionCache:
         return f"session:{tid}:{session_id}"
 
     def get(
-        self, session_id: str, *, tenant_id: str | None = None,
+        self,
+        session_id: str,
+        *,
+        tenant_id: str | None = None,
     ) -> dict[str, Any] | None:
         key = self._key(session_id, tenant_id=tenant_id)
         if self._client is not None:
@@ -88,9 +91,7 @@ class SessionCache:
         assert self._memory is not None
         self._memory[key] = (time.time() + ttl, raw)
 
-    def delete(
-        self, session_id: str, *, tenant_id: str | None = None
-    ) -> None:
+    def delete(self, session_id: str, *, tenant_id: str | None = None) -> None:
         key = self._key(session_id, tenant_id=tenant_id)
         if self._client is not None:
             try:

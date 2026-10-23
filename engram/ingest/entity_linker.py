@@ -102,7 +102,8 @@ def resolve(
                 return LinkResult(matched, conf, reason)
             log.info(
                 "entity_link rejected: matched_id %r is not in candidate list %s",
-                matched, list(candidate_uris),
+                matched,
+                list(candidate_uris),
             )
         return LinkResult(None, conf, reason or "core-model-said-no")
     except Exception:

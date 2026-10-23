@@ -5,7 +5,9 @@ metadata:
   labels: {{- include "engram.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
-  selector: {{- include "engram.selectorLabels" . | nindent 4 }}
+  selector:
+    {{- include "engram.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
   ports:
     - name: http
       port: {{ .Values.service.port }}
@@ -15,3 +17,4 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "engram.fullname" . }}
+automountServiceAccountToken: false

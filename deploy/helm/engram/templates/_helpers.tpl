@@ -22,3 +22,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "engram.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
+
+{{- define "engram.secretName" -}}
+{{- if .Values.secrets.create -}}
+{{- include "engram.fullname" . }}-secrets
+{{- else -}}
+{{- required "secrets.existingSecret is required when secrets.create=false" .Values.secrets.existingSecret -}}
+{{- end -}}
+{{- end -}}

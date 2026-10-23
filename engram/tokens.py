@@ -11,28 +11,57 @@ Counters are process-cached to avoid reloading the BPE vocab per call.
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
-import threading
+import os
+import tempfile
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_ENCODING = "cl100k_base"      # widely supported chat-model BPE
-_FALLBACK_CHAR_RATIO = 3.5              # chars per token, conservative
-_SAFETY_FACTOR = 1.10                   # fallback scales +10% to stay under budgets
+_DEFAULT_ENCODING = "cl100k_base"  # widely supported chat-model BPE
+_FALLBACK_CHAR_RATIO = 3.5  # chars per token, conservative
+_SAFETY_FACTOR = 1.10  # fallback scales +10% to stay under budgets
 
-_lock = threading.Lock()
+ENCODING_NAME = _DEFAULT_ENCODING
+_ENCODING_URL = "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+_ENCODING_SHA256 = "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+
+
+class TokenizerUnavailableError(RuntimeError):
+    """Exact session budget enforcement cannot proceed."""
+
+
+@functools.lru_cache(maxsize=1)
+def require_tokenizer():
+    """Load the pinned encoding; production checks its cache before any network IO."""
+    if os.environ.get("ENGRAM_TOKENIZER_OFFLINE") == "1":
+        directory = os.environ.get("TIKTOKEN_CACHE_DIR") or os.environ.get("DATA_GYM_CACHE_DIR") or str(Path(tempfile.gettempdir()) / "data-gym-cache")
+        path = Path(directory) / hashlib.sha1(_ENCODING_URL.encode()).hexdigest()
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != _ENCODING_SHA256:
+            raise TokenizerUnavailableError("cl100k_base cache is missing or corrupt; rebuild the image with its tokenizer cache")
+    try:
+        import tiktoken
+        return tiktoken.get_encoding(ENCODING_NAME)
+    except Exception as error:
+        raise TokenizerUnavailableError("cl100k_base tokenizer could not be initialized") from error
+
+
+def count_tokens_exact(text: str) -> int:
+    """Count with cl100k_base and never substitute a character estimate."""
+    try:
+        return len(require_tokenizer().encode(text, disallowed_special=()))
+    except TokenizerUnavailableError:
+        raise
+    except Exception as error:
+        raise TokenizerUnavailableError("exact token counting failed") from error
 
 
 @functools.lru_cache(maxsize=1)
 def _get_encoder():
     """Load tiktoken's cl100k_base once. Returns None if tiktoken unavailable."""
     try:
-        import tiktoken  # type: ignore
-    except Exception:
-        log.info("tiktoken not installed; using character-ratio fallback token counter")
-        return None
-    try:
-        return tiktoken.get_encoding(_DEFAULT_ENCODING)
+        return require_tokenizer()
     except Exception:
         log.warning("tiktoken encoding %s unavailable; using fallback", _DEFAULT_ENCODING)
         return None

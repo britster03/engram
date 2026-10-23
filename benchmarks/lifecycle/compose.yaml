@@ -1,0 +1,126 @@
+services:
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: ${LOCOMO_DB_PASSWORD}
+      POSTGRES_DB: engram_bench
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U bench -d engram_bench"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    mem_limit: 1g
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: none
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes: [neodata:/data, neologs:/logs]
+    mem_limit: 2g
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes: [redisdata:/data]
+    mem_limit: 256m
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: bench
+      POSTGRES_PWD: ${LOCOMO_DB_PASSWORD}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      DEFAULT_NAMESPACE: ${LOCOMO_NAMESPACE}
+    depends_on:
+      postgres: {condition: service_healthy}
+    mem_limit: 2g
+  init:
+    image: ${LOCOMO_IMAGE}
+    healthcheck: {disable: true}
+    env_file: ["${LOCOMO_RUNTIME_DIR}/credentials.env"]
+    environment: &environment
+      ENGRAM_CONFIG_PATH: /runtime/config.yaml
+      LOCOMO_TRACE_DIR: /results
+      LOCOMO_PROJECT: ${LOCOMO_PROJECT}
+      OMP_NUM_THREADS: "2"
+      TOKENIZERS_PARALLELISM: "false"
+    volumes: &volumes
+      - ${LOCOMO_REPO}/benchmarks:/workspace/benchmarks:ro
+      - ${LOCOMO_REPO}/tests:/workspace/tests:ro
+      - ${LOCOMO_REPO}/pyproject.toml:/workspace/pyproject.toml:ro
+      - ${LOCOMO_REPO}/config.prod.yaml:/workspace/config.prod.yaml:ro
+      - ${LOCOMO_RUNTIME_DIR}:/runtime:ro
+      - ${LOCOMO_RUN_DIR}:/results
+    command: [python, -m, benchmarks.lifecycle.bootstrap, init]
+    working_dir: /workspace
+    user: ${LOCOMO_UID}:${LOCOMO_GID}
+    depends_on:
+      postgres: {condition: service_healthy}
+      neo4j: {condition: service_started}
+      redis: {condition: service_started}
+      temporal: {condition: service_started}
+  worker:
+    image: ${LOCOMO_IMAGE}
+    healthcheck: {disable: true}
+    env_file: ["${LOCOMO_RUNTIME_DIR}/credentials.env"]
+    environment: *environment
+    volumes: *volumes
+    command: [python, -m, benchmarks.lifecycle.bootstrap, worker]
+    working_dir: /workspace
+    user: ${LOCOMO_UID}:${LOCOMO_GID}
+    mem_limit: 4g
+    depends_on:
+      init: {condition: service_completed_successfully}
+  dispatcher:
+    image: ${LOCOMO_IMAGE}
+    healthcheck: {disable: true}
+    env_file: ["${LOCOMO_RUNTIME_DIR}/credentials.env"]
+    environment: *environment
+    volumes: *volumes
+    command: [python, -m, benchmarks.lifecycle.bootstrap, dispatcher]
+    working_dir: /workspace
+    user: ${LOCOMO_UID}:${LOCOMO_GID}
+    mem_limit: 512m
+    depends_on:
+      init: {condition: service_completed_successfully}
+  driver:
+    image: ${LOCOMO_IMAGE}
+    healthcheck: {disable: true}
+    env_file: ["${LOCOMO_RUNTIME_DIR}/credentials.env"]
+    environment: *environment
+    volumes: *volumes
+    working_dir: /workspace
+    user: ${LOCOMO_UID}:${LOCOMO_GID}
+    # Full lossless traces can exceed 4 GiB while being serialized/archived.
+    mem_limit: 10g
+    command: [python, -m, benchmarks.lifecycle.runner]
+    depends_on:
+      init: {condition: service_completed_successfully}
+  scoring:
+    image: ${LOCOMO_SCORING_IMAGE}
+    healthcheck: {disable: true}
+    environment:
+      HF_HOME: /scoring-cache
+      HF_HUB_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "0"
+      PYTHONPATH: /opt/lifecycle-scoring:/workspace
+      OMP_NUM_THREADS: "2"
+    volumes:
+      - ${LOCOMO_REPO}/benchmarks:/workspace/benchmarks:ro
+      - ${LOCOMO_RUN_DIR}:/results
+      - scorecache:/scoring-cache
+    working_dir: /workspace
+    command: [python, -m, benchmarks.lifecycle.scoring, /results]
+    mem_limit: 4g
+volumes:
+  pgdata: {}
+  neodata: {}
+  neologs: {}
+  redisdata: {}
+  scorecache: {}

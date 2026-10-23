@@ -48,7 +48,7 @@ class Turn:
 
     speaker: str
     text: str
-    dia_id: str          # e.g. "D1:3" — what `evidence` refers to
+    dia_id: str  # e.g. "D1:3" — what `evidence` refers to
     session_idx: int
     timestamp: str | None  # ISO-8601 when parseable, else the raw string
 
@@ -70,8 +70,8 @@ class QAProbe:
     question: str
     answer: str
     category: int
-    evidence: list[str]        # dia_ids that contain the answer
-    is_adversarial: bool       # category 5 — correct behaviour is abstention
+    evidence: list[str]  # dia_ids that contain the answer
+    is_adversarial: bool  # category 5 — correct behaviour is abstention
 
     @property
     def category_name(self) -> str:
@@ -196,8 +196,7 @@ def pair_turns(turns: list[Turn]) -> list[tuple[Turn, Turn | None]]:
     pad it.
     """
     return [
-        (turns[i], turns[i + 1] if i + 1 < len(turns) else None)
-        for i in range(0, len(turns), 2)
+        (turns[i], turns[i + 1] if i + 1 < len(turns) else None) for i in range(0, len(turns), 2)
     ]
 
 

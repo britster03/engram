@@ -34,7 +34,7 @@ DUPLICATE_RELATION_COS = 0.90
 
 @dataclass
 class ConflictDecision:
-    case: str                       # "DUPLICATE" | "CONTRADICTION" | "CO_EXISTENCE"
+    case: str  # "DUPLICATE" | "CONTRADICTION" | "CO_EXISTENCE"
     existing_edge_id: str | None
     reason: str
 
@@ -78,12 +78,14 @@ def classify(
         obj_cos = _cos(new_obj_vec, embed.embed(object_abs))
         if obj_cos > DUPLICATE_OBJECT_COS:
             return ConflictDecision(
-                "DUPLICATE", edge.get("edge_id"),
+                "DUPLICATE",
+                edge.get("edge_id"),
                 f"object cosine {obj_cos:.2f} > {DUPLICATE_OBJECT_COS}",
             )
         if obj_cos < 0.5:
             return ConflictDecision(
-                "CONTRADICTION", edge.get("edge_id"),
+                "CONTRADICTION",
+                edge.get("edge_id"),
                 f"object cosine {obj_cos:.2f} — different object",
             )
         # 0.5 ≤ obj_cos ≤ 0.95 — ambiguous
@@ -96,7 +98,8 @@ def classify(
     if core is None:
         _best_edge, best_score = max(ambiguous_candidates, key=lambda p: p[1])
         return ConflictDecision(
-            "CO_EXISTENCE", None,
+            "CO_EXISTENCE",
+            None,
             f"ambiguous cosine {best_score:.2f}; no core model available",
         )
     try:
@@ -175,8 +178,12 @@ def apply_decision(
                 "(o:Node {tenant_id: $tenant_id, source_uri: $o_uri}) "
                 "MERGE (s)-[e:SUPERSEDES {edge_id: $eid}]->(o) "
                 "SET e.created_at = $now, e.tenant_id = $tenant_id",
-                {"s_uri": subject_uri, "o_uri": object_uri,
-                 "eid": decision.existing_edge_id, "now": now},
+                {
+                    "s_uri": subject_uri,
+                    "o_uri": object_uri,
+                    "eid": decision.existing_edge_id,
+                    "now": now,
+                },
             )
         except Exception:
             log.debug("SUPERSEDES edge write failed", exc_info=True)
