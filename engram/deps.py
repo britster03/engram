@@ -112,6 +112,7 @@ def make_session_manager(state):
         core_output_tokens=state.cfg.core_model.max_tokens,
         session_ttl_minutes=state.cfg.session.timeout_minutes,
         control_plane=state.control_plane,
+        canonical_memory_enabled=state.cfg.canonical_memory.enabled,
     )
 
 

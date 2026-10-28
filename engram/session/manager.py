@@ -41,6 +41,7 @@ class Turn:
     timestamp: str  # ISO 8601
     turn_idx: int
     ingestible: bool = True
+    canonical_ingested: bool = False
 
 
 @dataclass
@@ -53,7 +54,30 @@ class SessionState:
     key_facts: list[str] = field(default_factory=list)
     key_entities: list[str] = field(default_factory=list)
     compaction_metadata: dict[str, Any] = field(default_factory=dict)
+    canonical_consolidation_tokens: int | None = None
+    canonical_consolidation_thresholds_processed: int = 0
+    canonical_consolidation_turns_upper_bound: int = 0
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def __post_init__(self) -> None:
+        if self.canonical_consolidation_tokens is None:
+            self.recount_canonical_consolidation_tokens()
+
+    def append_turn(self, turn: Turn) -> None:
+        """Append a raw turn and maintain its exact, compaction-independent token total."""
+        token_total = self.canonical_consolidation_tokens
+        if token_total is None:
+            token_total = self.recount_canonical_consolidation_tokens()
+        self.turns.append(turn)
+        self.canonical_consolidation_tokens = token_total + tokens.count_tokens_exact(
+            turn.content
+        )
+
+    def recount_canonical_consolidation_tokens(self) -> int:
+        self.canonical_consolidation_tokens = sum(
+            tokens.count_tokens_exact(turn.content) for turn in self.turns
+        )
+        return self.canonical_consolidation_tokens
 
     def to_payload(self) -> dict[str, Any]:
         d = asdict(self)
@@ -71,6 +95,13 @@ class SessionState:
             key_facts=data.get("key_facts", []),
             key_entities=data.get("key_entities", []),
             compaction_metadata=data.get("compaction_metadata", {}),
+            canonical_consolidation_tokens=data.get("canonical_consolidation_tokens"),
+            canonical_consolidation_thresholds_processed=data.get(
+                "canonical_consolidation_thresholds_processed", 0
+            ),
+            canonical_consolidation_turns_upper_bound=data.get(
+                "canonical_consolidation_turns_upper_bound", 0
+            ),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
         return s
@@ -103,6 +134,7 @@ class SessionManager:
         control_plane: PostgresStore | None = None,
         session_config: SessionConfig | None = None,
         core_output_tokens: int = 2048,
+        canonical_memory_enabled: bool = False,
     ) -> None:
         self.cache = cache
         self.control_plane = control_plane
@@ -110,6 +142,7 @@ class SessionManager:
         self.max_turns_before_window = max_turns_before_window
         self.session_config = session_config or SessionConfig()
         self.core_output_tokens = core_output_tokens
+        self.canonical_memory_enabled = canonical_memory_enabled
         self.session_ttl_seconds = session_ttl_minutes * 60
 
     def create(self) -> SessionState:
@@ -145,7 +178,7 @@ class SessionManager:
                     if not isinstance(idx, int) or idx in seen or not item.get("content"):
                         continue
                     seen.add(idx)
-                    state.turns.append(
+                    state.append_turn(
                         Turn(
                             role=role,
                             content=str(item["content"]),
@@ -153,6 +186,7 @@ class SessionManager:
                             turn_idx=idx,
                             ingestible=event.get("event_type") == "INGEST"
                             and not payload.get("derived_response", False),
+                            canonical_ingested=event.get("event_type") == "INGEST",
                         )
                     )
             state.turns.sort(key=lambda turn: turn.turn_idx)
@@ -189,9 +223,6 @@ class SessionManager:
                     else self.get(session_id) or SessionState(session_id=session_id)
                 )
                 state, needs_compact = self._append_to_state(state, user, assistant, ingestible)
-                self.control_plane.save_session_state(
-                    session_id, state.to_payload(), tenant_id=tenant
-                )
                 user_turn, assistant_turn = state.turns[-2:]
                 self.control_plane.record_event(
                     pair_id=pair_id_fn(session_id, user_turn.turn_idx, assistant_turn.turn_idx),
@@ -214,6 +245,9 @@ class SessionManager:
                     },
                 )
                 self.schedule_compaction(state)
+                self.control_plane.save_session_state(
+                    session_id, state.to_payload(), tenant_id=tenant
+                )
             # Publish the cache only after the state and its source record commit.
             self.cache.delete(session_id)
             return state, needs_compact
@@ -233,22 +267,24 @@ class SessionManager:
             raise ValueError("session is not active")
         now = datetime.now(timezone.utc).isoformat()
         next_idx = state.turns[-1].turn_idx + 1 if state.turns else 0
-        state.turns.append(
+        state.append_turn(
             Turn(
                 role="user",
                 content=user,
                 timestamp=now,
                 turn_idx=next_idx,
                 ingestible=ingestible,
+                canonical_ingested=ingestible,
             )
         )
-        state.turns.append(
+        state.append_turn(
             Turn(
                 role="assistant",
                 content=assistant,
                 timestamp=now,
                 turn_idx=next_idx + 1,
                 ingestible=ingestible,
+                canonical_ingested=ingestible,
             )
         )
         needs_compact = self._needs_compaction(state)
@@ -268,12 +304,82 @@ class SessionManager:
         """Called inside acceptance transactions; task and snapshot commit together."""
         if state.status not in {"ACTIVE", "WINDOWED"}:
             return False
+        self._schedule_canonical_consolidation(state)
         needed = self.needs_compaction(state)
         state.status = "WINDOWED" if needed else "ACTIVE"
         if needed and self.control_plane is not None:
             self.control_plane.enqueue_task(node_id=state.session_id,
                 task_type="SESSION_COMPACT", tenant_id=current_tenant_id(), mark_dirty=True)
         return needed
+
+    def _schedule_canonical_consolidation(self, state: SessionState) -> None:
+        """Queue original, un-ingested user turns after each exact token interval.
+
+        The event ledger creates the Temporal ingestion dispatch in this same
+        transaction. The snapshot cursor and threshold watermark are persisted
+        with those events, so retries or process restarts cannot duplicate a
+        batch or lose one that was accepted.
+        """
+        if not self.canonical_memory_enabled or self.control_plane is None:
+            return
+        threshold = self.session_config.canonical_consolidation_trigger_tokens
+        token_count = state.canonical_consolidation_tokens or 0
+        thresholds_reached = token_count // threshold
+        if thresholds_reached <= state.canonical_consolidation_thresholds_processed:
+            return
+
+        tenant = current_tenant_id()
+        start = min(state.canonical_consolidation_turns_upper_bound, len(state.turns))
+        existing_ingests = self.control_plane.get_conn().execute(
+            "SELECT payload::jsonb->'turn_pair'->'user'->>'turn_idx' AS turn_idx "
+            "FROM events WHERE tenant_id = ? AND session_id = ? AND event_type = 'INGEST'",
+            (tenant, state.session_id),
+        ).fetchall()
+        ingested_turn_indices = {
+            int(row["turn_idx"])
+            for row in existing_ingests
+            if row.get("turn_idx") is not None and str(row["turn_idx"]).isdigit()
+        }
+        for turn in state.turns[start:]:
+            if turn.role != "user":
+                continue
+            if turn.canonical_ingested or turn.turn_idx in ingested_turn_indices:
+                turn.canonical_ingested = True
+                continue
+            source_key = f"{state.session_id}:{turn.turn_idx}"
+            pair_id = "session-canonical:" + hashlib.sha256(
+                source_key.encode("utf-8")
+            ).hexdigest()
+            self.control_plane.record_event(
+                pair_id=pair_id,
+                session_id=state.session_id,
+                tenant_id=tenant,
+                source="session_canonical_consolidation",
+                event_type="INGEST",
+                initial_status="RECEIVED",
+                payload={
+                    "schema": "chat-user-v1",
+                    "source_policy": "user-only-v1",
+                    "session_id": state.session_id,
+                    "consolidation": {
+                        "encoding": tokens.ENCODING_NAME,
+                        "token_count_policy": "sum-of-exact-turn-content-v1",
+                        "threshold_tokens": threshold,
+                        "session_token_count": token_count,
+                        "thresholds_processed": thresholds_reached,
+                    },
+                    "turn_pair": {
+                        "user": {
+                            "content": turn.content,
+                            "timestamp": turn.timestamp,
+                            "turn_idx": turn.turn_idx,
+                        },
+                        "assistant": {"content": ""},
+                    },
+                },
+            )
+        state.canonical_consolidation_turns_upper_bound = len(state.turns)
+        state.canonical_consolidation_thresholds_processed = thresholds_reached
 
     def _persist(self, state: SessionState) -> None:
         if self.control_plane is not None:
@@ -291,6 +397,15 @@ class SessionManager:
                     by_index = {turn.turn_idx: turn for turn in state.turns}
                     by_index.update({turn.turn_idx: turn for turn in latest.turns})
                     state.turns = [by_index[index] for index in sorted(by_index)]
+                    state.recount_canonical_consolidation_tokens()
+                    state.canonical_consolidation_thresholds_processed = max(
+                        state.canonical_consolidation_thresholds_processed,
+                        latest.canonical_consolidation_thresholds_processed,
+                    )
+                    state.canonical_consolidation_turns_upper_bound = max(
+                        state.canonical_consolidation_turns_upper_bound,
+                        latest.canonical_consolidation_turns_upper_bound,
+                    )
                     if latest.status in {"COMMITTING", "COMMITTED"} and state.status in {
                         "ACTIVE",
                         "WINDOWED",

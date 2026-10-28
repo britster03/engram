@@ -121,7 +121,16 @@ def accept_message(
             raise ChatConflictError("session is closed")
         index = session.turns[-1].turn_idx + 1 if session.turns else 0
         now = datetime.now(timezone.utc).isoformat()
-        session.turns.append(Turn("user", content, now, index, ingestible=False))
+        session.append_turn(
+            Turn(
+                "user",
+                content,
+                now,
+                index,
+                ingestible=False,
+                canonical_ingested=automatic_memory,
+            )
+        )
         event_id, _ = store.record_event(
             pair_id="chat-user:" + client_message_id,
             session_id=session_id,
@@ -188,7 +197,7 @@ def finish_response(manager: Any, run_id: str, response: dict[str, Any], *, tena
         session = SessionState.from_payload(store.get_session_state(session_id, tenant_id=tenant))
         index = session.turns[-1].turn_idx + 1 if session.turns else 0
         # A response accepted before close may finish, but no new user message may enter.
-        session.turns.append(
+        session.append_turn(
             Turn(
                 "assistant",
                 response["answer"],

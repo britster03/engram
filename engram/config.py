@@ -19,6 +19,10 @@ CONFIG_ENV_SETTINGS = {
     "ENGRAM_SESSION_COMPACTION_TARGET_RATIO": ("session", "compaction_target_ratio"),
     "ENGRAM_SESSION_COMPACTION_INPUT_TOKENS": ("session", "compaction_input_tokens"),
     "ENGRAM_SESSION_COMPACTION_SUMMARY_TOKENS": ("session", "compaction_summary_tokens"),
+    "ENGRAM_SESSION_CANONICAL_CONSOLIDATION_TRIGGER_TOKENS": (
+        "session",
+        "canonical_consolidation_trigger_tokens",
+    ),
     "ENGRAM_RETRIEVAL_QUALITY_MODE": ("retrieval", "quality_mode"),
 }
 
@@ -300,13 +304,20 @@ class DecayConfig(BaseModel):
 class SessionConfig(BaseModel):
     timeout_minutes: int = 30
     compaction_trigger_tokens: int = Field(default=64000, ge=256)
+    canonical_consolidation_trigger_tokens: int = Field(default=120_000, ge=256)
     compaction_target_ratio: float = Field(default=0.5, gt=0, lt=1)
     compaction_input_tokens: int = Field(default=64000, ge=256)
     compaction_summary_tokens: int = Field(default=2000, ge=16)
     window_threshold_ratio: float = 0.4
     max_turns_before_window: int = 50
 
-    @field_validator("compaction_trigger_tokens", "compaction_input_tokens", "compaction_summary_tokens", mode="before")
+    @field_validator(
+        "compaction_trigger_tokens",
+        "canonical_consolidation_trigger_tokens",
+        "compaction_input_tokens",
+        "compaction_summary_tokens",
+        mode="before",
+    )
     @classmethod
     def _integer_token_budget(cls, value):
         if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
